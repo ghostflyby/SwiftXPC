@@ -17,6 +17,12 @@ public struct XPCDecoder {
 
 }
 
+extension XPCArray {
+  fileprivate subscript(index: Int) -> XPCValue {
+    XPCValue(xpc_array_get_value(xpc_object, index))
+  }
+}
+
 class _XPCDecoder: Decoder {
   let root: XPCValue
 

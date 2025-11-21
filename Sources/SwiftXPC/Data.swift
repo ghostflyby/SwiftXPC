@@ -382,18 +382,10 @@ extension XPCArray: MutableCollection {
     }
   }
 
-  public subscript(position: Int) -> XPCValue {
-    get {
-      validateIndex(position)
-      let item = xpc_array_get_value(xpc_object, position)
-      return XPCValue(item)
-    }
-  }
-
 }
 
 extension XPCArray {
-  mutating func append(_ obj: any XPCObject) {
+  public mutating func append(_ obj: any XPCObject) {
     xpc_array_append_value(xpc_object, obj.xpc_object)
   }
 }

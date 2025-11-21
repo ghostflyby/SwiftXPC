@@ -28,6 +28,7 @@ public struct XPCObjectUnknown: XPCObject, @unchecked Sendable {
   }
 }
 
+@frozen
 public struct XPCRichError: XPCObject, Error, @unchecked Sendable {
 
   public let xpc_object: xpc_object_t
@@ -35,6 +36,7 @@ public struct XPCRichError: XPCObject, Error, @unchecked Sendable {
     self.xpc_object = xpc_object
   }
 
+  @available(macOS 14, *)
   var message: String {
     if let s = xpc_rich_error_copy_description(xpc_object) {
       String(cString: s)
@@ -43,6 +45,7 @@ public struct XPCRichError: XPCObject, Error, @unchecked Sendable {
     }
   }
 
+  @available(macOS 14, *)
   var canRetry: Bool { xpc_rich_error_can_retry(xpc_object) }
 
 }

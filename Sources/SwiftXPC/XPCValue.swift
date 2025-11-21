@@ -48,6 +48,10 @@ extension XPCValue: XPCObject {
   }
   public init(xpc_object: xpc_object_t) {
     let type = xpc_get_type(xpc_object)
+    if #available(macOS 14, *), type == XPC_TYPE_RICH_ERROR {
+      self = .RichError(XPCRichError(xpc_object: xpc_object))
+      return
+    }
     switch type {
     case XPC_TYPE_BOOL:
       self = .Bool(XPCBool(xpc_object: xpc_object))
@@ -81,8 +85,6 @@ extension XPCValue: XPCObject {
       self = .Connection(XPCConnection(xpc_object: xpc_object))
     case XPC_TYPE_ENDPOINT:
       self = .Endpoint(XPCEndpoint(xpc_object: xpc_object))
-    case XPC_TYPE_RICH_ERROR:
-      self = .RichError(XPCRichError(xpc_object: xpc_object))
     default:
       fatalError("unknown XPC object type \(type)")
     }

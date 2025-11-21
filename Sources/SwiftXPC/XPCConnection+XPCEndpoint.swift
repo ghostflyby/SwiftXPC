@@ -81,6 +81,8 @@ public func xpcTransactionEnd() {
 }
 
 extension XPCConnection {
+  
+  @available(macOS 12.0, *)
   public var invalidationReason: String? {
     if let s = xpc_connection_copy_invalidation_reason(xpc_object) {
       String(cString: s)

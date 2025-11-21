@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import XPC
 
-public protocol XPCObject: Sendable, Equatable, Hashable {
+public protocol XPCObject: Sendable, Equatable, Hashable, XPCMarshal {
   var xpc_object: xpc_object_t { get }
   init(xpc_object: xpc_object_t)
 }
@@ -11,12 +11,21 @@ extension XPCObject {
   public static func == (lhs: Self, rhs: Self) -> Bool {
     return xpc_equal(lhs.xpc_object, rhs.xpc_object)
   }
-
 }
 
 extension XPCObject where Self: Hashable {
   public func hash(into hasher: inout Hasher) {
     hasher.combine(xpc_hash(xpc_object))
+  }
+}
+
+extension XPCObject {
+  public static func unmarshal(from object: any XPCObject) throws -> Self {
+    Self.init(xpc_object: object.xpc_object)
+  }
+
+  public func marshal() throws -> any XPCObject {
+    self
   }
 }
 

@@ -9,6 +9,9 @@ public struct XPCEncoder {
   public func encode<T: Encodable>(_ value: T) throws -> any XPCObject {
     let encoder = _XPCEncoder()
     try value.encode(to: encoder)
+    if let encodingError = encoder.error {
+      throw encodingError
+    }
     if let storage = encoder.storage {
       return storage
     } else {
@@ -19,9 +22,28 @@ public struct XPCEncoder {
 
 final class _XPCEncoder: Encoder {
   var storage: XPCValue?
+  var error: EncodingError?
 
   var codingPath: [CodingKey] = []
   var userInfo: [CodingUserInfoKey: Any] = [:]
+
+  private func recordContainerTypeMismatch(expected: String) {
+    guard error == nil else { return }
+    let invalidValue: Any = storage ?? XPCNull()
+    error = EncodingError.invalidValue(
+      invalidValue,
+      EncodingError.Context(
+        codingPath: codingPath,
+        debugDescription:
+          "Attempted to get \(expected) encoding container when storage is \(storageDescription)"
+      )
+    )
+  }
+
+  private var storageDescription: String {
+    guard let storage else { return "unset" }
+    return storage.containerKindDescription
+  }
 
   func container<Key>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key>
   where Key: CodingKey {
@@ -30,7 +52,14 @@ final class _XPCEncoder: Encoder {
       storage = .Dictionary(dict)
     }
     guard case .Dictionary(let dict) = storage else {
-      fatalError("Attempt to get keyed encoding container when storage is not a dictionary")
+      recordContainerTypeMismatch(expected: "keyed")
+      let dict = XPCDictionary()
+      storage = .Dictionary(dict)
+      let container = XPCKeyedEncodingContainer<Key>(
+        dictionary: dict,
+        codingPath: codingPath
+      )
+      return KeyedEncodingContainer(container)
     }
     let container = XPCKeyedEncodingContainer<Key>(
       dictionary: dict,
@@ -45,7 +74,13 @@ final class _XPCEncoder: Encoder {
     }
 
     guard case .Array(let array) = storage else {
-      fatalError("Attempt to get unkeyed encoding container when storage is not an array")
+      recordContainerTypeMismatch(expected: "unkeyed")
+      let array = XPCArray()
+      storage = .Array(array)
+      return XPCUnkeyedEncodingContainer(
+        array: array,
+        codingPath: codingPath
+      )
     }
     return XPCUnkeyedEncodingContainer(
       array: array,
@@ -330,5 +365,29 @@ struct XPCSingleValueEncodingContainer: SingleValueEncodingContainer {
 
   mutating func encode<Wrapped>(_ value: XPC<Wrapped>) throws {
     set(try value.wrappedValue.marshal())
+  }
+}
+
+extension XPCValue {
+  fileprivate var containerKindDescription: String {
+    switch self {
+    case .Bool: return "bool"
+    case .Data: return "data"
+    case .Double: return "double"
+    case .Int64: return "int64"
+    case .UInt64: return "uint64"
+    case .String: return "string"
+    case .FileDescriptor: return "file descriptor"
+    case .Date: return "date"
+    case .UUID: return "uuid"
+    case .SharedMemory: return "shared memory"
+    case .Null: return "null"
+    case .Activity: return "activity"
+    case .Connection: return "connection"
+    case .Endpoint: return "endpoint"
+    case .Dictionary: return "dictionary"
+    case .Array: return "array"
+    case .RichError: return "rich error"
+    }
   }
 }

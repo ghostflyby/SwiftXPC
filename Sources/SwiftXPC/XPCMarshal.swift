@@ -82,24 +82,9 @@ extension Data: XPCMarshal {
     return xpcData.rawValue
   }
 }
-extension Date: XPCMarshal {
-  public func marshal() throws -> any XPCObject {
-    return XPCDate(self)
-  }
-  public static func unmarshal(from object: any XPCObject) throws -> Self {
-    guard case .Date(let xpcDate) = XPCValue(xpc_object: object.xpc_object)
-    else {
-      throw DecodingError.typeMismatch(
-        Date.self,
-        DecodingError.Context(
-          codingPath: [],
-          debugDescription: "Expected XPCDate but found \(type(of: object))"
-        )
-      )
-    }
-    return xpcDate.rawValue
-  }
-}
+
+extension Date: XPCMarshalCodable {}
+
 extension UUID: XPCMarshal {
 
   public func marshal() throws -> any XPCObject {

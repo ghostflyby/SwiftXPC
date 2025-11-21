@@ -21,10 +21,9 @@ import Testing
   try test([1, 2, 3])
 }
 
-// @Test func Date() async throws {
-// 	// TODO: fix date double/int conversion issues
-// 	try test(Date.now)
-// }
+@Test func Date() async throws {
+	try test(Date.now)
+}
 
 @Test func UUID() async throws {
   try test(UUID())

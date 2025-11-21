@@ -16,37 +16,6 @@ public struct XPCDecoder {
     return try T(from: decoder)
   }
 
-  func decode(_ type: XPCEndpoint.Type, from root: XPCValue) throws -> XPCEndpoint {
-    guard case .Endpoint(let value) = root else {
-      throw DecodingError.typeMismatch(
-        XPCEndpoint.self,
-        .init(codingPath: [], debugDescription: "Expected endpoint", )
-      )
-    }
-    return value
-  }
-
-  func decode<T: FileHandle>(_ type: T.Type, from root: XPCValue) throws -> T {
-    guard case .FileDescriptor(let value) = root else {
-      throw DecodingError.typeMismatch(
-        FileHandle.self,
-        .init(codingPath: [], debugDescription: "Expected file descriptor", )
-      )
-    }
-    return value.asFileHandle(type: T.self)
-  }
-
-  func decode(_ type: UnsafeMutableRawBufferPointer.Type, from root: XPCValue) throws
-    -> UnsafeMutableRawBufferPointer
-  {
-    guard case .SharedMemory(let value) = root else {
-      throw DecodingError.typeMismatch(
-        UnsafeMutableRawBufferPointer.self,
-        .init(codingPath: [], debugDescription: "Expected shared memory", )
-      )
-    }
-    return value.rawValue
-  }
 }
 
 class _XPCDecoder: Decoder {

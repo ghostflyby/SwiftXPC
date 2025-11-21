@@ -4,20 +4,31 @@ import Foundation
 import XPC
 
 @frozen
-public struct XPCBool: XPCObject, @unchecked Sendable, RawRepresentable,
+public enum XPCBool: XPCObject, @unchecked Sendable, RawRepresentable,
   ExpressibleByBooleanLiteral, Equatable
 {
-  public let xpc_object: xpc_object_t
-  public init(xpc_object: xpc_object_t) {
-    self.xpc_object = xpc_object
+  public var xpc_object: xpc_object_t {
+    switch self {
+    case .XPCTrue:
+      return XPC_BOOL_TRUE
+    case .XPCFalse:
+      return XPC_BOOL_FALSE
+    }
   }
+
+  public init(xpc_object: xpc_object_t) {
+    self.init(xpc_bool_get_value(xpc_object))
+  }
+
+  case XPCTrue
+  case XPCFalse
 
 }
 
 extension XPCBool {
 
   public init(_ value: Bool) {
-    self.xpc_object = xpc_bool_create(value)
+    self = value ? .XPCTrue : .XPCFalse
   }
   public init(rawValue: Bool) {
     self = XPCBool(rawValue)

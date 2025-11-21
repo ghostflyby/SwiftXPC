@@ -73,14 +73,13 @@ public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection)
 }
 
 @MainActor
-var xpcIncomingConnections : AsyncStream<XPCConnection> {
+var xpcIncomingConnections: AsyncStream<XPCConnection> {
   AsyncStream { continuation in
     xpcMain { c in
       continuation.yield(c)
     }
   }
 }
-
 
 public func xpcTransactionBegin() {
   xpc_transaction_begin()
@@ -138,9 +137,18 @@ extension XPCConnection {
     }
   }
 
-  public func send(message: XPCDictionary) -> XPCDictionary {
-    XPCDictionary(
-      xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
+  public func send(message: XPCDictionary) throws(ConnectionError) -> XPCDictionary {
+    let xpc_object = xpc_connection_send_message_with_reply_sync(
+      xpc_object,
+      message.xpc_object
+    )
+    if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INVALID) {
+      throw ConnectionError.invalid
+    } else if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INTERRUPTED) {
+      throw ConnectionError.interupted
+    } else {
+      return XPCDictionary(xpc_object: xpc_object)
+    }
   }
 
 }

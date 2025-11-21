@@ -72,6 +72,16 @@ public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection)
   xpc_main { c in m(c) }
 }
 
+@MainActor
+var xpcIncomingConnections : AsyncStream<XPCConnection> {
+  AsyncStream { continuation in
+    xpcMain { c in
+      continuation.yield(c)
+    }
+  }
+}
+
+
 public func xpcTransactionBegin() {
   xpc_transaction_begin()
 }
@@ -106,10 +116,10 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  private func sendInternal(message: XPCDictionary, replyQueue: DispatchQueue? = nil) async
-    -> XPCObjectUnknown
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
+    async throws(ConnectionError) -> XPCDictionary
   {
-    await withCheckedContinuation { continuation in
+    let r = await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
         xpc_object,
         message.xpc_object,
@@ -118,14 +128,7 @@ extension XPCConnection {
           continuation.resume(returning: XPCObjectUnknown(xpc_object: xpc_object))
         }
       )
-    }
-  }
-
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
-    async throws(ConnectionError) -> XPCDictionary
-  {
-
-    let r = await sendInternal(message: message, replyQueue: replyQueue).xpc_object
+    }.xpc_object
     if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
       throw ConnectionError.invalid
     } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {

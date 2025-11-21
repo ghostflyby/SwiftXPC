@@ -8,7 +8,7 @@ import Foundation
 /// * Implement `XPCMarshalCodable` for types that can be marshaled using Codable.
 ///
 /// DO NOT implement both
-public protocol XPCBaseMarshal: ~Copyable {
+public protocol XPCBaseMarshal {
   /// Marshals the value into an XPC object.
   func marshal() throws -> any XPCObject
   /// Unmarshals a value from an XPC object.

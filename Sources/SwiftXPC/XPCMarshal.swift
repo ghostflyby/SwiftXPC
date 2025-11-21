@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
-import Foundation
+import Foundation.NSFileHandle
 
 /// A protocol for types that can be marshaled to and from XPC objects.
 ///

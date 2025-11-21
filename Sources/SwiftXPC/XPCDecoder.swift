@@ -82,7 +82,7 @@ private struct XPCKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingContainer
   }
 
   var allKeys: [Key] {
-    dictionary.keys.map { Key(stringValue: $0) }.compactMap { $0 }
+    dictionary.keys.compactMap { Key(stringValue: $0) }
   }
 
   func contains(_ key: Key) -> Bool {

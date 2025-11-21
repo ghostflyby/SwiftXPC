@@ -22,7 +22,7 @@ import Testing
 }
 
 @Test func Date() async throws {
-	try test(Date.now)
+  try test(Date.now)
 }
 
 @Test func UUID() async throws {

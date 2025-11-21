@@ -46,11 +46,11 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func setEventHandler(handler: @escaping @Sendable (XPCValue) -> Void) {
+  public func setEventHandler(handler: @escaping @Sendable (XPCDictionary) -> Void) {
     xpc_connection_set_event_handler(
       xpc_object,
       { xpc_object in
-        let obj = XPCValue(xpc_object)
+        let obj = XPCDictionary(xpc_object: xpc_object)
         handler(obj)
       }
     )
@@ -91,10 +91,7 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func send(message: XPCValue) {
-    xpc_connection_send_message(xpc_object, message.xpc_object)
-  }
-  public func send(message: any XPCObject) {
+  public func send(message: XPCDictionary) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
@@ -102,22 +99,22 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) async -> XPCValue {
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) async -> XPCDictionary {
     await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
         xpc_object,
         message.xpc_object,
         replyQueue,
         { xpc_object in
-          let obj = XPCValue(xpc_object)
+          let obj = XPCDictionary(xpc_object: xpc_object)
           continuation.resume(returning: obj)
         }
       )
     }
   }
 
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) -> XPCValue {
-    XPCValue(xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) -> XPCDictionary {
+    XPCDictionary(xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
   }
 
 }
@@ -274,8 +271,8 @@ public struct XPCEndpoint: XPCObject, @unchecked Sendable {
     self.xpc_object = xpc_object
   }
 
-  public init(name: XPCConnection) {
-    xpc_object = xpc_endpoint_create(name.xpc_object)
+  public init(connection: XPCConnection) {
+    xpc_object = xpc_endpoint_create(connection.xpc_object)
   }
 
 }

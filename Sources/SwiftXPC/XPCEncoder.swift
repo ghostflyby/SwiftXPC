@@ -370,24 +370,7 @@ struct XPCSingleValueEncodingContainer: SingleValueEncodingContainer {
 
 extension XPCValue {
   fileprivate var containerKindDescription: String {
-    switch self {
-    case .Bool: return "bool"
-    case .Data: return "data"
-    case .Double: return "double"
-    case .Int64: return "int64"
-    case .UInt64: return "uint64"
-    case .String: return "string"
-    case .FileDescriptor: return "file descriptor"
-    case .Date: return "date"
-    case .UUID: return "uuid"
-    case .SharedMemory: return "shared memory"
-    case .Null: return "null"
-    case .Activity: return "activity"
-    case .Connection: return "connection"
-    case .Endpoint: return "endpoint"
-    case .Dictionary: return "dictionary"
-    case .Array: return "array"
-    case .RichError: return "rich error"
-    }
+    let name = xpc_type_get_name(xpc_get_type(xpc_object))
+    return Swift.String(cString: name)
   }
 }

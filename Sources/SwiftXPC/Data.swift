@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
-import XPC
 import Foundation.NSData
+import XPC
 
 @frozen
 public enum XPCBool: XPCObject, @unchecked Sendable, RawRepresentable,

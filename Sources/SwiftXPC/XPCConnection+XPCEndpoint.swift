@@ -46,11 +46,11 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func setEventHandler(handler: @escaping @Sendable (XPCDictionary) -> Void) {
+  public func setEventHandler(handler: @escaping @Sendable (XPCObjectUnknown) -> Void) {
     xpc_connection_set_event_handler(
       xpc_object,
       { xpc_object in
-        let obj = XPCDictionary(xpc_object: xpc_object)
+        let obj = XPCObjectUnknown(xpc_object: xpc_object)
         handler(obj)
       }
     )
@@ -93,7 +93,7 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func send(message: XPCDictionary) {
+  public func send(message: XPCObjectUnknown) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
@@ -101,7 +101,8 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) async -> XPCDictionary
+  public func send(message: XPCObjectUnknown, replyQueue: DispatchQueue? = nil) async
+    -> XPCObjectUnknown
   {
     await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
@@ -109,15 +110,16 @@ extension XPCConnection {
         message.xpc_object,
         replyQueue,
         { xpc_object in
-          let obj = XPCDictionary(xpc_object: xpc_object)
+          let obj = XPCObjectUnknown(xpc_object: xpc_object)
           continuation.resume(returning: obj)
         }
       )
     }
   }
 
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) -> XPCDictionary {
-    XPCDictionary(
+  public func send(message: XPCObjectUnknown, replyQueue: DispatchQueue? = nil) -> XPCObjectUnknown
+  {
+    XPCObjectUnknown(
       xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
   }
 
@@ -173,42 +175,27 @@ extension XPCConnection {
   }
 
   private func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: any XPCObject
+    _ entitlement: String, object: xpc_object_t
   ) -> Bool {
     xpc_connection_set_peer_entitlement_matches_value_requirement(
-      xpc_object, entitlement, value.xpc_object) == 0
-  }
-
-  public func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: XPCInt64
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: value as any XPCObject)
-  }
-  public func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: XPCBool
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: value as any XPCObject)
-  }
-  public func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: XPCString
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: value as any XPCObject)
+      xpc_object, entitlement, object) == 0
   }
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Int64
   ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: XPCInt64(value))
+    setPeerEntitlementMatchesValueRequirement(entitlement, object: xpc_int64_create(value))
   }
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Bool
   ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: XPCBool(value))
+    setPeerEntitlementMatchesValueRequirement(
+      entitlement, object: value ? XPC_BOOL_TRUE : XPC_BOOL_FALSE)
   }
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: String
   ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: XPCString(value))
+    setPeerEntitlementMatchesValueRequirement(entitlement, object: xpc_string_create(value))
   }
 
   private func setPeerLightweightCodeRequirement(_ requirement: any XPCObject) -> Bool {
@@ -216,7 +203,7 @@ extension XPCConnection {
       xpc_object, requirement.xpc_object) == 0
   }
 
-  public func setPeerLightweightCodeRequirement(_ requirement: XPCDictionary) -> Bool {
+  public func setPeerLightweightCodeRequirement(_ requirement: XPCObjectUnknown) -> Bool {
     setPeerLightweightCodeRequirement(requirement as any XPCObject)
   }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Testing
+import XPC
 
 @testable import SwiftXPC
 
@@ -60,10 +61,11 @@ import Testing
 
 @Test func UUIDDelicated() async throws {
   let xpc = try UUID.init().marshal()
-  let xpcValue = XPCValue(xpc_object: xpc.xpc_object)
-  guard case .UUID = xpcValue else {
+  let type = xpc_get_type(xpc.xpc_object)
+  guard type == XPC_TYPE_UUID else {
     throw NSError(
-      domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected XPCValue.UUID"])
+      domain: "TestError", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Expected XPC_TYPE_UUID but got \(type)"])
   }
 }
 

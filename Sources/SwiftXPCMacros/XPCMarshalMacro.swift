@@ -5,6 +5,7 @@ import SwiftDiagnostics
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+import XPC
 
 @main
 struct SwiftXPCPlugin: CompilerPlugin {
@@ -67,32 +68,63 @@ public struct XPCMarshalMacro: ExtensionMacro {
       let key = property.name
       if property.isOptional {
         let wrapped = property.wrappedTypeText
-        return
-          "    let \(key): \(property.type) = try {\n      guard let raw: SwiftXPC.XPCValue = dict[\"\(key)\"] else { return nil }\n      switch raw {\n      case .Null: return nil\n      default: return try \(wrapped).unmarshal(from: raw)\n      }\n    }()"
+        return """
+          let \(key): \(property.type) = try {
+            guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { return nil }
+            if xpc_get_type(rawPtr) == XPC_TYPE_NULL { return nil }
+            let raw = SwiftXPC.XPCObjectUnknown(xpc_object: rawPtr)
+            return try \(wrapped).unmarshal(from: raw)
+          }()
+          """
       } else {
-        return
-          "    let \(key): \(property.type) = try {\n      guard let raw: SwiftXPC.XPCValue = dict[\"\(key)\"] else { throw SwiftXPC.XPCMarshalError.missingKey(\"\(key)\") }\n      return try \(property.type).unmarshal(from: raw)\n    }()"
+        return """
+          let \(key): \(property.type) = try {
+            guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { throw SwiftXPC.XPCMarshalError.missingKey("\(key)") }
+            let raw = SwiftXPC.XPCObjectUnknown(xpc_object: rawPtr)
+            return try \(property.type).unmarshal(from: raw)
+          }()
+          """
       }
     }.joined(separator: "\n")
 
     let arguments = properties.map { "\($0.name): \($0.name)" }.joined(separator: ", ")
 
     return
-      "  static func unmarshal(from object: any XPCObject) throws -> Self {\n    let value = SwiftXPC.XPCValue(xpc_object: object.xpc_object)\n    guard case .Dictionary(let dict) = value else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: value) }\n\(bindings)\n    return \(typeName)(\(arguments))\n  }"
+      """
+      static func unmarshal(from object: any XPCObject) throws -> Self {
+        let type = xpc_get_type(object.xpc_object)
+        guard type == XPC_TYPE_DICTIONARY else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type)) }
+        let dict = object.xpc_object
+        \(bindings)
+        return \(typeName)(\(arguments))
+      }
+      """
   }
 
   private static func encodeFunction(for properties: [Property]) -> String {
     let assignments = properties.map { property in
       if property.isOptional {
-        return
-          "    if let value = self.\(property.name) { dict[\"\(property.name)\"] = try value.marshal() } else { dict[\"\(property.name)\"] = SwiftXPC.XPCNull() }"
+        return """
+          if let value = self.\(property.name) {
+            xpc_dictionary_set_value(dict, \"\(property.name)\", try value.marshal().xpc_object)
+          } else {
+            xpc_dictionary_set_value(dict, \"\(property.name)\", xpc_null_create())
+          }
+          """
       } else {
-        return "    dict[\"\(property.name)\"] = try self.\(property.name).marshal()"
+        return """
+          xpc_dictionary_set_value(dict, \"\(property.name)\", try self.\(property.name).marshal().xpc_object)
+          """
       }
     }.joined(separator: "\n")
 
-    return
-      "  func marshal() throws -> any XPCObject {\n    var dict = SwiftXPC.XPCDictionary()\n\(assignments)\n    return dict\n  }"
+    return """
+      func marshal() throws -> any XPCObject {
+        let dict = xpc_dictionary_create(nil, nil, 0)
+      \(assignments)
+        return SwiftXPC.XPCObjectUnknown(xpc_object: dict)
+      }
+      """
   }
 }
 

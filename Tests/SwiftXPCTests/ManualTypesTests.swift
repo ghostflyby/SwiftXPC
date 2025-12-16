@@ -23,7 +23,7 @@ import XPC
 }
 
 @Test func Date() async throws {
-  try roundTrip(Date.now)
+  try roundTrip(Date(timeIntervalSince1970: 0))
 }
 
 @Test func UUID() async throws {

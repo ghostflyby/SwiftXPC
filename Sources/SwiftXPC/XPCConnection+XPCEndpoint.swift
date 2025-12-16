@@ -57,21 +57,6 @@ extension XPCConnection {
   }
 }
 
-@MainActor
-private var mainHandler: @Sendable (XPCConnection) -> Void = { _ in }
-
-@MainActor
-private func m(_ c: xpc_connection_t) {
-  let connection = XPCConnection(xpc_object: c)
-  mainHandler(connection)
-}
-
-@MainActor
-public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection) -> Void) -> Never {
-  mainHandler = handler
-  xpc_main { c in m(c) }
-}
-
 public func xpcTransactionBegin() {
   xpc_transaction_begin()
 }

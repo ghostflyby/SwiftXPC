@@ -81,7 +81,7 @@ public func xpcTransactionEnd() {
 }
 
 extension XPCConnection {
-  
+
   @available(macOS 12.0, *)
   public var invalidationReason: String? {
     if let s = xpc_connection_copy_invalidation_reason(xpc_object) {
@@ -101,7 +101,8 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) async -> XPCDictionary {
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) async -> XPCDictionary
+  {
     await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
         xpc_object,
@@ -116,7 +117,8 @@ extension XPCConnection {
   }
 
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) -> XPCDictionary {
-    XPCDictionary(xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
+    XPCDictionary(
+      xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
   }
 
 }

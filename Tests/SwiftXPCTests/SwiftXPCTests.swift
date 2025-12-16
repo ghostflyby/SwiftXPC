@@ -22,7 +22,7 @@ import Testing
 }
 
 @Test func Date() async throws {
-	try test(Date.now)
+  try test(Date.now)
 }
 
 @Test func UUID() async throws {
@@ -58,10 +58,6 @@ import Testing
   try test(["outerKey": ["innerKey": 1]])
 }
 
-struct FileHandleWrapper: XPCMarshalCodable {
-  @XPC var handle: FileHandle
-}
-
 @Test func UUIDDelicated() async throws {
   let xpc = try UUID.init().marshal()
   let xpcValue = XPCValue(xpc_object: xpc.xpc_object)
@@ -72,15 +68,30 @@ struct FileHandleWrapper: XPCMarshalCodable {
 }
 
 @Test func FileHandle() async throws {
-  let original = FileHandleWrapper(handle: FileHandle.standardOutput)
+  let original = FileHandle.standardOutput
   let v = try original.marshal()
-  let _ = try FileHandleWrapper.unmarshal(from: v)
+  let decoded = try FileHandle.unmarshal(from: v)
+  _ = decoded.fileDescriptor
 }
 
-typealias XPCEquatable = XPCBaseMarshal & Equatable
+typealias XPCEquatable = XPCMarshal & Equatable
 
 func test<T: XPCEquatable>(_ _value: T) throws {
   let v = try _value.marshal()
   let d = try T.unmarshal(from: v)
   assert(_value == d)
+}
+
+@XPCMarshal
+struct Greeting: Equatable {
+  let id: Int
+  let message: String
+  let note: String?
+}
+
+@Test func XPCCodableMacroRoundTrip() async throws {
+  let value = Greeting(id: 42, message: "hi", note: Optional<String>.none)
+  let encoded = try value.marshal()
+  let decoded = try Greeting.unmarshal(from: encoded)
+  assert(value == decoded)
 }

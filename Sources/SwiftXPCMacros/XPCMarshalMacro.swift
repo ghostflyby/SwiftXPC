@@ -71,7 +71,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
           let \(key): \(property.type) = try {
             guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { return nil }
             if xpc_get_type(rawPtr) == XPC_TYPE_NULL { return nil }
-            let raw = SwiftXPC.XPCObjectUnknown(xpc_object: rawPtr)
+            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
             return try .unmarshal(from: raw)
           }()
           """
@@ -79,7 +79,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
         return """
           let \(key): \(property.type) = try {
             guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { throw SwiftXPC.XPCMarshalError.missingKey("\(key)") }
-            let raw = SwiftXPC.XPCObjectUnknown(xpc_object: rawPtr)
+            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
             return try .unmarshal(from: raw)
           }()
           """
@@ -90,7 +90,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
 
     return
       """
-      static func unmarshal(from object: any XPCObject) throws -> Self {
+      static func unmarshal(from object: XPCObject) throws -> Self {
         let type = xpc_get_type(object.xpc_object)
         guard type == XPC_TYPE_DICTIONARY else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type)) }
         let dict = object.xpc_object
@@ -118,10 +118,10 @@ public struct XPCMarshalMacro: ExtensionMacro {
     }.joined(separator: "\n")
 
     return """
-      func marshal() throws -> any XPCObject {
+      func marshal() throws -> XPCObject {
         let dict = xpc_dictionary_create(nil, nil, 0)
       \(assignments)
-        return SwiftXPC.XPCObjectUnknown(xpc_object: dict)
+        return SwiftXPC.XPCObject(xpc_object: dict)
       }
       """
   }

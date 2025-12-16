@@ -3,20 +3,13 @@
 import XPC
 
 @frozen
-public struct XPCConnection: XPCObject, @unchecked Sendable {
-  public let xpc_object: xpc_connection_t
-  public init(xpc_object: xpc_connection_t) {
-    self.xpc_object = xpc_object
-  }
+public struct XPCConnection: @unchecked Sendable {
+  internal let xpc_object: xpc_connection_t
 }
 
 extension XPCConnection {
   public init(name: String?, dispatchQueue: DispatchQueue? = nil) {
     xpc_object = xpc_connection_create(name, dispatchQueue)
-  }
-
-  public init(endpoint: XPCEndpoint, dispatchQueue: DispatchQueue? = nil) {
-    xpc_object = xpc_connection_create_from_endpoint(endpoint.xpc_object)
   }
 
   public enum MachServiceFlag {
@@ -46,11 +39,11 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func setEventHandler(handler: @escaping @Sendable (XPCObjectUnknown) -> Void) {
+  public func setEventHandler(handler: @escaping @Sendable (XPCObject) -> Void) {
     xpc_connection_set_event_handler(
       xpc_object,
       { xpc_object in
-        let obj = XPCObjectUnknown(xpc_object: xpc_object)
+        let obj = XPCObject(xpc_object: xpc_object)
         handler(obj)
       }
     )
@@ -78,7 +71,7 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func send(message: XPCObjectUnknown) {
+  public func send(message: XPCObject) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
@@ -86,8 +79,8 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  public func send(message: XPCObjectUnknown, replyQueue: DispatchQueue? = nil) async
-    -> XPCObjectUnknown
+  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil) async
+    -> XPCObject
   {
     await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
@@ -95,16 +88,15 @@ extension XPCConnection {
         message.xpc_object,
         replyQueue,
         { xpc_object in
-          let obj = XPCObjectUnknown(xpc_object: xpc_object)
+          let obj = XPCObject(xpc_object: xpc_object)
           continuation.resume(returning: obj)
         }
       )
     }
   }
 
-  public func send(message: XPCObjectUnknown, replyQueue: DispatchQueue? = nil) -> XPCObjectUnknown
-  {
-    XPCObjectUnknown(
+  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil) -> XPCObject {
+    XPCObject(
       xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
   }
 
@@ -183,13 +175,9 @@ extension XPCConnection {
     setPeerEntitlementMatchesValueRequirement(entitlement, object: xpc_string_create(value))
   }
 
-  private func setPeerLightweightCodeRequirement(_ requirement: any XPCObject) -> Bool {
+  private func setPeerLightweightCodeRequirement(_ requirement: XPCObject) -> Bool {
     xpc_connection_set_peer_lightweight_code_requirement(
       xpc_object, requirement.xpc_object) == 0
-  }
-
-  public func setPeerLightweightCodeRequirement(_ requirement: XPCObjectUnknown) -> Bool {
-    setPeerLightweightCodeRequirement(requirement as any XPCObject)
   }
 
   public func setPeerPlatformIdentityRequirement(_ signingIdentifier: String?) -> Bool {
@@ -238,17 +226,16 @@ private final class Box<T> where T: Sendable {
   init(_ value: consuming T) { self.value = value }
 }
 
-@frozen
-public struct XPCEndpoint: XPCObject, @unchecked Sendable {
-
-  public let xpc_object: xpc_endpoint_t
-
-  public init(xpc_object: xpc_endpoint_t) {
-    self.xpc_object = xpc_object
+extension XPCConnection: XPCMarshal {
+  public func marshal() throws -> XPCObject {
+    XPCObject(xpc_object: xpc_endpoint_create(self.xpc_object))
   }
 
-  public init(connection: XPCConnection) {
-    xpc_object = xpc_endpoint_create(connection.xpc_object)
+  public static func unmarshal(from object: XPCObject) throws -> XPCConnection {
+    let type = xpc_get_type(object.xpc_object)
+    guard type == XPC_TYPE_ENDPOINT else {
+      throw typeMismatch(XPCConnection.self, object, actual: type)
+    }
+    return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object.xpc_object))
   }
-
 }

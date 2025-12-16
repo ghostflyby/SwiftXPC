@@ -3,20 +3,13 @@
 import XPC
 
 @frozen
-public struct XPCConnection: XPCObject, @unchecked Sendable {
-  public let xpc_object: xpc_connection_t
-  public init(xpc_object: xpc_connection_t) {
-    self.xpc_object = xpc_object
-  }
+public struct XPCConnection: @unchecked Sendable {
+  internal let xpc_object: xpc_connection_t
 }
 
 extension XPCConnection {
   public init(name: String?, dispatchQueue: DispatchQueue? = nil) {
     xpc_object = xpc_connection_create(name, dispatchQueue)
-  }
-
-  public init(endpoint: XPCEndpoint, dispatchQueue: DispatchQueue? = nil) {
-    xpc_object = xpc_connection_create_from_endpoint(endpoint.xpc_object)
   }
 
   public enum MachServiceFlag {
@@ -46,38 +39,14 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func setEventHandler(handler: @escaping @Sendable (XPCDictionary) -> Void) {
+  public func setEventHandler(handler: @escaping @Sendable (XPCObject) -> Void) {
     xpc_connection_set_event_handler(
       xpc_object,
       { xpc_object in
-        let obj = XPCDictionary(xpc_object: xpc_object)
+        let obj = XPCObject(xpc_object: xpc_object)
         handler(obj)
       }
     )
-  }
-}
-
-@MainActor
-private var mainHandler: @Sendable (XPCConnection) -> Void = { _ in }
-
-@MainActor
-private func m(_ c: xpc_connection_t) {
-  let connection = XPCConnection(xpc_object: c)
-  mainHandler(connection)
-}
-
-@MainActor
-public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection) -> Void) -> Never {
-  mainHandler = handler
-  xpc_main { c in m(c) }
-}
-
-@MainActor
-var xpcIncomingConnections: AsyncStream<XPCConnection> {
-  AsyncStream { continuation in
-    xpcMain { c in
-      continuation.yield(c)
-    }
   }
 }
 
@@ -107,7 +76,7 @@ extension XPCConnection {
     case interupted
   }
 
-  public func send(message: XPCDictionary) {
+  public func send(message: XPCObject) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
@@ -115,8 +84,9 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
-    async throws(ConnectionError) -> XPCDictionary
+  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil)
+    async throws(ConnectionError)
+    -> XPCObject
   {
     let r = await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
@@ -124,7 +94,7 @@ extension XPCConnection {
         message.xpc_object,
         replyQueue,
         { xpc_object in
-          continuation.resume(returning: XPCObjectUnknown(xpc_object: xpc_object))
+          continuation.resume(returning: XPCObject(xpc_object: xpc_object))
         }
       )
     }.xpc_object
@@ -133,22 +103,13 @@ extension XPCConnection {
     } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
       throw ConnectionError.interupted
     } else {
-      return XPCDictionary(xpc_object: r)
+      return XPCObject(xpc_object: r)
     }
   }
 
-  public func send(message: XPCDictionary) throws(ConnectionError) -> XPCDictionary {
-    let xpc_object = xpc_connection_send_message_with_reply_sync(
-      xpc_object,
-      message.xpc_object
-    )
-    if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INVALID) {
-      throw ConnectionError.invalid
-    } else if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INTERRUPTED) {
-      throw ConnectionError.interupted
-    } else {
-      return XPCDictionary(xpc_object: xpc_object)
-    }
+  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil) -> XPCObject {
+    XPCObject(
+      xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
   }
 
 }
@@ -203,51 +164,32 @@ extension XPCConnection {
   }
 
   private func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: any XPCObject
+    _ entitlement: String, object: xpc_object_t
   ) -> Bool {
     xpc_connection_set_peer_entitlement_matches_value_requirement(
-      xpc_object, entitlement, value.xpc_object) == 0
-  }
-
-  public func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: XPCInt64
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: value as any XPCObject)
-  }
-  public func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: XPCBool
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: value as any XPCObject)
-  }
-  public func setPeerEntitlementMatchesValueRequirement(
-    _ entitlement: String, value: XPCString
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: value as any XPCObject)
+      xpc_object, entitlement, object) == 0
   }
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Int64
   ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: XPCInt64(value))
+    setPeerEntitlementMatchesValueRequirement(entitlement, object: xpc_int64_create(value))
   }
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Bool
   ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: XPCBool(value))
+    setPeerEntitlementMatchesValueRequirement(
+      entitlement, object: value ? XPC_BOOL_TRUE : XPC_BOOL_FALSE)
   }
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: String
   ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, value: XPCString(value))
+    setPeerEntitlementMatchesValueRequirement(entitlement, object: xpc_string_create(value))
   }
 
-  private func setPeerLightweightCodeRequirement(_ requirement: any XPCObject) -> Bool {
+  private func setPeerLightweightCodeRequirement(_ requirement: XPCObject) -> Bool {
     xpc_connection_set_peer_lightweight_code_requirement(
       xpc_object, requirement.xpc_object) == 0
-  }
-
-  public func setPeerLightweightCodeRequirement(_ requirement: XPCDictionary) -> Bool {
-    setPeerLightweightCodeRequirement(requirement as any XPCObject)
   }
 
   public func setPeerPlatformIdentityRequirement(_ signingIdentifier: String?) -> Bool {
@@ -296,17 +238,16 @@ private final class Box<T> where T: Sendable {
   init(_ value: consuming T) { self.value = value }
 }
 
-@frozen
-public struct XPCEndpoint: XPCObject, @unchecked Sendable {
-
-  public let xpc_object: xpc_endpoint_t
-
-  public init(xpc_object: xpc_endpoint_t) {
-    self.xpc_object = xpc_object
+extension XPCConnection: XPCMarshal {
+  public func marshal() throws -> XPCObject {
+    XPCObject(xpc_object: xpc_endpoint_create(self.xpc_object))
   }
 
-  public init(connection: XPCConnection) {
-    xpc_object = xpc_endpoint_create(connection.xpc_object)
+  public static func unmarshal(from object: XPCObject) throws -> XPCConnection {
+    let type = xpc_get_type(object.xpc_object)
+    guard type == XPC_TYPE_ENDPOINT else {
+      throw typeMismatch(XPCConnection.self, object, actual: type)
+    }
+    return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object.xpc_object))
   }
-
 }

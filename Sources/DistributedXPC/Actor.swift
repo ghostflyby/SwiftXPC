@@ -15,17 +15,17 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   public typealias ResultHandler = XPCInvocationResultHandler
   public typealias InvocationEncoder = XPCInvocationEncoder
   public typealias InvocationDecoder = XPCInvocationDecoder
-  public typealias SerializationRequirement = XPCBaseMarshal
+  public typealias SerializationRequirement = XPCMarshal
 
   private let activeActorsLock: Mutex<[ActorID: any DistributedActor]> = Mutex([:])
 
   private let ids = Atomic<UInt64>(0)
   private let assignedIDsLock: Mutex<Set<ActorID>> = Mutex([])
 
-  public let connection: XPCConnection 
+  public let connection: XPCConnection
 
   public init(connection: XPCConnection) {
-	self.connection = connection
+    self.connection = connection
   }
 
   public func resolve<Act>(id: ActorID, as actorType: Act.Type)
@@ -105,7 +105,7 @@ public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
 
 @available(macOS 13.0, *)
 public struct XPCInvocationEncoder: DistributedTargetInvocationEncoder {
-  public typealias SerializationRequirement = XPCBaseMarshal
+  public typealias SerializationRequirement = XPCMarshal
 
   public mutating func recordGenericSubstitution<T>(_ type: T.Type) throws {
   }
@@ -127,7 +127,7 @@ public struct XPCInvocationEncoder: DistributedTargetInvocationEncoder {
 }
 
 public final class XPCInvocationDecoder: DistributedTargetInvocationDecoder {
-  public typealias SerializationRequirement = XPCBaseMarshal
+  public typealias SerializationRequirement = XPCMarshal
 
   public func decodeGenericSubstitutions() throws -> [Any.Type] {
     fatalError("Attempted to call decoder method in a local-only actor system")
@@ -147,7 +147,7 @@ public final class XPCInvocationDecoder: DistributedTargetInvocationDecoder {
 }
 
 public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandler {
-  public typealias SerializationRequirement = XPCBaseMarshal
+  public typealias SerializationRequirement = XPCMarshal
   public func onReturn<Success: SerializationRequirement>(value: Success) async throws {
     fatalError("Attempted to call decoder method in a local-only actor system")
   }

@@ -67,13 +67,12 @@ public struct XPCMarshalMacro: ExtensionMacro {
     let bindings = properties.map { property in
       let key = property.name
       if property.isOptional {
-        let wrapped = property.wrappedTypeText
         return """
           let \(key): \(property.type) = try {
             guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { return nil }
             if xpc_get_type(rawPtr) == XPC_TYPE_NULL { return nil }
             let raw = SwiftXPC.XPCObjectUnknown(xpc_object: rawPtr)
-            return try \(wrapped).unmarshal(from: raw)
+            return try .unmarshal(from: raw)
           }()
           """
       } else {
@@ -81,7 +80,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
           let \(key): \(property.type) = try {
             guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { throw SwiftXPC.XPCMarshalError.missingKey("\(key)") }
             let raw = SwiftXPC.XPCObjectUnknown(xpc_object: rawPtr)
-            return try \(property.type).unmarshal(from: raw)
+            return try .unmarshal(from: raw)
           }()
           """
       }

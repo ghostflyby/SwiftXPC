@@ -197,13 +197,10 @@ extension Data: XPCMarshal {
 
 extension Date: XPCMarshal {
   public func marshal() throws -> any XPCObject {
-    let seconds = Int64(timeIntervalSince1970)
-    return XPCObjectUnknown(xpc_object: xpc_date_create(seconds))
+    return try self.timeIntervalSince1970.marshal()
   }
   public static func unmarshal(from object: any XPCObject) throws -> Self {
-    try ensureType(object, is: XPC_TYPE_DATE, for: Date.self)
-    let seconds = xpc_date_get_value(object.xpc_object)
-    return Date(timeIntervalSince1970: Double(seconds))
+    return try Date(timeIntervalSince1970: Double.unmarshal(from: object))
   }
 }
 

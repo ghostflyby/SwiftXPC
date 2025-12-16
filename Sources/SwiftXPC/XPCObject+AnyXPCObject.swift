@@ -21,7 +21,7 @@ extension XPCObject where Self: Hashable {
 }
 
 @frozen
-public struct XPCObjectUnknown: XPCObject, @unchecked Sendable {
+public struct XPCObjectUnknown: XPCObject, @unchecked Sendable, Equatable, Hashable {
   public let xpc_object: xpc_object_t
   public init(xpc_object: xpc_object_t) {
     self.xpc_object = xpc_object

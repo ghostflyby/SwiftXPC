@@ -84,6 +84,15 @@ struct NestedAggregate: Equatable {
   var metadata: [String: Greeting]
 }
 
+@XPCMarshal
+enum JobState: Equatable {
+  case idle
+  case progress(percent: Int)
+  case message(String)
+  case compound(title: String, retries: Int)
+  case tuple(String, Int)
+}
+
 @Test func XPCCodableMacroRoundTrip() async throws {
   let value = Greeting(id: 42, message: "hi", note: Optional<String>.none)
   let encoded = try value.marshal()
@@ -129,4 +138,12 @@ struct NestedAggregate: Equatable {
   let encoded = try nested.marshal()
   let decoded = try NestedAggregate.unmarshal(from: encoded)
   assert(nested == decoded)
+}
+
+@Test func XPCMarshalEnumRoundTrip() async throws {
+  try roundTrip(JobState.idle)
+  try roundTrip(JobState.progress(percent: 10))
+  try roundTrip(JobState.message("hello"))
+  try roundTrip(JobState.compound(title: "retry", retries: 3))
+  try roundTrip(JobState.tuple("pair", 2))
 }

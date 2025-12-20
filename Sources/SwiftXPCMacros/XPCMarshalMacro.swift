@@ -20,14 +20,21 @@ public struct XPCMarshalMacro: ExtensionMacro {
     conformingTo protocols: [TypeSyntax],
     in context: some MacroExpansionContext
   ) throws -> [ExtensionDeclSyntax] {
-    guard let structDecl = declaration.as(StructDeclSyntax.self) else {
-      context.diagnose(.init(node: Syntax(declaration), message: OnlyStructsAllowed()))
+    let marshalImpl: String
+    let unmarshalImpl: String
+
+    if let structDecl = declaration.as(StructDeclSyntax.self) {
+      let properties = storedProperties(in: structDecl)
+      marshalImpl = encodeFunction(for: properties)
+      unmarshalImpl = decodeFunction(for: properties, typeName: type.trimmed.description)
+    } else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
+      let cases = enumCases(in: enumDecl)
+      marshalImpl = encodeEnumFunction(for: cases)
+      unmarshalImpl = decodeEnumFunction(for: cases, typeName: type.trimmed.description)
+    } else {
+      context.diagnose(.init(node: Syntax(declaration), message: OnlyStructsOrEnumsAllowed()))
       return []
     }
-
-    let properties = storedProperties(in: structDecl)
-    let marshalImpl = encodeFunction(for: properties)
-    let unmarshalImpl = decodeFunction(for: properties, typeName: type.trimmed.description)
 
     let needsConformance = alreadyConformsToXPCMarshal(declaration: declaration) == false
     let conformanceClause = needsConformance ? ": XPCMarshal" : ""
@@ -60,6 +67,33 @@ public struct XPCMarshalMacro: ExtensionMacro {
         return nil
       }
       return Property(name: pattern.identifier.trimmed.text, type: type)
+    }
+  }
+
+  private static func enumCases(in declaration: EnumDeclSyntax) -> [EnumCase] {
+    declaration.memberBlock.members.flatMap { member -> [EnumCase] in
+      guard let enumCaseDecl = member.decl.as(EnumCaseDeclSyntax.self) else {
+        return [] as [EnumCase]
+      }
+      return enumCaseDecl.elements.map { element in
+        let associatedValues: [AssociatedValue]
+        if let parameters = element.parameterClause?.parameters {
+          associatedValues = parameters.enumerated().map { index, parameter in
+            let firstName = parameter.firstName?.text
+            let externalName = firstName == "_" ? nil : firstName
+            let binding = parameter.secondName?.text ?? externalName ?? "value\(index)"
+            return AssociatedValue(
+              label: externalName,
+              binding: binding,
+              type: parameter.type
+            )
+          }
+        } else {
+          associatedValues = []
+        }
+
+        return EnumCase(name: element.name.text, associatedValues: associatedValues)
+      }
     }
   }
 
@@ -125,6 +159,140 @@ public struct XPCMarshalMacro: ExtensionMacro {
       }
       """
   }
+
+  private static func encodeEnumFunction(for cases: [EnumCase]) -> String {
+    let caseBranches = cases.map { enumCase in
+      if enumCase.associatedValues.isEmpty {
+        return """
+          case .\(enumCase.name):
+            xpc_dictionary_set_value(dict, \"case\", xpc_string_create(\"\(enumCase.name)\"))
+          """
+      }
+
+      let bindingList = enumCase.associatedValues.map { "let \($0.binding)" }.joined(
+        separator: ", ")
+      let keys = enumCase.associatedValues.enumerated().map { index, value in
+        value.label ?? String(index)
+      }
+      let payloadEncoding: String
+
+      if enumCase.associatedValues.count == 1, enumCase.associatedValues.first?.label == nil {
+        let value = enumCase.associatedValues[0]
+        payloadEncoding = """
+            let payload = try \(value.binding).marshal().xpc_object
+            xpc_dictionary_set_value(dict, \"payload\", payload)
+          """
+      } else {
+        let payloadAssignments = zip(keys, enumCase.associatedValues).map { key, value in
+          """
+            xpc_dictionary_set_value(payload, \"\(key)\", try \(value.binding).marshal().xpc_object)
+          """
+        }.joined(separator: "\n")
+
+        payloadEncoding = """
+            let payload = xpc_dictionary_create(nil, nil, 0)
+          \(payloadAssignments)
+            xpc_dictionary_set_value(dict, \"payload\", payload)
+          """
+      }
+
+      return """
+        case .\(enumCase.name)(\(bindingList)):
+          xpc_dictionary_set_value(dict, \"case\", xpc_string_create(\"\(enumCase.name)\"))
+        \(payloadEncoding)
+        """
+    }.joined(separator: "\n")
+
+    return """
+      func marshal() throws -> XPCObject {
+        let dict = xpc_dictionary_create(nil, nil, 0)
+        switch self {
+        \(caseBranches)
+        }
+        return SwiftXPC.XPCObject(xpc_object: dict)
+      }
+      """
+  }
+
+  private static func decodeEnumFunction(for cases: [EnumCase], typeName: String) -> String {
+    let caseBranches = cases.map { enumCase in
+      if enumCase.associatedValues.isEmpty {
+        return """
+          case \"\(enumCase.name)\":
+            return .\(enumCase.name)
+          """
+      }
+
+      if enumCase.associatedValues.count == 1, let value = enumCase.associatedValues.first,
+        value.label == nil
+      {
+        return """
+          case \"\(enumCase.name)\":
+            guard let payloadPtr = xpc_dictionary_get_value(dict, \"payload\") else {
+              throw SwiftXPC.XPCMarshalError.missingKey(\"payload\")
+            }
+            let payload = SwiftXPC.XPCObject(xpc_object: payloadPtr)
+            let value = try \(value.type).unmarshal(from: payload)
+            return .\(enumCase.name)(value)
+          """
+      }
+
+      let keys = enumCase.associatedValues.enumerated().map { index, value in
+        value.label ?? String(index)
+      }
+      let valuesDecoding = zip(keys, enumCase.associatedValues).map { key, value in
+        let binding = value.binding
+        return """
+            guard let raw_\(binding) = xpc_dictionary_get_value(payloadDict, \"\(key)\") else {
+              throw SwiftXPC.XPCMarshalError.missingKey(\"\(key)\")
+            }
+            let \(binding) = try \(value.type).unmarshal(from: SwiftXPC.XPCObject(xpc_object: raw_\(binding)))
+          """
+      }.joined(separator: "\n")
+
+      let argumentList = enumCase.associatedValues.map { value in
+        if let label = value.label {
+          return "\(label): \(value.binding)"
+        } else {
+          return value.binding
+        }
+      }.joined(separator: ", ")
+
+      return """
+        case \"\(enumCase.name)\":
+          guard let payloadPtr = xpc_dictionary_get_value(dict, \"payload\") else {
+            throw SwiftXPC.XPCMarshalError.missingKey(\"payload\")
+          }
+          let payloadDict = payloadPtr
+          let payloadType = xpc_get_type(payloadPtr)
+          guard payloadType == XPC_TYPE_DICTIONARY else {
+            throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: payloadType))
+          }
+          \(valuesDecoding)
+          return .\(enumCase.name)(\(argumentList))
+        """
+    }.joined(separator: "\n")
+
+    return """
+      static func unmarshal(from object: XPCObject) throws -> Self {
+        let type = xpc_get_type(object.xpc_object)
+        guard type == XPC_TYPE_DICTIONARY else {
+          throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type))
+        }
+        let dict = object.xpc_object
+        guard let casePtr = xpc_dictionary_get_value(dict, \"case\") else {
+          throw SwiftXPC.XPCMarshalError.missingKey(\"case\")
+        }
+        let caseName = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: casePtr))
+
+        switch caseName {
+        \(caseBranches)
+        default:
+          throw SwiftXPC.XPCMarshalError.unknownEnumCase(caseName, enumName: \"\(typeName)\")
+        }
+      }
+      """
+  }
 }
 
 private struct Property {
@@ -164,8 +332,19 @@ private func alreadyConformsToXPCMarshal(declaration: some DeclGroupSyntax) -> B
   }
 }
 
-private struct OnlyStructsAllowed: DiagnosticMessage {
-  var message: String { "@XPCCodable only supports struct declarations" }
-  var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "onlyStruct") }
+private struct OnlyStructsOrEnumsAllowed: DiagnosticMessage {
+  var message: String { "@XPCMarshal only supports struct or enum declarations" }
+  var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "onlyStructOrEnum") }
   var severity: DiagnosticSeverity { .error }
+}
+
+private struct EnumCase {
+  let name: String
+  let associatedValues: [AssociatedValue]
+}
+
+private struct AssociatedValue {
+  let label: String?
+  let binding: String
+  let type: TypeSyntax
 }

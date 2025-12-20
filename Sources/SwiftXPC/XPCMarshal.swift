@@ -20,6 +20,7 @@ public macro XPCMarshal() = #externalMacro(module: "SwiftXPCMacros", type: "XPCM
 public enum XPCMarshalError: Error, CustomStringConvertible {
   case expectedDictionary(actual: String)
   case missingKey(String)
+  case unknownEnumCase(String, enumName: String)
 
   public var description: String {
     switch self {
@@ -27,6 +28,8 @@ public enum XPCMarshalError: Error, CustomStringConvertible {
       return "Expected XPC dictionary but found \(actual)"
     case .missingKey(let key):
       return "Missing key \(key) in XPC dictionary"
+    case .unknownEnumCase(let name, let enumName):
+      return "Unknown case \(name) for enum \(enumName)"
     }
   }
 }

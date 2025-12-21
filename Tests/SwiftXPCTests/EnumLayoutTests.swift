@@ -41,3 +41,13 @@ import XPC
   let retries = try Int.unmarshal(from: SwiftXPC.XPCObject(xpc_object: retriesPtr))
   assert(retries == 3)
 }
+
+@Test func RawEnumLayout() async throws {
+  let encoded = try RawMode.on.marshal()
+  let object = encoded.xpc_object
+  let type = xpc_get_type(object)
+  assert(type == XPC_TYPE_STRING)
+
+  let value = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: object))
+  assert(value == "on")
+}

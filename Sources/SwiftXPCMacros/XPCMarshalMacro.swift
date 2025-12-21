@@ -28,7 +28,15 @@ public struct XPCMarshalMacro: ExtensionMacro {
       marshalImpl = encodeFunction(for: properties)
       unmarshalImpl = decodeFunction(for: properties, typeName: type.trimmed.description)
     } else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
-      if let rawType = rawEnumType(in: enumDecl) {
+      if let rawType = rawEnumCandidateType(in: enumDecl) {
+        guard isSupportedRawEnumType(rawType) else {
+          context.diagnose(
+            .init(
+              node: Syntax(enumDecl), message: InvalidRawEnumType(type: rawType.trimmed.description)
+            )
+          )
+          return []
+        }
         marshalImpl = encodeRawEnumFunction(for: rawType)
         unmarshalImpl = decodeRawEnumFunction(for: rawType, typeName: type.trimmed.description)
       } else {
@@ -102,7 +110,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
     }
   }
 
-  private static func rawEnumType(in declaration: EnumDeclSyntax) -> TypeSyntax? {
+  private static func rawEnumCandidateType(in declaration: EnumDeclSyntax) -> TypeSyntax? {
     let cases = enumCases(in: declaration)
     if cases.contains(where: { $0.associatedValues.isEmpty == false }) {
       return nil
@@ -130,6 +138,29 @@ public struct XPCMarshalMacro: ExtensionMacro {
       return nil
     }
     return rawType
+  }
+
+  private static func isSupportedRawEnumType(_ type: TypeSyntax) -> Bool {
+    let rawTypeName = type.trimmed.description
+    let supported: Set<String> = [
+      "String",
+      "Character",
+      "Int",
+      "Int8",
+      "Int16",
+      "Int32",
+      "Int64",
+      "UInt",
+      "UInt8",
+      "UInt16",
+      "UInt32",
+      "UInt64",
+      "Float",
+      "Float16",
+      "Double",
+      "Float80",
+    ]
+    return supported.contains(rawTypeName)
   }
 
   private static func decodeFunction(for properties: [Property], typeName: String) -> String {
@@ -354,6 +385,15 @@ private func alreadyConformsToXPCMarshal(declaration: some DeclGroupSyntax) -> B
 private struct OnlyStructsOrEnumsAllowed: DiagnosticMessage {
   var message: String { "@XPCMarshal only supports struct or enum declarations" }
   var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "onlyStructOrEnum") }
+  var severity: DiagnosticSeverity { .error }
+}
+
+private struct InvalidRawEnumType: DiagnosticMessage {
+  let type: String
+  var message: String {
+    "@XPCMarshal raw enums only support String, Character, or integer/floating-point raw types (found \(type))"
+  }
+  var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "invalidRawEnumType") }
   var severity: DiagnosticSeverity { .error }
 }
 

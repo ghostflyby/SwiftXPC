@@ -88,3 +88,9 @@ enum JobState: Equatable {
   case compound(title: String, retries: Int)
   case tuple(String, Int)
 }
+
+@XPCMarshal
+enum RawMode: String, Equatable {
+  case off = "off"
+  case on = "on"
+}

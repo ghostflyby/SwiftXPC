@@ -81,6 +81,14 @@ struct NestedAggregate: Equatable {
 }
 
 @XPCMarshal
+@frozen
+public struct FrozenGreeting: Equatable {
+  let id: Int
+  let message: String
+  let note: String?
+}
+
+@XPCMarshal
 enum JobState: Equatable {
   case idle
   case progress(percent: Int)

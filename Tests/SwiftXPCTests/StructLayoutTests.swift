@@ -29,3 +29,23 @@ import XPC
   }
   assert(xpc_get_type(notePtr) == XPC_TYPE_NULL)
 }
+
+@Test func FrozenStructXPCLayout() async throws {
+  let value = FrozenGreeting(id: 1, message: "hello", note: nil)
+  let encoded = try value.marshal()
+  let object = encoded.xpc_object
+  let type = xpc_get_type(object)
+  assert(type == XPC_TYPE_ARRAY)
+  assert(xpc_array_get_count(object) == 3)
+
+  let idPtr = xpc_array_get_value(object, 0)
+  let id = try Int.unmarshal(from: SwiftXPC.XPCObject(xpc_object: idPtr))
+  assert(id == 1)
+
+  let messagePtr = xpc_array_get_value(object, 1)
+  let message = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: messagePtr))
+  assert(message == "hello")
+
+  let notePtr = xpc_array_get_value(object, 2)
+  assert(xpc_get_type(notePtr) == XPC_TYPE_NULL)
+}

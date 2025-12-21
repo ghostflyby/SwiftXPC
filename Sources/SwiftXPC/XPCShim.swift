@@ -37,6 +37,10 @@ public func xpcArrayAppendValue(_ array: xpc_object_t, _ value: xpc_object_t) {
   XPC.xpc_array_append_value(array, value)
 }
 
+public func xpcArrayGetCount(_ array: xpc_object_t) -> Int {
+  XPC.xpc_array_get_count(array)
+}
+
 public func xpcArrayGetValue(_ array: xpc_object_t, _ index: Int) -> xpc_object_t {
   XPC.xpc_array_get_value(array, index)
 }

@@ -23,10 +23,18 @@ public struct XPCMarshalMacro: ExtensionMacro {
     let marshalImpl: String
     let unmarshalImpl: String
 
+    let access = accessLevelPrefix(for: declaration)
     if let structDecl = declaration.as(StructDeclSyntax.self) {
       let properties = storedProperties(in: structDecl)
-      marshalImpl = encodeFunction(for: properties)
-      unmarshalImpl = decodeFunction(for: properties, typeName: type.trimmed.description)
+      if isFrozenStruct(structDecl) {
+        marshalImpl = encodeFrozenStructFunction(for: properties, access: access)
+        unmarshalImpl = decodeFrozenStructFunction(
+          for: properties, typeName: type.trimmed.description, access: access)
+      } else {
+        marshalImpl = encodeFunction(for: properties, access: access)
+        unmarshalImpl = decodeFunction(
+          for: properties, typeName: type.trimmed.description, access: access)
+      }
     } else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
       if let rawType = rawEnumCandidateType(in: enumDecl) {
         guard isSupportedRawEnumType(rawType) else {
@@ -37,12 +45,14 @@ public struct XPCMarshalMacro: ExtensionMacro {
           )
           return []
         }
-        marshalImpl = encodeRawEnumFunction(for: rawType)
-        unmarshalImpl = decodeRawEnumFunction(for: rawType, typeName: type.trimmed.description)
+        marshalImpl = encodeRawEnumFunction(for: rawType, access: access)
+        unmarshalImpl = decodeRawEnumFunction(
+          for: rawType, typeName: type.trimmed.description, access: access)
       } else {
         let cases = enumCases(in: enumDecl)
-        marshalImpl = encodeEnumFunction(for: cases)
-        unmarshalImpl = decodeEnumFunction(for: cases, typeName: type.trimmed.description)
+        marshalImpl = encodeEnumFunction(for: cases, access: access)
+        unmarshalImpl = decodeEnumFunction(
+          for: cases, typeName: type.trimmed.description, access: access)
       }
     } else {
       context.diagnose(.init(node: Syntax(declaration), message: OnlyStructsOrEnumsAllowed()))
@@ -80,6 +90,31 @@ public struct XPCMarshalMacro: ExtensionMacro {
         return nil
       }
       return Property(name: pattern.identifier.trimmed.text, type: type)
+    }
+  }
+
+  private static func accessLevelPrefix(for declaration: some DeclGroupSyntax) -> String {
+    let modifiers = declaration.modifiers
+    if modifiers.isEmpty { return "" }
+    for modifier in modifiers {
+      switch modifier.name.text {
+      case "open": return "open "
+      case "public": return "public "
+      case "package": return "package "
+      case "internal": return "internal "
+      case "fileprivate": return "fileprivate "
+      case "private": return "fileprivate "
+      default: continue
+      }
+    }
+    return "internal "
+  }
+
+  private static func isFrozenStruct(_ declaration: StructDeclSyntax) -> Bool {
+    let attributes = declaration.attributes
+    return attributes.contains { element in
+      guard let attribute = element.as(AttributeSyntax.self) else { return false }
+      return attribute.attributeName.trimmed.description == "frozen"
     }
   }
 
@@ -163,7 +198,11 @@ public struct XPCMarshalMacro: ExtensionMacro {
     return supported.contains(rawTypeName)
   }
 
-  private static func decodeFunction(for properties: [Property], typeName: String) -> String {
+  private static func decodeFunction(
+    for properties: [Property],
+    typeName: String,
+    access: String
+  ) -> String {
     let bindings = properties.map { property in
       let key = property.name
       if property.isOptional {
@@ -190,7 +229,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
 
     return
       """
-      static func unmarshal(from object: XPCObject) throws -> Self {
+        \(access)static func unmarshal(from object: XPCObject) throws -> Self {
         let type = SwiftXPC.xpcGetType(object.xpc_object)
         guard type == SwiftXPC.xpcTypeDictionary else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type)) }
         let dict = object.xpc_object
@@ -200,17 +239,95 @@ public struct XPCMarshalMacro: ExtensionMacro {
       """
   }
 
-  private static func encodeRawEnumFunction(for _: TypeSyntax) -> String {
+  private static func decodeFrozenStructFunction(
+    for properties: [Property],
+    typeName: String,
+    access: String
+  ) -> String {
+    let bindings = properties.enumerated().map { index, property in
+      if property.isOptional {
+        return """
+          let \(property.name): \(property.type) = try {
+            let rawPtr = SwiftXPC.xpcArrayGetValue(array, \(index))
+            if SwiftXPC.xpcGetType(rawPtr) == SwiftXPC.xpcTypeNull { return nil }
+            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
+            return try .unmarshal(from: raw)
+          }()
+          """
+      } else {
+        return """
+          let \(property.name): \(property.type) = try {
+            let rawPtr = SwiftXPC.xpcArrayGetValue(array, \(index))
+            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
+            return try .unmarshal(from: raw)
+          }()
+          """
+      }
+    }.joined(separator: "\n")
+
+    let arguments = properties.map { "\($0.name): \($0.name)" }.joined(separator: ", ")
+
+    return
+      """
+      \(access)static func unmarshal(from object: XPCObject) throws -> Self {
+        let type = SwiftXPC.xpcGetType(object.xpc_object)
+        guard type == SwiftXPC.xpcTypeArray else {
+          throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type))
+        }
+        let array = object.xpc_object
+        let count = SwiftXPC.xpcArrayGetCount(array)
+        guard count >= \(properties.count) else {
+          throw SwiftXPC.XPCMarshalError.missingKey(\"\(properties.count - 1)\")
+        }
+        \(bindings)
+        return \(typeName)(\(arguments))
+      }
+      """
+  }
+
+  private static func encodeFrozenStructFunction(for properties: [Property], access: String)
+    -> String
+  {
+    let assignments = properties.map { property in
+      if property.isOptional {
+        return """
+          if let value = self.\(property.name) {
+            SwiftXPC.xpcArrayAppendValue(array, try value.marshal().xpc_object)
+          } else {
+            SwiftXPC.xpcArrayAppendValue(array, SwiftXPC.xpcNullCreate())
+          }
+          """
+      } else {
+        return """
+          SwiftXPC.xpcArrayAppendValue(array, try self.\(property.name).marshal().xpc_object)
+          """
+      }
+    }.joined(separator: "\n")
+
+    return """
+      \(access)func marshal() throws -> XPCObject {
+        let array = SwiftXPC.xpcArrayCreate(nil, 0)
+      \(assignments)
+        return SwiftXPC.XPCObject(xpc_object: array)
+      }
+      """
+  }
+
+  private static func encodeRawEnumFunction(for _: TypeSyntax, access: String) -> String {
     """
-    func marshal() throws -> XPCObject {
+    \(access)func marshal() throws -> XPCObject {
       try self.rawValue.marshal()
     }
     """
   }
 
-  private static func decodeRawEnumFunction(for rawType: TypeSyntax, typeName: String) -> String {
+  private static func decodeRawEnumFunction(
+    for rawType: TypeSyntax,
+    typeName: String,
+    access: String
+  ) -> String {
     """
-    static func unmarshal(from object: XPCObject) throws -> Self {
+    \(access)static func unmarshal(from object: XPCObject) throws -> Self {
       let rawValue = try \(rawType).unmarshal(from: object)
       guard let value = Self(rawValue: rawValue) else {
         throw SwiftXPC.XPCMarshalError.unknownEnumCase(
@@ -223,7 +340,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
     """
   }
 
-  private static func encodeFunction(for properties: [Property]) -> String {
+  private static func encodeFunction(for properties: [Property], access: String) -> String {
     let assignments = properties.map { property in
       if property.isOptional {
         return """
@@ -241,7 +358,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
     }.joined(separator: "\n")
 
     return """
-      func marshal() throws -> XPCObject {
+      \(access)func marshal() throws -> XPCObject {
         let dict = SwiftXPC.xpcDictionaryCreate(nil, nil, 0)
       \(assignments)
         return SwiftXPC.XPCObject(xpc_object: dict)
@@ -249,7 +366,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
       """
   }
 
-  private static func encodeEnumFunction(for cases: [EnumCase]) -> String {
+  private static func encodeEnumFunction(for cases: [EnumCase], access: String) -> String {
     let caseBranches = cases.map { enumCase in
       if enumCase.associatedValues.isEmpty {
         return """
@@ -286,7 +403,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
     }.joined(separator: "\n")
 
     return """
-      func marshal() throws -> XPCObject {
+      \(access)func marshal() throws -> XPCObject {
         let array = SwiftXPC.xpcArrayCreate(nil, 0)
         switch self {
         \(caseBranches)
@@ -296,7 +413,11 @@ public struct XPCMarshalMacro: ExtensionMacro {
       """
   }
 
-  private static func decodeEnumFunction(for cases: [EnumCase], typeName: String) -> String {
+  private static func decodeEnumFunction(
+    for cases: [EnumCase],
+    typeName: String,
+    access: String
+  ) -> String {
     let caseBranches = cases.map { enumCase in
       if enumCase.associatedValues.isEmpty {
         return """
@@ -331,7 +452,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
     }.joined(separator: "\n")
 
     return """
-      static func unmarshal(from object: XPCObject) throws -> Self {
+      \(access)static func unmarshal(from object: XPCObject) throws -> Self {
         let type = SwiftXPC.xpcGetType(object.xpc_object)
         guard type == SwiftXPC.xpcTypeArray else {
           throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type))

@@ -35,6 +35,15 @@ public struct XPCMarshalMacro: ExtensionMacro {
         unmarshalImpl = decodeFunction(
           for: properties, typeName: type.trimmed.description, access: access)
       }
+    } else if let classDecl = declaration.as(ClassDeclSyntax.self) {
+      guard isFinalClass(classDecl) else {
+        context.diagnose(.init(node: Syntax(classDecl), message: OnlyFinalClassesAllowed()))
+        return []
+      }
+      let properties = storedProperties(in: classDecl)
+      marshalImpl = encodeFunction(for: properties, access: access)
+      unmarshalImpl = decodeFunction(
+        for: properties, typeName: type.trimmed.description, access: access)
     } else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
       if let rawType = rawEnumCandidateType(in: enumDecl) {
         guard isSupportedRawEnumType(rawType) else {
@@ -77,7 +86,15 @@ public struct XPCMarshalMacro: ExtensionMacro {
   }
 
   private static func storedProperties(in declaration: StructDeclSyntax) -> [Property] {
-    declaration.memberBlock.members.compactMap { member in
+    storedProperties(in: declaration.memberBlock.members)
+  }
+
+  private static func storedProperties(in declaration: ClassDeclSyntax) -> [Property] {
+    storedProperties(in: declaration.memberBlock.members)
+  }
+
+  private static func storedProperties(in members: MemberBlockItemListSyntax) -> [Property] {
+    members.compactMap { member in
       guard let varDecl = member.decl.as(VariableDeclSyntax.self) else { return nil }
       if varDecl.modifiers.contains(where: { $0.name.text == "static" }) {
         return nil
@@ -108,6 +125,11 @@ public struct XPCMarshalMacro: ExtensionMacro {
       }
     }
     return "internal "
+  }
+
+  private static func isFinalClass(_ declaration: ClassDeclSyntax) -> Bool {
+    let modifiers = declaration.modifiers
+    return modifiers.contains { $0.name.text == "final" }
   }
 
   private static func isFrozenStruct(_ declaration: StructDeclSyntax) -> Bool {
@@ -234,7 +256,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
         guard type == SwiftXPC.xpcTypeDictionary else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type)) }
         let dict = object.xpc_object
         \(bindings)
-        return \(typeName)(\(arguments))
+        return Self.init(\(arguments))
       }
       """
   }
@@ -280,7 +302,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
           throw SwiftXPC.XPCMarshalError.missingKey(\"\(properties.count - 1)\")
         }
         \(bindings)
-        return \(typeName)(\(arguments))
+        return Self.init(\(arguments))
       }
       """
   }
@@ -509,8 +531,8 @@ private func alreadyConformsToXPCMarshal(declaration: some DeclGroupSyntax) -> B
 }
 
 private struct OnlyStructsOrEnumsAllowed: DiagnosticMessage {
-  var message: String { "@XPCMarshal only supports struct or enum declarations" }
-  var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "onlyStructOrEnum") }
+  var message: String { "@XPCMarshal only supports struct, enum, or final class declarations" }
+  var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "onlyStructEnumFinalClass") }
   var severity: DiagnosticSeverity { .error }
 }
 
@@ -520,6 +542,12 @@ private struct InvalidRawEnumType: DiagnosticMessage {
     "@XPCMarshal raw enums only support String, Character, or integer/floating-point raw types (found \(type))"
   }
   var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "invalidRawEnumType") }
+  var severity: DiagnosticSeverity { .error }
+}
+
+private struct OnlyFinalClassesAllowed: DiagnosticMessage {
+  var message: String { "@XPCMarshal only supports final class declarations" }
+  var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "onlyFinalClass") }
   var severity: DiagnosticSeverity { .error }
 }
 

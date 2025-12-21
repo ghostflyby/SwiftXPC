@@ -260,21 +260,28 @@ public struct XPCMarshalMacro: ExtensionMacro {
 
       let bindingList = enumCase.associatedValues.map { "let \($0.binding)" }.joined(
         separator: ", ")
+      let allUnlabeled = enumCase.associatedValues.allSatisfy { $0.label == nil }
       let payloadAssignments = enumCase.associatedValues.map { value in
-        """
-          SwiftXPC.xpcArrayAppendValue(payload, try \(value.binding).marshal().xpc_object)
-        """
+        let target = allUnlabeled ? "array" : "payload"
+        return """
+          SwiftXPC.xpcArrayAppendValue(\(target), try \(value.binding).marshal().xpc_object)
+          """
       }.joined(separator: "\n")
-      let payloadEncoding = """
-          let payload = SwiftXPC.xpcArrayCreate(nil, 0)
-        \(payloadAssignments)
-          SwiftXPC.xpcArrayAppendValue(array, payload)
-        """
+      let payloadEncoding: String
+      if allUnlabeled {
+        payloadEncoding = payloadAssignments
+      } else {
+        payloadEncoding = """
+            let payload = SwiftXPC.xpcArrayCreate(nil, 0)
+          \(payloadAssignments)
+            SwiftXPC.xpcArrayAppendValue(array, payload)
+          """
+      }
 
       return """
         case .\(enumCase.name)(\(bindingList)):
           SwiftXPC.xpcArrayAppendValue(array, SwiftXPC.xpcStringCreate(\"\(enumCase.name)\"))
-        \(payloadEncoding)
+          \(payloadEncoding)
         """
     }.joined(separator: "\n")
 
@@ -298,10 +305,13 @@ public struct XPCMarshalMacro: ExtensionMacro {
           """
       }
 
+      let allUnlabeled = enumCase.associatedValues.allSatisfy { $0.label == nil }
       let valuesDecoding = enumCase.associatedValues.enumerated().map { index, value in
         let binding = value.binding
+        let source = allUnlabeled ? "array" : "payloadArray"
+        let offset = allUnlabeled ? 1 : 0
         return """
-            let raw_\(binding) = SwiftXPC.xpcArrayGetValue(payloadArray, \(index))
+            let raw_\(binding) = SwiftXPC.xpcArrayGetValue(\(source), \(index + offset))
             let \(binding) = try \(value.type).unmarshal(from: SwiftXPC.XPCObject(xpc_object: raw_\(binding)))
           """
       }.joined(separator: "\n")
@@ -314,12 +324,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
       }.joined(separator: ", ")
       return """
         case \"\(enumCase.name)\":
-          let payloadPtr = SwiftXPC.xpcArrayGetValue(array, 1)
-          let payloadType = SwiftXPC.xpcGetType(payloadPtr)
-          guard payloadType == SwiftXPC.xpcTypeArray else {
-            throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: payloadType))
-          }
-          let payloadArray = payloadPtr
+          \(allUnlabeled ? "" : "  let payloadPtr = SwiftXPC.xpcArrayGetValue(array, 1)\n  let payloadType = SwiftXPC.xpcGetType(payloadPtr)\n  guard payloadType == SwiftXPC.xpcTypeArray else {\n    throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: payloadType))\n  }\n  let payloadArray = payloadPtr\n")
           \(valuesDecoding)
           return .\(enumCase.name)(\(argumentList))
         """

@@ -42,6 +42,26 @@ import XPC
   assert(retries == 3)
 }
 
+@Test func EnumLayoutUnlabeledPayload() async throws {
+  let encoded = try JobState.tuple("pair", 2).marshal()
+  let object = encoded.xpc_object
+  let type = xpc_get_type(object)
+  assert(type == XPC_TYPE_ARRAY)
+  assert(xpc_array_get_count(object) == 3)
+
+  let casePtr = xpc_array_get_value(object, 0)
+  let caseName = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: casePtr))
+  assert(caseName == "tuple")
+
+  let firstPtr = xpc_array_get_value(object, 1)
+  let first = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: firstPtr))
+  assert(first == "pair")
+
+  let secondPtr = xpc_array_get_value(object, 2)
+  let second = try Int.unmarshal(from: SwiftXPC.XPCObject(xpc_object: secondPtr))
+  assert(second == 2)
+}
+
 @Test func RawEnumLayout() async throws {
   let encoded = try RawMode.on.marshal()
   let object = encoded.xpc_object

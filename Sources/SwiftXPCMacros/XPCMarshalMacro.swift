@@ -28,9 +28,14 @@ public struct XPCMarshalMacro: ExtensionMacro {
       marshalImpl = encodeFunction(for: properties)
       unmarshalImpl = decodeFunction(for: properties, typeName: type.trimmed.description)
     } else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
-      let cases = enumCases(in: enumDecl)
-      marshalImpl = encodeEnumFunction(for: cases)
-      unmarshalImpl = decodeEnumFunction(for: cases, typeName: type.trimmed.description)
+      if let rawType = rawEnumType(in: enumDecl) {
+        marshalImpl = encodeRawEnumFunction(for: rawType)
+        unmarshalImpl = decodeRawEnumFunction(for: rawType, typeName: type.trimmed.description)
+      } else {
+        let cases = enumCases(in: enumDecl)
+        marshalImpl = encodeEnumFunction(for: cases)
+        unmarshalImpl = decodeEnumFunction(for: cases, typeName: type.trimmed.description)
+      }
     } else {
       context.diagnose(.init(node: Syntax(declaration), message: OnlyStructsOrEnumsAllowed()))
       return []
@@ -97,14 +102,44 @@ public struct XPCMarshalMacro: ExtensionMacro {
     }
   }
 
+  private static func rawEnumType(in declaration: EnumDeclSyntax) -> TypeSyntax? {
+    let cases = enumCases(in: declaration)
+    if cases.contains(where: { $0.associatedValues.isEmpty == false }) {
+      return nil
+    }
+    guard let inheritance = declaration.inheritanceClause,
+      let rawType = inheritance.inheritedTypes.first?.type
+    else {
+      return nil
+    }
+    let rawTypeName = rawType.trimmed.description
+    let protocolLikeNames: Set<String> = [
+      "XPCMarshal",
+      "Codable",
+      "Decodable",
+      "Encodable",
+      "Equatable",
+      "Hashable",
+      "Comparable",
+      "Sendable",
+      "CaseIterable",
+      "Identifiable",
+      "Error",
+    ]
+    if protocolLikeNames.contains(rawTypeName) {
+      return nil
+    }
+    return rawType
+  }
+
   private static func decodeFunction(for properties: [Property], typeName: String) -> String {
     let bindings = properties.map { property in
       let key = property.name
       if property.isOptional {
         return """
           let \(key): \(property.type) = try {
-            guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { return nil }
-            if xpc_get_type(rawPtr) == XPC_TYPE_NULL { return nil }
+            guard let rawPtr = SwiftXPC.xpcDictionaryGetValue(dict, "\(key)") else { return nil }
+            if SwiftXPC.xpcGetType(rawPtr) == SwiftXPC.xpcTypeNull { return nil }
             let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
             return try .unmarshal(from: raw)
           }()
@@ -112,7 +147,7 @@ public struct XPCMarshalMacro: ExtensionMacro {
       } else {
         return """
           let \(key): \(property.type) = try {
-            guard let rawPtr = xpc_dictionary_get_value(dict, "\(key)") else { throw SwiftXPC.XPCMarshalError.missingKey("\(key)") }
+            guard let rawPtr = SwiftXPC.xpcDictionaryGetValue(dict, "\(key)") else { throw SwiftXPC.XPCMarshalError.missingKey("\(key)") }
             let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
             return try .unmarshal(from: raw)
           }()
@@ -125,8 +160,8 @@ public struct XPCMarshalMacro: ExtensionMacro {
     return
       """
       static func unmarshal(from object: XPCObject) throws -> Self {
-        let type = xpc_get_type(object.xpc_object)
-        guard type == XPC_TYPE_DICTIONARY else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type)) }
+        let type = SwiftXPC.xpcGetType(object.xpc_object)
+        guard type == SwiftXPC.xpcTypeDictionary else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type)) }
         let dict = object.xpc_object
         \(bindings)
         return \(typeName)(\(arguments))
@@ -134,26 +169,49 @@ public struct XPCMarshalMacro: ExtensionMacro {
       """
   }
 
+  private static func encodeRawEnumFunction(for _: TypeSyntax) -> String {
+    """
+    func marshal() throws -> XPCObject {
+      try self.rawValue.marshal()
+    }
+    """
+  }
+
+  private static func decodeRawEnumFunction(for rawType: TypeSyntax, typeName: String) -> String {
+    """
+    static func unmarshal(from object: XPCObject) throws -> Self {
+      let rawValue = try \(rawType).unmarshal(from: object)
+      guard let value = Self(rawValue: rawValue) else {
+        throw SwiftXPC.XPCMarshalError.unknownEnumCase(
+          String(describing: rawValue),
+          enumName: \"\(typeName)\"
+        )
+      }
+      return value
+    }
+    """
+  }
+
   private static func encodeFunction(for properties: [Property]) -> String {
     let assignments = properties.map { property in
       if property.isOptional {
         return """
           if let value = self.\(property.name) {
-            xpc_dictionary_set_value(dict, \"\(property.name)\", try value.marshal().xpc_object)
+            SwiftXPC.xpcDictionarySetValue(dict, \"\(property.name)\", try value.marshal().xpc_object)
           } else {
-            xpc_dictionary_set_value(dict, \"\(property.name)\", xpc_null_create())
+            SwiftXPC.xpcDictionarySetValue(dict, \"\(property.name)\", SwiftXPC.xpcNullCreate())
           }
           """
       } else {
         return """
-          xpc_dictionary_set_value(dict, \"\(property.name)\", try self.\(property.name).marshal().xpc_object)
+          SwiftXPC.xpcDictionarySetValue(dict, \"\(property.name)\", try self.\(property.name).marshal().xpc_object)
           """
       }
     }.joined(separator: "\n")
 
     return """
       func marshal() throws -> XPCObject {
-        let dict = xpc_dictionary_create(nil, nil, 0)
+        let dict = SwiftXPC.xpcDictionaryCreate(nil, nil, 0)
       \(assignments)
         return SwiftXPC.XPCObject(xpc_object: dict)
       }
@@ -165,51 +223,37 @@ public struct XPCMarshalMacro: ExtensionMacro {
       if enumCase.associatedValues.isEmpty {
         return """
           case .\(enumCase.name):
-            xpc_dictionary_set_value(dict, \"case\", xpc_string_create(\"\(enumCase.name)\"))
+            SwiftXPC.xpcArrayAppendValue(array, SwiftXPC.xpcStringCreate(\"\(enumCase.name)\"))
           """
       }
 
       let bindingList = enumCase.associatedValues.map { "let \($0.binding)" }.joined(
         separator: ", ")
-      let keys = enumCase.associatedValues.enumerated().map { index, value in
-        value.label ?? String(index)
-      }
-      let payloadEncoding: String
-
-      if enumCase.associatedValues.count == 1, enumCase.associatedValues.first?.label == nil {
-        let value = enumCase.associatedValues[0]
-        payloadEncoding = """
-            let payload = try \(value.binding).marshal().xpc_object
-            xpc_dictionary_set_value(dict, \"payload\", payload)
-          """
-      } else {
-        let payloadAssignments = zip(keys, enumCase.associatedValues).map { key, value in
-          """
-            xpc_dictionary_set_value(payload, \"\(key)\", try \(value.binding).marshal().xpc_object)
-          """
-        }.joined(separator: "\n")
-
-        payloadEncoding = """
-            let payload = xpc_dictionary_create(nil, nil, 0)
-          \(payloadAssignments)
-            xpc_dictionary_set_value(dict, \"payload\", payload)
-          """
-      }
+      let payloadAssignments = enumCase.associatedValues.map { value in
+        """
+          SwiftXPC.xpcArrayAppendValue(payload, try \(value.binding).marshal().xpc_object)
+        """
+      }.joined(separator: "\n")
+      let payloadEncoding = """
+          let payload = SwiftXPC.xpcArrayCreate(nil, 0)
+        \(payloadAssignments)
+          SwiftXPC.xpcArrayAppendValue(array, payload)
+        """
 
       return """
         case .\(enumCase.name)(\(bindingList)):
-          xpc_dictionary_set_value(dict, \"case\", xpc_string_create(\"\(enumCase.name)\"))
+          SwiftXPC.xpcArrayAppendValue(array, SwiftXPC.xpcStringCreate(\"\(enumCase.name)\"))
         \(payloadEncoding)
         """
     }.joined(separator: "\n")
 
     return """
       func marshal() throws -> XPCObject {
-        let dict = xpc_dictionary_create(nil, nil, 0)
+        let array = SwiftXPC.xpcArrayCreate(nil, 0)
         switch self {
         \(caseBranches)
         }
-        return SwiftXPC.XPCObject(xpc_object: dict)
+        return SwiftXPC.XPCObject(xpc_object: array)
       }
       """
   }
@@ -223,33 +267,13 @@ public struct XPCMarshalMacro: ExtensionMacro {
           """
       }
 
-      if enumCase.associatedValues.count == 1, let value = enumCase.associatedValues.first,
-        value.label == nil
-      {
-        return """
-          case \"\(enumCase.name)\":
-            guard let payloadPtr = xpc_dictionary_get_value(dict, \"payload\") else {
-              throw SwiftXPC.XPCMarshalError.missingKey(\"payload\")
-            }
-            let payload = SwiftXPC.XPCObject(xpc_object: payloadPtr)
-            let value = try \(value.type).unmarshal(from: payload)
-            return .\(enumCase.name)(value)
-          """
-      }
-
-      let keys = enumCase.associatedValues.enumerated().map { index, value in
-        value.label ?? String(index)
-      }
-      let valuesDecoding = zip(keys, enumCase.associatedValues).map { key, value in
+      let valuesDecoding = enumCase.associatedValues.enumerated().map { index, value in
         let binding = value.binding
         return """
-            guard let raw_\(binding) = xpc_dictionary_get_value(payloadDict, \"\(key)\") else {
-              throw SwiftXPC.XPCMarshalError.missingKey(\"\(key)\")
-            }
+            let raw_\(binding) = SwiftXPC.xpcArrayGetValue(payloadArray, \(index))
             let \(binding) = try \(value.type).unmarshal(from: SwiftXPC.XPCObject(xpc_object: raw_\(binding)))
           """
       }.joined(separator: "\n")
-
       let argumentList = enumCase.associatedValues.map { value in
         if let label = value.label {
           return "\(label): \(value.binding)"
@@ -257,17 +281,14 @@ public struct XPCMarshalMacro: ExtensionMacro {
           return value.binding
         }
       }.joined(separator: ", ")
-
       return """
         case \"\(enumCase.name)\":
-          guard let payloadPtr = xpc_dictionary_get_value(dict, \"payload\") else {
-            throw SwiftXPC.XPCMarshalError.missingKey(\"payload\")
-          }
-          let payloadDict = payloadPtr
-          let payloadType = xpc_get_type(payloadPtr)
-          guard payloadType == XPC_TYPE_DICTIONARY else {
+          let payloadPtr = SwiftXPC.xpcArrayGetValue(array, 1)
+          let payloadType = SwiftXPC.xpcGetType(payloadPtr)
+          guard payloadType == SwiftXPC.xpcTypeArray else {
             throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: payloadType))
           }
+          let payloadArray = payloadPtr
           \(valuesDecoding)
           return .\(enumCase.name)(\(argumentList))
         """
@@ -275,14 +296,12 @@ public struct XPCMarshalMacro: ExtensionMacro {
 
     return """
       static func unmarshal(from object: XPCObject) throws -> Self {
-        let type = xpc_get_type(object.xpc_object)
-        guard type == XPC_TYPE_DICTIONARY else {
+        let type = SwiftXPC.xpcGetType(object.xpc_object)
+        guard type == SwiftXPC.xpcTypeArray else {
           throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type))
         }
-        let dict = object.xpc_object
-        guard let casePtr = xpc_dictionary_get_value(dict, \"case\") else {
-          throw SwiftXPC.XPCMarshalError.missingKey(\"case\")
-        }
+        let array = object.xpc_object
+        let casePtr = SwiftXPC.xpcArrayGetValue(array, 0)
         let caseName = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: casePtr))
 
         switch caseName {

@@ -4,7 +4,7 @@ import Foundation
 import XPC
 
 /// A protocol for types that can be marshaled to and from XPC objects
-public protocol XPCMarshal {
+public protocol XPCMarshal: ~Copyable {
   /// Marshals the value into an XPC object.
   func marshal() throws -> XPCObject
   /// Unmarshals a value from an XPC object.

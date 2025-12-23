@@ -95,6 +95,7 @@ extension XPCConnection {
     }
   }
 
+  @available(*, noasync)
   public func send(message: XPCObject, replyQueue: DispatchQueue? = nil) -> XPCObject {
     XPCObject(
       xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))

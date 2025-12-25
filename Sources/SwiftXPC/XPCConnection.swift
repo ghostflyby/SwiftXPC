@@ -76,7 +76,7 @@ extension XPCConnection {
     case interupted
   }
 
-  public func send(message: XPCObject) {
+  public func sendAndForget(message: XPCDictionary) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
@@ -84,7 +84,7 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil)
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
     async throws(ConnectionError)
     -> XPCObject
   {
@@ -108,9 +108,17 @@ extension XPCConnection {
   }
 
   @available(*, noasync)
-  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil) -> XPCObject {
-    XPCObject(
-      xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) throws(ConnectionError)
+    -> XPCObject
+  {
+    let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object)
+    if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
+      throw ConnectionError.invalid
+    } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
+      throw ConnectionError.interupted
+    } else {
+      return XPCObject(xpc_object: r)
+    }
   }
 
 }

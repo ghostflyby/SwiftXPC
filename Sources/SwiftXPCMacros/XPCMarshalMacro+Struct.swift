@@ -10,22 +10,27 @@ extension XPCMarshalMacro {
   ) -> String {
     let bindings = properties.map { property in
       let key = property.name
+      let rawPtr = "rawPtr_\(key)"
       if property.isOptional {
         return """
-          let \(key): \(property.type) = try {
-            guard let rawPtr = SwiftXPC.xpcDictionaryGetValue(dict, "\(key)") else { return nil }
-            if SwiftXPC.xpcGetType(rawPtr) == SwiftXPC.xpcTypeNull { return nil }
-            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
-            return try .unmarshal(from: raw)
-          }()
+          let \(key): \(property.type)
+          if let \(rawPtr) = SwiftXPC.xpcDictionaryGetValue(dict, "\(key)") {
+            if SwiftXPC.xpcGetType(\(rawPtr)) == SwiftXPC.xpcTypeNull {
+              \(key) = nil
+            } else {
+              \(key) = try .unmarshal(from: SwiftXPC.XPCObject(xpc_object: \(rawPtr)))
+            }
+          } else {
+            \(key) = nil
+          }
           """
       } else {
         return """
-          let \(key): \(property.type) = try {
-            guard let rawPtr = SwiftXPC.xpcDictionaryGetValue(dict, "\(key)") else { throw SwiftXPC.XPCMarshalError.missingKey("\(key)") }
-            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
-            return try .unmarshal(from: raw)
-          }()
+          let \(key): \(property.type)
+          guard let \(rawPtr) = SwiftXPC.xpcDictionaryGetValue(dict, "\(key)") else {
+            throw SwiftXPC.XPCMarshalError.missingKey("\(key)")
+          }
+          \(key) = try .unmarshal(from: SwiftXPC.XPCObject(xpc_object: \(rawPtr)))
           """
       }
     }.joined(separator: "\n")
@@ -34,9 +39,14 @@ extension XPCMarshalMacro {
 
     return
       """
-      \(access)static func unmarshal(from object: XPCObject) throws -> Self {
+      \(access)static func unmarshal(from object: XPCObject) throws(SwiftXPC.XPCMarshalError) -> Self {
         let type = SwiftXPC.xpcGetType(object.xpc_object)
-        guard type == SwiftXPC.xpcTypeDictionary else { throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type)) }
+        guard type == SwiftXPC.xpcTypeDictionary else {
+          throw SwiftXPC.XPCMarshalError.typeMismatch(
+            expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeDictionary)),
+            actual: String(cString: SwiftXPC.xpcTypeGetName(type))
+          )
+        }
         let dict = object.xpc_object
         \(bindings)
         return Self.init(\(arguments))
@@ -50,22 +60,22 @@ extension XPCMarshalMacro {
     access: String
   ) -> String {
     let bindings = properties.enumerated().map { index, property in
+      let rawPtr = "rawPtr_\(property.name)"
       if property.isOptional {
         return """
-          let \(property.name): \(property.type) = try {
-            let rawPtr = SwiftXPC.xpcArrayGetValue(array, \(index))
-            if SwiftXPC.xpcGetType(rawPtr) == SwiftXPC.xpcTypeNull { return nil }
-            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
-            return try .unmarshal(from: raw)
-          }()
+          let \(property.name): \(property.type)
+          let \(rawPtr) = SwiftXPC.xpcArrayGetValue(array, \(index))
+          if SwiftXPC.xpcGetType(\(rawPtr)) == SwiftXPC.xpcTypeNull {
+            \(property.name) = nil
+          } else {
+            \(property.name) = try .unmarshal(from: SwiftXPC.XPCObject(xpc_object: \(rawPtr)))
+          }
           """
       } else {
         return """
-          let \(property.name): \(property.type) = try {
-            let rawPtr = SwiftXPC.xpcArrayGetValue(array, \(index))
-            let raw = SwiftXPC.XPCObject(xpc_object: rawPtr)
-            return try .unmarshal(from: raw)
-          }()
+          let \(property.name): \(property.type)
+          let \(rawPtr) = SwiftXPC.xpcArrayGetValue(array, \(index))
+          \(property.name) = try .unmarshal(from: SwiftXPC.XPCObject(xpc_object: \(rawPtr)))
           """
       }
     }.joined(separator: "\n")
@@ -74,10 +84,13 @@ extension XPCMarshalMacro {
 
     return
       """
-      \(access)static func unmarshal(from object: XPCObject) throws -> Self {
+      \(access)static func unmarshal(from object: XPCObject) throws(SwiftXPC.XPCMarshalError) -> Self {
         let type = SwiftXPC.xpcGetType(object.xpc_object)
         guard type == SwiftXPC.xpcTypeArray else {
-          throw SwiftXPC.XPCMarshalError.expectedDictionary(actual: String(describing: type))
+          throw SwiftXPC.XPCMarshalError.typeMismatch(
+            expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeArray)),
+            actual: String(cString: SwiftXPC.xpcTypeGetName(type))
+          )
         }
         let array = object.xpc_object
         let count = SwiftXPC.xpcArrayGetCount(array)
@@ -108,7 +121,7 @@ extension XPCMarshalMacro {
     }.joined(separator: "\n")
 
     return """
-      \(access)func marshal() throws -> XPCObject {
+      \(access)func marshal() throws(SwiftXPC.XPCMarshalError) -> XPCObject {
         let array = SwiftXPC.xpcArrayCreate(nil, 0)
       \(assignments)
         return SwiftXPC.XPCObject(xpc_object: array)
@@ -134,7 +147,7 @@ extension XPCMarshalMacro {
     }.joined(separator: "\n")
 
     return """
-      \(access)func marshal() throws -> XPCObject {
+      \(access)func marshal() throws(SwiftXPC.XPCMarshalError) -> XPCObject {
         let dict = SwiftXPC.xpcDictionaryCreate(nil, nil, 0)
       \(assignments)
         return SwiftXPC.XPCObject(xpc_object: dict)

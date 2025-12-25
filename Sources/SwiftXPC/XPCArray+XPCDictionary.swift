@@ -9,11 +9,11 @@ public struct XPCArray {
 }
 
 extension XPCArray: XPCMarshal {
-  public func marshal() throws -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
     XPCObject(xpc_object: xpc_object)
   }
-  public static func unmarshal(from object: XPCObject) throws -> Self {
-    try ensureType(object, is: XPC_TYPE_ARRAY, for: XPCArray.self)
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+    try ensureType(object, is: XPC_TYPE_ARRAY)
     return XPCArray(xpc_object: object.xpc_object)
   }
 }
@@ -72,11 +72,11 @@ public struct XPCDictionary: @unchecked Sendable {
 }
 
 extension XPCDictionary: XPCMarshal {
-  public func marshal() throws -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
     XPCObject(xpc_object: xpc_object)
   }
-  public static func unmarshal(from object: XPCObject) throws -> Self {
-    try ensureType(object, is: XPC_TYPE_DICTIONARY, for: XPCDictionary.self)
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+    try ensureType(object, is: XPC_TYPE_DICTIONARY)
     return XPCDictionary(xpc_object: object.xpc_object)
   }
 }

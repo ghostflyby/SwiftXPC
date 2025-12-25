@@ -248,14 +248,14 @@ private final class Box<T> where T: Sendable {
 }
 
 extension XPCConnection: XPCMarshal {
-  public func marshal() throws -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
     XPCObject(xpc_object: xpc_endpoint_create(self.xpc_object))
   }
 
-  public static func unmarshal(from object: XPCObject) throws -> XPCConnection {
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCConnection {
     let type = xpc_get_type(object.xpc_object)
     guard type == XPC_TYPE_ENDPOINT else {
-      throw typeMismatch(XPCConnection.self, object, actual: type)
+      throw typeMismatch(expected: XPC_TYPE_ENDPOINT, actual: type)
     }
     return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object.xpc_object))
   }

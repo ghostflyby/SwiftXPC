@@ -4,7 +4,7 @@ import Foundation
 import XPC
 
 /// A protocol for types that can be marshaled to and from XPC objects
-public protocol XPCMarshal: ~Copyable {
+public protocol XPCMarshal {
   /// Marshals the value into an XPC object.
   func marshal() throws -> XPCObject
   /// Unmarshals a value from an XPC object.
@@ -64,7 +64,7 @@ func typeMismatch<T>(
   )
 }
 
-private func ensureType(
+func ensureType(
   _ object: XPCObject, is expected: xpc_type_t, for swiftType: Any.Type
 ) throws {
   let actual = xpc_get_type(object.xpc_object)

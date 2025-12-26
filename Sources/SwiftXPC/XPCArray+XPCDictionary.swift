@@ -28,6 +28,10 @@ extension XPCArray: RandomAccessCollection {
     Int(xpc_array_get_count(xpc_object))
   }
 
+  public var count: Int {
+    endIndex
+  }
+
 }
 
 extension XPCArray: MutableCollection {

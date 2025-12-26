@@ -275,23 +275,22 @@ extension Optional: XPCMarshal where Wrapped: XPCMarshal {
 
 extension Array: XPCMarshal where Element: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
-    let array = xpc_array_create_empty()
+    var array = XPCArray()
     for item in self {
-      xpc_array_append_value(array, try item.marshal().xpc_object)
+      array.append(try item.marshal())
     }
-    return XPCObject(xpc_object: array)
+    return XPCObject(xpc_object: array.xpc_object)
   }
 
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_ARRAY)
-    let raw = object.xpc_object
+    let raw = XPCArray(xpc_object: object.xpc_object)
     var array = [Element]()
-    let count = xpc_array_get_count(raw)
+    let count = raw.count
     array.reserveCapacity(count)
-    xpc_array_apply(raw) { i, v in
-      let item = try! Element.unmarshal(from: XPCObject(xpc_object: v))
-      array.append(item)
-      return true
+    for item in raw {
+      let value = try! Element.unmarshal(from: item)
+      array.append(value)
     }
     return array
   }
@@ -299,24 +298,24 @@ extension Array: XPCMarshal where Element: XPCMarshal {
 
 extension Dictionary: XPCMarshal where Key == String, Value: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
-    let dict = xpc_dictionary_create_empty()
+    var dict = XPCDictionary()
     for (k, v) in self {
-      xpc_dictionary_set_value(dict, k, try v.marshal().xpc_object)
+      dict[k] = try v.marshal()
     }
-    return XPCObject(xpc_object: dict)
+    return XPCObject(xpc_object: dict.xpc_object)
   }
 
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DICTIONARY)
-    let xpcDict = XPCObject(xpc_object: object.xpc_object)
+    let xpcDict = XPCDictionary(xpc_object: object.xpc_object)
     var result: [String: Value] = [:]
-    let count = xpc_dictionary_get_count(xpcDict.xpc_object)
+    let count = xpcDict.keys.count
     result.reserveCapacity(count)
-    xpc_dictionary_apply(xpcDict.xpc_object) { k, v in
-      let key = String(cString: k)
-      let value = try! Value.unmarshal(from: XPCObject(xpc_object: v))
-      result[key] = value
-      return true
+    for key in xpcDict.keys {
+      if let valueObject = xpcDict[key] {
+        let value = try! Value.unmarshal(from: valueObject)
+        result[key] = value
+      }
     }
     return result
   }

@@ -17,19 +17,60 @@ public protocol XPCMarshal {
 )
 public macro XPCMarshal() = #externalMacro(module: "SwiftXPCMacros", type: "XPCMarshalMacro")
 
-public enum XPCMarshalError: Error, CustomStringConvertible {
-  case missingKey(String)
-  case unknownEnumCase(String, enumName: String)
-  case typeMismatch(expected: String, actual: String)
+@XPCMarshal
+public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatable, Hashable {
+  @XPCMarshal
+  public enum Kind: Sendable, Equatable, Hashable {
+    case missingKey(String)
+    case unknownEnumCase(String, enumName: String)
+    case typeMismatch(expected: String, actual: String)
+    case outOfBounds(index: Int, count: Int)
+  }
+  public let kind: Kind
+  public let file: String
+  public let line: UInt
+  public let function: String
+
+  public static func missingKey(
+    _ key: String, file: String = #file, line: UInt = #line, function: String = #function
+  ) -> Self {
+    .init(kind: .missingKey(key), file: file, line: line, function: function)
+  }
+
+  public static func unknownEnumCase(
+    _ name: String, enumName: String, file: String = #file, line: UInt = #line,
+    function: String = #function
+  ) -> Self {
+    .init(
+      kind: .unknownEnumCase(name, enumName: enumName), file: file, line: line, function: function)
+  }
+
+  public static func typeMismatch(
+    expected: String, actual: String, file: String = #file, line: UInt = #line,
+    function: String = #function
+  ) -> Self {
+    .init(
+      kind: .typeMismatch(expected: expected, actual: actual), file: file, line: line,
+      function: function)
+  }
+
+  public static func outOfBounds(
+    index: Int, count: Int, file: String = #file, line: UInt = #line, function: String = #function
+  ) -> Self {
+    .init(
+      kind: .outOfBounds(index: index, count: count), file: file, line: line, function: function)
+  }
 
   public var description: String {
-    switch self {
+    switch self.kind {
     case .missingKey(let key):
       return "Missing key \(key) in XPC dictionary"
     case .unknownEnumCase(let name, let enumName):
       return "Unknown case \(name) for enum \(enumName)"
     case .typeMismatch(let expected, let actual):
       return "Expected \(expected) but found \(actual)"
+    case .outOfBounds(let index, let count):
+      return "Index \(index) out of bounds for array of count \(count)"
     }
   }
 }

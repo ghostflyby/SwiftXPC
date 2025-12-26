@@ -33,18 +33,20 @@ extension XPCArray: RandomAccessCollection {
 extension XPCArray: MutableCollection {
   public typealias Element = XPCObject
 
-  private func validateIndex(_ position: Int) {
-    precondition(position >= startIndex && position < endIndex, "Index out of bounds")
+  private func validateIndex(_ position: Int) throws {
+    guard position >= startIndex && position < endIndex else {
+      throw XPCMarshalError.outOfBounds(index: position, count: count)
+    }
   }
 
   public subscript(position: Int) -> XPCObject {
     get {
-      validateIndex(position)
+      try! validateIndex(position)
       let item = xpc_array_get_value(xpc_object, position)
       return .init(xpc_object: item)
     }
     set {
-      validateIndex(position)
+      try! validateIndex(position)
       xpc_array_set_value(xpc_object, position, newValue.xpc_object)
     }
   }

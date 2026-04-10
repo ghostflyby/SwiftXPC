@@ -64,6 +64,25 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     .init()
   }
 
+  func dispatchInvocation(_ message: XPCInvocationMessage) async throws -> XPCReplyEnvelope {
+    let actor = try activeActorsLock.withLock { actors in
+      guard let actor = actors[message.actorID] else {
+        throw XPCDispatchError.unknownActor(message.actorID)
+      }
+      return actor
+    }
+
+    guard let dispatchingType = type(of: actor) as? any XPCDistributedTargetDispatching.Type else {
+      throw XPCDispatchError.nonDispatchingActorType(String(describing: type(of: actor)))
+    }
+
+    return try await dispatchingType._xpcDispatchAny(
+      actor,
+      target: message.target,
+      arguments: XPCDispatchArguments(array: message.arguments)
+    )
+  }
+
   public func remoteCall<Act, Err, Res>(
     on actor: Act,
     target: RemoteCallTarget,

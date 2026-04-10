@@ -17,3 +17,13 @@ public struct XPCObject: @unchecked Sendable, Equatable, Hashable {
     return xpc_equal(lhs.xpc_object, rhs.xpc_object)
   }
 }
+
+extension XPCObject: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
+    self
+  }
+
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCObject {
+    object
+  }
+}

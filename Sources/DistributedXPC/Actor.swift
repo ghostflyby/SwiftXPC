@@ -77,8 +77,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     Err: Error,
     Res: SerializationRequirement
   {
-    let message = XPCSentMessage(
-      id: actor.id,
+    let message = XPCInvocationMessage(
+      actorID: actor.id,
       target: target,
       arguments: invocation.array
     )
@@ -109,6 +109,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 @XPCMarshal
 public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
   internal let id: UInt64
+
+  public init(id: UInt64) {
+    self.id = id
+  }
 }
 
 public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandler {
@@ -150,14 +154,6 @@ enum XPCReply: Error {
   case xf(ErrorXPCMarshal)
   case cf(ErrorCodable)
   case nf(NSError)
-}
-
-@available(macOS 13.0, *)
-@XPCMarshal
-struct XPCSentMessage {
-  let id: XPCActorID
-  let target: RemoteCallTarget
-  let arguments: SwiftXPC.XPCArray
 }
 
 @available(macOS 13.0, *)

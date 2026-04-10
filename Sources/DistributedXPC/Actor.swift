@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
+import Foundation.NSError
 import SwiftXPC
 import Synchronization
 
@@ -76,9 +77,15 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     Err: Error,
     Res: SerializationRequirement
   {
-    fatalError(
-      "Attempted to make remote call to \(target) on actor \(actor) using a local-only actor system"
+    let message = XPCSentMessage(
+      id: actor.id,
+      target: target,
+      arguments: invocation.array
     )
+    let payload = try message.marshal()
+    let xpcDict = XPCDictionary(xpc_object: payload.xpc_object)
+    let result = try await connection.send(message: xpcDict)
+    return try Res.unmarshal(from: result)
   }
 
   public func remoteCallVoid<Act, Err>(
@@ -99,64 +106,67 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
 }
 
+@XPCMarshal
 public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
-  let id: UInt64
-}
-
-@available(macOS 13.0, *)
-public struct XPCInvocationEncoder: DistributedTargetInvocationEncoder {
-  public typealias SerializationRequirement = XPCMarshal
-
-  public mutating func recordGenericSubstitution<T>(_ type: T.Type) throws {
-  }
-
-  public mutating func recordArgument<Value: SerializationRequirement>(
-    _ argument: RemoteCallArgument<Value>
-  ) throws {
-    fatalError("Attempted to call encoder method in a local-only actor system")
-  }
-
-  public mutating func recordErrorType<E: Error>(_ type: E.Type) throws {
-  }
-
-  public mutating func recordReturnType<R: SerializationRequirement>(_ type: R.Type) throws {
-  }
-
-  public mutating func doneRecording() throws {
-  }
-}
-
-public final class XPCInvocationDecoder: DistributedTargetInvocationDecoder {
-  public typealias SerializationRequirement = XPCMarshal
-
-  public func decodeGenericSubstitutions() throws -> [Any.Type] {
-    fatalError("Attempted to call decoder method in a local-only actor system")
-  }
-
-  public func decodeNextArgument<Argument: SerializationRequirement>() throws -> Argument {
-    fatalError("Attempted to call decoder method in a local-only actor system")
-  }
-
-  public func decodeErrorType() throws -> Any.Type? {
-    fatalError("Attempted to call decoder method in a local-only actor system")
-  }
-
-  public func decodeReturnType() throws -> Any.Type? {
-    fatalError("Attempted to call decoder method in a local-only actor system")
-  }
+  internal let id: UInt64
 }
 
 public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandler {
   public typealias SerializationRequirement = XPCMarshal
+  let received: SwiftXPC.XPCDictionary
   public func onReturn<Success: SerializationRequirement>(value: Success) async throws {
-    fatalError("Attempted to call decoder method in a local-only actor system")
+    let reply = XPCDictionary(replyTo: received)
+    guard let reply = reply, let connection = received.connection else {
+      return
+    }
+
+    connection.sendAndForget(message: reply)
   }
 
   public func onReturnVoid() async throws {
-    fatalError("Attempted to call decoder method in a local-only actor system")
+    let reply = XPCDictionary(replyTo: received)
+    guard let reply = reply, let connection = received.connection else {
+      return
+    }
+
+    connection.sendAndForget(message: reply)
   }
 
   public func onThrow<Err: Error>(error: Err) async throws {
-    fatalError("Attempted to call decoder method in a local-only actor system")
+    let reply = XPCDictionary(replyTo: received)
+    guard let reply = reply, let connection = received.connection else {
+      return
+    }
+
+    connection.sendAndForget(message: reply)
+  }
+}
+
+typealias ErrorXPCMarshal = XPCMarshal & Error
+typealias ErrorCodable = Error & Codable
+
+enum XPCReply: Error {
+  case s(XPCObject)
+  case xf(ErrorXPCMarshal)
+  case cf(ErrorCodable)
+  case nf(NSError)
+}
+
+@available(macOS 13.0, *)
+@XPCMarshal
+struct XPCSentMessage {
+  let id: XPCActorID
+  let target: RemoteCallTarget
+  let arguments: SwiftXPC.XPCArray
+}
+
+@available(macOS 13.0, *)
+extension RemoteCallTarget: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
+    try identifier.marshal()
+  }
+
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
+    .init(try .unmarshal(from: object))
   }
 }

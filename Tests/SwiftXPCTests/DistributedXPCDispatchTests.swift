@@ -82,3 +82,38 @@ private func makeSystem() -> XPCDistributedActorSystem {
     )
   }
 }
+
+@Test func HandleIncomingMessageDispatchesInvocation() async throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let system = makeSystem()
+  _ = SampleDispatchActor(actorSystem: system)
+
+  var arguments = XPCArray()
+  arguments.append(try "inbox".marshal())
+
+  let message = XPCInvocationMessage(
+    actorID: XPCActorID(id: 1),
+    target: RemoteCallTarget("greet"),
+    arguments: arguments
+  )
+
+  try await system.handleIncomingMessage(try message.marshal())
+}
+
+@Test func HandleIncomingMessageEncodesDispatchErrors() async throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let system = makeSystem()
+  _ = SampleDispatchActor(actorSystem: system)
+
+  let message = XPCInvocationMessage(
+    actorID: XPCActorID(id: 1),
+    target: RemoteCallTarget("missing"),
+    arguments: XPCArray()
+  )
+
+  try await system.handleIncomingMessage(try message.marshal())
+}

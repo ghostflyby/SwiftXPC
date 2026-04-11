@@ -83,6 +83,23 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     )
   }
 
+  func handleIncomingMessage(_ object: XPCObject) async throws {
+    let received = try XPCDictionary.unmarshal(from: object)
+    let resultHandler = XPCInvocationResultHandler(received: received)
+    do {
+      let invocation = try XPCInvocationMessage.unmarshal(from: object)
+      let envelope = try await dispatchInvocation(invocation)
+      try resultHandler.send(envelope)
+    } catch let error as any ErrorXPCMarshal {
+      try resultHandler.send(
+        XPCReplyEnvelope(
+          kind: .throwError,
+          payload: try error.marshal()
+        )
+      )
+    }
+  }
+
   public func remoteCall<Act, Err, Res>(
     on actor: Act,
     target: RemoteCallTarget,
@@ -147,7 +164,7 @@ public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandl
   public typealias SerializationRequirement = XPCMarshal
   let received: SwiftXPC.XPCDictionary
 
-  private func send(_ envelope: XPCReplyEnvelope) throws {
+  func send(_ envelope: XPCReplyEnvelope) throws {
     guard var reply = XPCDictionary(replyTo: received), let connection = received.connection else {
       return
     }

@@ -64,6 +64,14 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     .init()
   }
 
+  func installEventHandler() {
+    connection.setEventHandler { [self] object in
+      Task {
+        try? await handleIncomingMessage(object)
+      }
+    }
+  }
+
   func dispatchInvocation(_ message: XPCInvocationMessage) async throws -> XPCReplyEnvelope {
     let actor = try activeActorsLock.withLock { actors in
       guard let actor = actors[message.actorID] else {

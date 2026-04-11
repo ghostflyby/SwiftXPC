@@ -53,3 +53,49 @@ public struct XPCReplyEnvelope {
     self.payload = payload
   }
 }
+
+@available(macOS 15, *)
+extension XPCReplyEnvelope {
+  func decodeReturnValue<Res, Err>(
+    throwing errorType: Err.Type,
+    returning returnType: Res.Type
+  ) throws -> Res
+  where Res: XPCMarshal, Err: Error {
+    switch kind {
+    case .returnValue:
+      guard let payload else {
+        throw XPCRemoteCallError.missingPayload(.returnValue)
+      }
+      return try Res.unmarshal(from: payload)
+    case .returnVoid:
+      throw XPCRemoteCallError.invalidReplyKind(expected: .returnValue, actual: .returnVoid)
+    case .throwError:
+      guard let payload else {
+        throw XPCRemoteCallError.missingPayload(.throwError)
+      }
+      throw try decodeThrownError(payload, as: errorType)
+    }
+  }
+
+  func decodeReturnVoid<Err>(throwing errorType: Err.Type) throws
+  where Err: Error {
+    switch kind {
+    case .returnVoid:
+      return
+    case .returnValue:
+      throw XPCRemoteCallError.invalidReplyKind(expected: .returnVoid, actual: .returnValue)
+    case .throwError:
+      guard let payload else {
+        throw XPCRemoteCallError.missingPayload(.throwError)
+      }
+      throw try decodeThrownError(payload, as: errorType)
+    }
+  }
+
+  private func decodeThrownError<Err: Error>(_ object: XPCObject, as errorType: Err.Type) throws -> Error {
+    guard let marshalableErrorType = errorType as? any (XPCMarshal & Error).Type else {
+      throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: errorType))
+    }
+    return try marshalableErrorType.unmarshal(from: object)
+  }
+}

@@ -104,7 +104,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let payload = try message.marshal()
     let xpcDict = XPCDictionary(xpc_object: payload.xpc_object)
     let result = try await connection.send(message: xpcDict)
-    return try Res.unmarshal(from: result)
+    let envelope = try XPCReplyEnvelope.unmarshal(from: result)
+    return try envelope.decodeReturnValue(throwing: errorType, returning: returnType)
   }
 
   public func remoteCallVoid<Act, Err>(
@@ -118,9 +119,16 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     Act.ID == ActorID,
     Err: Error
   {
-    fatalError(
-      "Attempted to make remote call to \(target) on actor \(actor) using  a local-only actor system"
+    let message = XPCInvocationMessage(
+      actorID: actor.id,
+      target: target,
+      arguments: invocation.array
     )
+    let payload = try message.marshal()
+    let xpcDict = XPCDictionary(xpc_object: payload.xpc_object)
+    let result = try await connection.send(message: xpcDict)
+    let envelope = try XPCReplyEnvelope.unmarshal(from: result)
+    try envelope.decodeReturnVoid(throwing: errorType)
   }
 
 }
@@ -166,13 +174,13 @@ public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandl
 }
 
 typealias ErrorXPCMarshal = XPCMarshal & Error
-typealias ErrorCodable = Error & Codable
 
-enum XPCReply: Error {
-  case s(XPCObject)
-  case xf(ErrorXPCMarshal)
-  case cf(ErrorCodable)
-  case nf(NSError)
+@available(macOS 15, *)
+@XPCMarshal
+enum XPCRemoteCallError: Error, Sendable, Equatable {
+  case invalidReplyKind(expected: XPCReplyKind, actual: XPCReplyKind)
+  case missingPayload(XPCReplyKind)
+  case unsupportedThrownErrorType(String)
 }
 
 @available(macOS 13.0, *)

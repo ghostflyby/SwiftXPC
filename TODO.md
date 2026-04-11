@@ -29,9 +29,9 @@
 - [x] `XPCMarshal` 基础序列化可用，已有 round-trip 和 layout 测试。
 - [x] `XPCDistributedActorSystem` 已有 `ActorID` 分配、本地 actor 注册、出站 `remoteCall` 骨架。
 - [x] request/reply 基础 envelope 已补齐，并有 round-trip 测试。
-- [ ] 入站消息分发尚未实现。
-- [ ] reply/result/error 协议尚未闭环。
-- [ ] `remoteCallVoid` 尚未实现。
+- [x] 入站消息分发已接入 actor system 初始化路径。
+- [x] reply/result/error 协议已通过统一 envelope 闭环。
+- [x] `remoteCallVoid` 已实现 reply envelope 解码。
 - [ ] 没有 `DistributedXPC` 集成测试。
 
 ## Phase 1: 固定最小协议和测试骨架
@@ -40,7 +40,7 @@
 
 - [x] 定义请求消息结构。
   - v1 只保留 `actorID`、`target`、`arguments`。
-- [ ] 定义 reply 消息结构。
+- [x] 定义 reply 消息结构。
   - 至少区分 `success(value)`、`successVoid`、`failure(error)`。
   - 错误编码策略先限定为 `XPCMarshal & Error`，必要时再补 `NSError` 兜底。
 - [x] 约定协议版本字段。
@@ -68,16 +68,16 @@
 
 目标：不依赖反射和显式类型元数据，建立 `target.identifier -> typed handler` 的分发机制。
 
-- [ ] 定义 actor 侧分发协议。
+- [x] 定义 actor 侧分发协议。
   - 例如 `AnyXPCDistributedDispatching`。
-- [ ] 定义类型擦除的 handler 结构。
+- [x] 定义类型擦除的 handler 结构。
   - handler 内部静态写死参数解码、方法调用、reply 编码。
-- [ ] 为单个示例 distributed actor 手写一张最小分发表。
-- [ ] 服务端新增统一入站 dispatch 入口。
+- [x] 为单个示例 distributed actor 手写一张最小分发表。
+- [x] 服务端新增统一入站 dispatch 入口。
   - 从 request 解出 `actorID`、`target`、`arguments`。
   - 找到本地 actor。
   - 将 actor 转为可分发协议并命中 handler。
-- [ ] 对找不到 actor、找不到 target、参数解码失败分别定义错误路径。
+- [x] 对找不到 actor、找不到 target、参数解码失败分别定义错误路径。
 
 难点：
 
@@ -93,12 +93,12 @@
 
 目标：把 request/reply 做成真正的 RPC，而不是只完成 happy path。
 
-- [ ] 实现 `XPCInvocationResultHandler.onReturn(value:)` 的返回值编码。
-- [ ] 实现 `XPCInvocationResultHandler.onReturnVoid()` 的空返回编码。
-- [ ] 实现 `XPCInvocationResultHandler.onThrow(error:)` 的错误编码。
-- [ ] 调整客户端 `remoteCall` 解码 reply envelope，而不是直接把 reply 当成 `Res`。
-- [ ] 实现 `remoteCallVoid`。
-- [ ] 清理或重构现有 `XPCReply`，避免 dead code。
+- [x] 实现 `XPCInvocationResultHandler.onReturn(value:)` 的返回值编码。
+- [x] 实现 `XPCInvocationResultHandler.onReturnVoid()` 的空返回编码。
+- [x] 实现 `XPCInvocationResultHandler.onThrow(error:)` 的错误编码。
+- [x] 调整客户端 `remoteCall` 解码 reply envelope，而不是直接把 reply 当成 `Res`。
+- [x] 实现 `remoteCallVoid`。
+- [x] 清理或重构现有 `XPCReply`，避免 dead code。
 
 建议：
 
@@ -145,7 +145,7 @@
   - connection interrupted / invalid
   - 多参数与嵌套 `XPCMarshal` 类型
   - 并发调用
-- [ ] 增加协议 round-trip 测试。
+- [x] 增加协议 round-trip 测试。
   - request 编码/解码
   - reply 编码/解码
 
@@ -178,10 +178,10 @@
 若目标是尽快拿到第一个“真的能用”的版本，建议先做到以下范围：
 
 - [ ] 单 service、单 connection。
-- [ ] 非泛型 distributed method。
-- [ ] 参数和返回值都要求 `XPCMarshal`。
-- [ ] 支持普通返回值、`Void`、`XPCMarshal & Error`。
-- [ ] 服务端通过静态分发表分发，不依赖反射恢复签名。
+- [x] 非泛型 distributed method。
+- [x] 参数和返回值都要求 `XPCMarshal`。
+- [x] 支持普通返回值、`Void`、`XPCMarshal & Error`。
+- [x] 服务端通过静态分发表分发，不依赖反射恢复签名。
 - [ ] 端到端测试覆盖 1 条成功路径、1 条 `Void` 路径、1 条抛错路径。
 
 做到这里，再继续扩展泛型、复杂重载、类型元数据协商，风险会低很多。

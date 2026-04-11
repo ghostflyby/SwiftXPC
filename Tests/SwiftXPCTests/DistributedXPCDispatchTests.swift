@@ -83,6 +83,29 @@ private func makeSystem() -> XPCDistributedActorSystem {
   }
 }
 
+@Test func DispatchInvocationFailsForMissingArgument() async throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let system = makeSystem()
+  _ = SampleDispatchActor(actorSystem: system)
+
+  do {
+    _ = try await system.dispatchInvocation(
+      XPCInvocationMessage(
+        actorID: XPCActorID(id: 1),
+        target: RemoteCallTarget("greet"),
+        arguments: XPCArray()
+      )
+    )
+    Issue.record("Expected missing argument to throw")
+  } catch let error as XPCMarshalError {
+    #expect(error.kind == .outOfBounds(index: 0, count: 0))
+  } catch {
+    Issue.record("Expected XPCMarshalError, got \(error)")
+  }
+}
+
 @Test func HandleIncomingMessageDispatchesInvocation() async throws {
   guard #available(macOS 15, *) else {
     return

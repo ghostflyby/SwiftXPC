@@ -27,6 +27,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   public init(connection: XPCConnection) {
     self.connection = connection
+    installEventHandler()
   }
 
   public func resolve<Act>(id: ActorID, as actorType: Act.Type)
@@ -65,9 +66,12 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   }
 
   func installEventHandler() {
-    connection.setEventHandler { [self] object in
-      Task {
-        try? await handleIncomingMessage(object)
+    connection.setEventHandler { [weak self] object in
+      Task { [weak self] in
+        guard let self else {
+          return
+        }
+        try? await self.handleIncomingMessage(object)
       }
     }
   }

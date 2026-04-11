@@ -15,6 +15,9 @@ public struct XPCInvocationDecoder: DistributedTargetInvocationDecoder {
   }
 
   public mutating func decodeNextArgument<Argument: SerializationRequirement>() throws -> Argument {
+    guard currentIndex < array.endIndex else {
+      throw XPCMarshalError.outOfBounds(index: currentIndex, count: array.count)
+    }
     defer { currentIndex += 1 }
     return try Argument.unmarshal(from: array[currentIndex])
   }

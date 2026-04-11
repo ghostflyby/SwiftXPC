@@ -20,19 +20,11 @@ distributed actor SampleDispatchActor: XPCDistributedTargetDispatching {
 extension SampleDispatchActor {
   static var xpcDistributedTargetHandlers: [String: AnyXPCDistributedTargetHandler] {
     [
-      "greet": .init { (actor: SampleDispatchActor, arguments) in
-        var decoder = XPCInvocationDecoder(array: arguments.array)
-        let name: String = try decoder.decodeNextArgument()
-        let result = try await actor.greet(name: name)
-        return XPCReplyEnvelope(
-          kind: .returnValue,
-          payload: try result.marshal()
-        )
+      "greet": .init { (actor: SampleDispatchActor, name: String) in
+        try await actor.greet(name: name)
       },
-      "ping": .init { (actor: SampleDispatchActor, arguments) in
-        #expect(arguments.array.count == 0)
+      "ping": .init { (actor: SampleDispatchActor) in
         try await actor.ping()
-        return XPCReplyEnvelope(kind: .returnVoid)
       },
     ]
   }
@@ -99,10 +91,10 @@ private func makeSystem() -> XPCDistributedActorSystem {
       )
     )
     Issue.record("Expected missing argument to throw")
-  } catch let error as XPCMarshalError {
-    #expect(error.kind == .outOfBounds(index: 0, count: 0))
+  } catch let error as XPCDispatchError {
+    #expect(error == .argumentCountMismatch(expected: 1, actual: 0))
   } catch {
-    Issue.record("Expected XPCMarshalError, got \(error)")
+    Issue.record("Expected XPCDispatchError, got \(error)")
   }
 }
 

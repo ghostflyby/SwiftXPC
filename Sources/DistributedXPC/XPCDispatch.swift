@@ -8,130 +8,58 @@ import SwiftXPC
 public enum XPCDispatchError: Error, Sendable, Equatable {
   case unknownActor(XPCActorID)
   case unknownTarget(String)
-  case nonDispatchingActorType(String)
+  case missingTargetMetadata(String)
   case argumentCountMismatch(expected: Int, actual: Int)
+  case targetExecutionFailed(String)
+  case missingInvocationResult
 }
 
 @available(macOS 15, *)
-struct XPCDispatchArguments: @unchecked Sendable {
-  let array: XPCArray
+enum XPCDistributedTargetReturnKind {
+  case value
+  case void
 }
 
 @available(macOS 15, *)
-struct AnyXPCDistributedTargetHandler: Sendable {
-  private let _invoke: @Sendable (any DistributedActor, XPCDispatchArguments) async throws -> XPCReplyEnvelope
+struct XPCDistributedTargetMetadata {
+  let argumentCount: Int
+  let returnKind: XPCDistributedTargetReturnKind
+  let returnType: Any.Type?
+  let thrownErrorType: (any ErrorXPCMarshal.Type)?
 
-  init<Act>(
-    _ invoke: @escaping @Sendable (Act, XPCDispatchArguments) async throws -> XPCReplyEnvelope
-  )
-  where Act: DistributedActor, Act.ActorSystem == XPCDistributedActorSystem, Act.ID == XPCActorID {
-    self._invoke = { actor, arguments in
-      guard let actor = actor as? Act else {
-        throw XPCDispatchError.nonDispatchingActorType(String(describing: type(of: actor)))
-      }
-      return try await invoke(actor, arguments)
-    }
+  init(
+    argumentCount: Int,
+    returnKind: XPCDistributedTargetReturnKind,
+    returnType: Any.Type? = nil,
+    thrownErrorType: (any ErrorXPCMarshal.Type)? = nil
+  ) {
+    self.argumentCount = argumentCount
+    self.returnKind = returnKind
+    self.returnType = returnType
+    self.thrownErrorType = thrownErrorType
   }
 
-  init<Act, Success>(
-    _ invoke: @escaping @Sendable (Act) async throws -> Success
-  )
-  where
-    Act: DistributedActor,
-    Act.ActorSystem == XPCDistributedActorSystem,
-    Act.ID == XPCActorID,
-    Success: XPCMarshal & Sendable
-  {
-    self.init { actor, arguments in
-      try arguments.validateCount(0)
-      let value = try await invoke(actor)
-      return XPCReplyEnvelope(kind: .returnValue, payload: try value.marshal())
-    }
-  }
-
-  init<Act>(
-    _ invoke: @escaping @Sendable (Act) async throws -> Void
-  )
-  where Act: DistributedActor, Act.ActorSystem == XPCDistributedActorSystem, Act.ID == XPCActorID {
-    self.init { actor, arguments in
-      try arguments.validateCount(0)
-      try await invoke(actor)
-      return XPCReplyEnvelope(kind: .returnVoid)
-    }
-  }
-
-  init<Act, Argument, Success>(
-    _ invoke: @escaping @Sendable (Act, Argument) async throws -> Success
-  )
-  where
-    Act: DistributedActor,
-    Act.ActorSystem == XPCDistributedActorSystem,
-    Act.ID == XPCActorID,
-    Argument: XPCMarshal & Sendable,
-    Success: XPCMarshal & Sendable
-  {
-    self.init { actor, arguments in
-      try arguments.validateCount(1)
-      var decoder = XPCInvocationDecoder(array: arguments.array)
-      let argument: Argument = try decoder.decodeNextArgument()
-      let value = try await invoke(actor, argument)
-      return XPCReplyEnvelope(kind: .returnValue, payload: try value.marshal())
-    }
-  }
-
-  init<Act, Argument>(
-    _ invoke: @escaping @Sendable (Act, Argument) async throws -> Void
-  )
-  where
-    Act: DistributedActor,
-    Act.ActorSystem == XPCDistributedActorSystem,
-    Act.ID == XPCActorID,
-    Argument: XPCMarshal & Sendable
-  {
-    self.init { actor, arguments in
-      try arguments.validateCount(1)
-      var decoder = XPCInvocationDecoder(array: arguments.array)
-      let argument: Argument = try decoder.decodeNextArgument()
-      try await invoke(actor, argument)
-      return XPCReplyEnvelope(kind: .returnVoid)
-    }
-  }
-
-  func invoke(on actor: any DistributedActor, arguments: XPCDispatchArguments) async throws -> XPCReplyEnvelope {
-    try await _invoke(actor, arguments)
-  }
-}
-
-@available(macOS 15, *)
-extension XPCDispatchArguments {
-  func validateCount(_ expected: Int) throws {
-    guard array.count == expected else {
-      throw XPCDispatchError.argumentCountMismatch(expected: expected, actual: array.count)
+  func validate(arguments: XPCArray) throws {
+    guard arguments.count == argumentCount else {
+      throw XPCDispatchError.argumentCountMismatch(expected: argumentCount, actual: arguments.count)
     }
   }
 }
 
 @available(macOS 15, *)
-protocol XPCDistributedTargetDispatching: DistributedActor
+protocol XPCDistributedTargetMetadataProviding: DistributedActor
 where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {
-  static var xpcDistributedTargetHandlers: [String: AnyXPCDistributedTargetHandler] { get }
-  static func _xpcDispatchAny(
-    _ actor: any DistributedActor,
-    target: RemoteCallTarget,
-    arguments: XPCDispatchArguments
-  ) async throws -> XPCReplyEnvelope
+  static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] { get }
 }
 
 @available(macOS 15, *)
-extension XPCDistributedTargetDispatching {
-  static func _xpcDispatchAny(
-    _ actor: any DistributedActor,
-    target: RemoteCallTarget,
-    arguments: XPCDispatchArguments
-  ) async throws -> XPCReplyEnvelope {
-    guard let handler = Self.xpcDistributedTargetHandlers[target.identifier] else {
+extension XPCDistributedTargetMetadataProviding {
+  static func xpcDistributedTargetMetadata(for target: RemoteCallTarget)
+    throws -> XPCDistributedTargetMetadata
+  {
+    guard let metadata = xpcDistributedTargetMetadata[target.identifier] else {
       throw XPCDispatchError.unknownTarget(target.identifier)
     }
-    return try await handler.invoke(on: actor, arguments: arguments)
+    return metadata
   }
 }

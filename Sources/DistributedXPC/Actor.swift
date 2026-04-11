@@ -84,15 +84,37 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       return actor
     }
 
-    guard let dispatchingType = type(of: actor) as? any XPCDistributedTargetDispatching.Type else {
-      throw XPCDispatchError.nonDispatchingActorType(String(describing: type(of: actor)))
+    guard let metadataProvider = type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type else {
+      throw XPCDispatchError.missingTargetMetadata(String(describing: type(of: actor)))
+    }
+    let metadata = try metadataProvider.xpcDistributedTargetMetadata(for: message.target)
+    try metadata.validate(arguments: message.arguments)
+
+    var decoder = XPCInvocationDecoder(array: message.arguments)
+    let replyLock = Mutex<XPCReplyEnvelope?>(nil)
+    let resultHandler = XPCInvocationResultHandler { envelope in
+      replyLock.withLock {
+        $0 = envelope
+      }
     }
 
-    return try await dispatchingType._xpcDispatchAny(
-      actor,
-      target: message.target,
-      arguments: XPCDispatchArguments(array: message.arguments)
-    )
+    do {
+      try await executeDistributedTarget(
+        on: actor,
+        target: message.target,
+        invocationDecoder: &decoder,
+        handler: resultHandler
+      )
+    } catch let error as any ErrorXPCMarshal {
+      throw error
+    } catch {
+      throw XPCDispatchError.targetExecutionFailed(String(describing: error))
+    }
+
+    guard let reply = replyLock.withLock({ $0 }) else {
+      throw XPCDispatchError.missingInvocationResult
+    }
+    return reply
   }
 
   func handleIncomingMessage(_ object: XPCObject) async throws {
@@ -174,15 +196,25 @@ public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
 @available(macOS 15, *)
 public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandler {
   public typealias SerializationRequirement = XPCMarshal
-  let received: SwiftXPC.XPCDictionary
+  private let sendEnvelope: @Sendable (XPCReplyEnvelope) throws -> Void
+
+  init(_ sendEnvelope: @escaping @Sendable (XPCReplyEnvelope) throws -> Void) {
+    self.sendEnvelope = sendEnvelope
+  }
+
+  init(received: SwiftXPC.XPCDictionary) {
+    self.sendEnvelope = { envelope in
+      guard var reply = XPCDictionary(replyTo: received), let connection = received.connection else {
+        return
+      }
+
+      try envelope.write(to: &reply)
+      connection.sendAndForget(message: reply)
+    }
+  }
 
   func send(_ envelope: XPCReplyEnvelope) throws {
-    guard var reply = XPCDictionary(replyTo: received), let connection = received.connection else {
-      return
-    }
-
-    try envelope.write(to: &reply)
-    connection.sendAndForget(message: reply)
+    try sendEnvelope(envelope)
   }
 
   public func onReturn<Success: SerializationRequirement>(value: Success) async throws {

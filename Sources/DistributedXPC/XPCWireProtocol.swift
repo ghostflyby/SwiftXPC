@@ -38,7 +38,7 @@ public enum XPCReplyKind: Sendable, Hashable, Equatable {
 
 @available(macOS 13.0, *)
 @XPCMarshal
-public struct XPCReplyEnvelope {
+public struct XPCReplyEnvelope: Sendable {
   public let version: UInt64
   public let kind: XPCReplyKind
   public let payload: XPCObject?

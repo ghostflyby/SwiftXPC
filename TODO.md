@@ -9,9 +9,12 @@
 - 只支持非泛型 distributed method。
 - 不在 request wire 上显式传 `returnType`、`errorType`、`genericSubstitutions`。
 - 服务端不依赖反射恢复签名。
-- 服务端通过静态分发表分发：
+- 服务端通过 Swift runtime 的 `executeDistributedTarget` 分发：
+  - key 是 compiler 生成的 `target.identifier`
+  - 参数解码和实际调用交给 compiler 生成的 distributed accessor
+- 静态表只作为 metadata registry：
   - key 是 `target.identifier`
-  - value 是宏或手写生成的 typed handler
+  - value 是参数数量、返回形态、必要时的错误类型等补充元数据
 - reply wire 只区分：
   - `returnValue`
   - `returnVoid`
@@ -64,29 +67,28 @@
 - request 不再携带显式类型元数据。
 - 新增的测试可以先 `TODO`/`XCTExpectFailure` 占位，但用例名字和行为要先定下来。
 
-## Phase 2: 静态分发表与服务端分发入口
+## Phase 2: `executeDistributedTarget` 与服务端分发入口
 
-目标：不依赖反射和显式类型元数据，建立 `target.identifier -> typed handler` 的分发机制。
+目标：不依赖反射和显式 wire 类型元数据，使用 Swift runtime 的 distributed target accessor 执行调用，并保留 `target.identifier -> metadata` 的补充表。
 
-- [x] 定义 actor 侧分发协议。
-  - 例如 `AnyXPCDistributedDispatching`。
-- [x] 定义类型擦除的 handler 结构。
-  - handler 内部静态写死参数解码、方法调用、reply 编码。
-- [x] 为单个示例 distributed actor 手写一张最小分发表。
+- [x] 定义 actor 侧 metadata 协议。
+- [x] 定义 target metadata 结构。
+  - 当前包含 `argumentCount`、`returnKind`、`returnType`、`thrownErrorType`。
+- [x] 为单个示例 distributed actor 手写一张最小 metadata 表。
 - [x] 服务端新增统一入站 dispatch 入口。
   - 从 request 解出 `actorID`、`target`、`arguments`。
   - 找到本地 actor。
-  - 将 actor 转为可分发协议并命中 handler。
-- [x] 对找不到 actor、找不到 target、参数解码失败分别定义错误路径。
+  - 使用 `executeDistributedTarget` 命中 compiler 生成的 distributed accessor。
+- [x] 对找不到 actor、找不到 target、参数数量不匹配分别定义错误路径。
 
 难点：
 
 - `target.identifier` 只能做路由 key，不能承担“恢复类型”的职责。
-- 类型关系必须在 handler 生成时就静态写死，不能拖到运行时再猜。
+- 类型关系必须由 compiler accessor 或 metadata 生成时静态写死，不能拖到运行时再猜。
 
 完成标准：
 
-- 一个示例 actor 能通过静态表完成一次真实分发。
+- 一个示例 actor 能通过 `executeDistributedTarget` 完成一次真实分发。
 - 系统层不需要从字符串恢复参数/返回/错误类型。
 
 ## Phase 3: 闭环返回值、`Void` 和错误
@@ -109,26 +111,26 @@
 
 - 成功返回值、`Void` 返回、业务错误、连接错误四条路径都可区分。
 
-## Phase 4: 宏生成分发表
+## Phase 4: 宏生成 metadata 表
 
-目标：把手写分发表替换为宏生成，减少样板代码。
+目标：把手写 metadata 表替换为宏生成，减少样板代码，并为 reply 错误解码保留必要类型信息。
 
-- [ ] 设计一个 actor 级宏或辅助宏，为 distributed methods 生成静态 handler 表。
+- [ ] 设计一个 actor 级宏或辅助宏，为 distributed methods 生成静态 metadata 表。
 - [ ] 生成稳定的 v1 target key。
   - 当前阶段只支持非泛型。
   - 当前阶段避免复杂重载。
-- [ ] 让宏直接展开 typed handler。
-  - 参数类型、返回类型、错误类型在展开代码中静态写死。
-- [ ] 用宏替换示例 actor 的手写分发表。
+- [ ] 让宏直接展开 metadata。
+  - 参数数量、返回形态、必要时的错误类型在展开代码中静态写死。
+- [ ] 用宏替换示例 actor 的手写 metadata 表。
 
 难点：
 
-- 宏应生成“字符串 -> typed handler”的静态对应关系，而不是生成“字符串 -> 类型反查”逻辑。
+- 宏应生成“compiler target identifier -> metadata”的静态对应关系，而不是生成“字符串 -> 类型反查”逻辑。
 - 如果要支持重载，需要先定义稳定 key 规则。
 
 完成标准：
 
-- 示例 actor 不再手写 dispatch 表，但行为与手写版本一致。
+- 示例 actor 不再手写 metadata 表，但行为与手写版本一致。
 
 ## Phase 5: 集成测试补齐
 
@@ -167,9 +169,9 @@
 ## 推荐执行顺序
 
 1. Phase 1：固定最小协议和测试骨架。
-2. Phase 2：用手写静态分发表打通第一次分发。
+2. Phase 2：用 `executeDistributedTarget` 打通第一次分发，并保留 metadata 表。
 3. Phase 3：补 reply/void/error 闭环。
-4. Phase 4：把分发表宏化。
+4. Phase 4：把 metadata 表宏化。
 5. Phase 5：补足集成测试。
 6. Phase 6：做健壮性和文档收尾。
 
@@ -181,7 +183,7 @@
 - [x] 非泛型 distributed method。
 - [x] 参数和返回值都要求 `XPCMarshal`。
 - [x] 支持普通返回值、`Void`、`XPCMarshal & Error`。
-- [x] 服务端通过静态分发表分发，不依赖反射恢复签名。
+- [x] 服务端通过 `executeDistributedTarget` 分发，不依赖反射恢复签名。
 - [ ] 端到端测试覆盖 1 条成功路径、1 条 `Void` 路径、1 条抛错路径。
 
 做到这里，再继续扩展泛型、复杂重载、类型元数据协商，风险会低很多。

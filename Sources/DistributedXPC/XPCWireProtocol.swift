@@ -54,6 +54,15 @@ public struct XPCReplyEnvelope {
   }
 }
 
+@available(macOS 13.0, *)
+extension XPCReplyEnvelope {
+  func write(to dictionary: inout XPCDictionary) throws(XPCMarshalError) {
+    dictionary["version"] = try version.marshal()
+    dictionary["kind"] = try kind.marshal()
+    dictionary["payload"] = payload
+  }
+}
+
 @available(macOS 15, *)
 extension XPCReplyEnvelope {
   func decodeReturnValue<Res, Err>(

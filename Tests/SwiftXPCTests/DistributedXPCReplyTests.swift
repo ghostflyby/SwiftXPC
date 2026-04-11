@@ -63,3 +63,20 @@ enum SampleReplyError: Error, Equatable {
     )
   }
 }
+
+@Test func ReplyEnvelopeWritesIntoDictionary() throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  var dictionary = XPCDictionary()
+  let envelope = XPCReplyEnvelope(
+    kind: .returnValue,
+    payload: try "payload".marshal()
+  )
+
+  try envelope.write(to: &dictionary)
+  let decoded = try XPCReplyEnvelope.unmarshal(from: dictionary.marshal())
+
+  #expect(decoded.kind == .returnValue)
+  #expect(try String.unmarshal(from: decoded.payload!) == "payload")
+}

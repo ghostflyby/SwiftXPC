@@ -142,34 +142,44 @@ public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
   }
 }
 
+@available(macOS 15, *)
 public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandler {
   public typealias SerializationRequirement = XPCMarshal
   let received: SwiftXPC.XPCDictionary
-  public func onReturn<Success: SerializationRequirement>(value: Success) async throws {
-    let reply = XPCDictionary(replyTo: received)
-    guard let reply = reply, let connection = received.connection else {
+
+  private func send(_ envelope: XPCReplyEnvelope) throws {
+    guard var reply = XPCDictionary(replyTo: received), let connection = received.connection else {
       return
     }
 
+    try envelope.write(to: &reply)
     connection.sendAndForget(message: reply)
+  }
+
+  public func onReturn<Success: SerializationRequirement>(value: Success) async throws {
+    try send(
+      XPCReplyEnvelope(
+        kind: .returnValue,
+        payload: try value.marshal()
+      )
+    )
   }
 
   public func onReturnVoid() async throws {
-    let reply = XPCDictionary(replyTo: received)
-    guard let reply = reply, let connection = received.connection else {
-      return
-    }
-
-    connection.sendAndForget(message: reply)
+    try send(XPCReplyEnvelope(kind: .returnVoid))
   }
 
   public func onThrow<Err: Error>(error: Err) async throws {
-    let reply = XPCDictionary(replyTo: received)
-    guard let reply = reply, let connection = received.connection else {
-      return
+    guard let error = error as? any ErrorXPCMarshal else {
+      throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: Err.self))
     }
 
-    connection.sendAndForget(message: reply)
+    try send(
+      XPCReplyEnvelope(
+        kind: .throwError,
+        payload: try error.marshal()
+      )
+    )
   }
 }
 

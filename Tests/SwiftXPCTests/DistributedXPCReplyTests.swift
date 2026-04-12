@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
+@_spi(Experimental)
 @testable import DistributedXPC
 import SwiftXPC
 import Testing

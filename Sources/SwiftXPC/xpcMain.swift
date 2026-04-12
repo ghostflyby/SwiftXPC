@@ -2,19 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 import XPC
 
-@MainActor
+nonisolated(unsafe)
 private var mainHandler: @Sendable (XPCConnection) -> Void = { _ in }
 
-@MainActor
-private func m(_ c: xpc_connection_t) {
-  let connection = XPCConnection(xpc_object: c)
-  mainHandler(connection)
+private func handleIncomingConnection(_ connection: xpc_connection_t) {
+  mainHandler(XPCConnection(xpc_object: connection))
 }
 
-@MainActor
 public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection) -> Void) -> Never {
   mainHandler = handler
-  xpc_main { c in m(c) }
+  xpc_main(handleIncomingConnection)
 }
 
 extension XPCConnection {

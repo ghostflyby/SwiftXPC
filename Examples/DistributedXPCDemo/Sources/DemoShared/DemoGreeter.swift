@@ -44,7 +44,7 @@ extension DemoGreeterError: XPCMarshal {
 public distributed actor DemoGreeter {
   public typealias ActorSystem = XPCDistributedActorSystem
 
-  public distributed func greet(name: String) throws -> String {
+  public distributed func greet(name: String) throws(DemoGreeterError) -> String {
     guard name != "error" else {
       throw DemoGreeterError.rejected
     }

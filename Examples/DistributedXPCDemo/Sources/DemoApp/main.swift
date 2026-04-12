@@ -19,7 +19,7 @@ struct DemoApp {
     connection.activate()
 
     do {
-      let greeter = try DemoGreeter.resolve(id: XPCActorID(id: 1), using: system)
+      let greeter = DemoGreeter(actorSystem: system)
 
       print(try await greeter.greet(name: "SwiftXPC"))
       try await greeter.ping()

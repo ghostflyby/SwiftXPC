@@ -9,6 +9,7 @@ private func handleIncomingConnection(_ connection: xpc_connection_t) {
   mainHandler(XPCConnection(xpc_object: connection))
 }
 
+@MainActor
 public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection) -> Void) -> Never {
   mainHandler = handler
   xpc_main(handleIncomingConnection)

@@ -67,7 +67,8 @@ extension XPCReplyEnvelope {
 extension XPCReplyEnvelope {
   func decodeReturnValue<Res, Err>(
     throwing errorType: Err.Type,
-    returning returnType: Res.Type
+    returning returnType: Res.Type,
+    fallbackErrorType: (any ErrorXPCMarshal.Type)? = nil
   ) throws -> Res
   where Res: XPCMarshal, Err: Error {
     switch kind {
@@ -82,11 +83,14 @@ extension XPCReplyEnvelope {
       guard let payload else {
         throw XPCRemoteCallError.missingPayload(.throwError)
       }
-      throw try decodeThrownError(payload, as: errorType)
+      throw try decodeThrownError(payload, as: errorType, fallback: fallbackErrorType)
     }
   }
 
-  func decodeReturnVoid<Err>(throwing errorType: Err.Type) throws
+  func decodeReturnVoid<Err>(
+    throwing errorType: Err.Type,
+    fallbackErrorType: (any ErrorXPCMarshal.Type)? = nil
+  ) throws
   where Err: Error {
     switch kind {
     case .returnVoid:
@@ -97,14 +101,23 @@ extension XPCReplyEnvelope {
       guard let payload else {
         throw XPCRemoteCallError.missingPayload(.throwError)
       }
-      throw try decodeThrownError(payload, as: errorType)
+      throw try decodeThrownError(payload, as: errorType, fallback: fallbackErrorType)
     }
   }
 
-  private func decodeThrownError<Err: Error>(_ object: XPCObject, as errorType: Err.Type) throws -> Error {
-    guard let marshalableErrorType = errorType as? any (XPCMarshal & Error).Type else {
-      throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: errorType))
+  private func decodeThrownError<Err: Error>(
+    _ object: XPCObject,
+    as errorType: Err.Type,
+    fallback fallbackErrorType: (any ErrorXPCMarshal.Type)?
+  ) throws -> Error {
+    if let marshalableErrorType = errorType as? any ErrorXPCMarshal.Type {
+      return try marshalableErrorType.unmarshal(from: object)
     }
-    return try marshalableErrorType.unmarshal(from: object)
+
+    if let fallbackErrorType {
+      return try fallbackErrorType.unmarshal(from: object)
+    }
+
+    throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: errorType))
   }
 }

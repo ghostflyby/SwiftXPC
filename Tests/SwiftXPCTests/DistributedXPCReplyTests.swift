@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Distributed
 @testable import DistributedXPC
 import SwiftXPC
 import Testing
@@ -8,6 +9,41 @@ import Testing
 @XPCMarshal
 enum SampleReplyError: Error, Equatable {
   case boom
+}
+
+@available(macOS 15, *)
+private let sampleReplyMetadataTargetIdentifier = "replyError"
+
+@available(macOS 15, *)
+distributed actor SampleReplyMetadataActor {
+  typealias ActorSystem = XPCDistributedActorSystem
+
+  distributed func replyError() throws -> String {
+    throw SampleReplyError.boom
+  }
+}
+
+@available(macOS 15, *)
+extension SampleReplyMetadataActor: XPCDistributedTargetMetadataProviding {
+  static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
+    [
+      sampleReplyMetadataTargetIdentifier: .init(
+        argumentCount: 0,
+        returnKind: .value,
+        returnType: String.self,
+        thrownErrorType: SampleReplyError.self
+      )
+    ]
+  }
+}
+
+@available(macOS 15, *)
+distributed actor SampleReplyActorWithoutMetadata {
+  typealias ActorSystem = XPCDistributedActorSystem
+
+  distributed func replyError() throws -> String {
+    throw SampleReplyError.boom
+  }
 }
 
 @Test func DecodeReplyReturnsValue() throws {
@@ -44,6 +80,102 @@ enum SampleReplyError: Error, Equatable {
 
   #expect(throws: SampleReplyError.boom) {
     let _: String = try envelope.decodeReturnValue(
+      throwing: SampleReplyError.self,
+      returning: String.self
+    )
+  }
+}
+
+@Test func DecodeReplyUsesFallbackThrownErrorType() throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let envelope = XPCReplyEnvelope(
+    kind: .throwError,
+    payload: try SampleReplyError.boom.marshal()
+  )
+
+  #expect(throws: SampleReplyError.boom) {
+    let _: String = try envelope.decodeReturnValue(
+      throwing: Error.self,
+      returning: String.self,
+      fallbackErrorType: SampleReplyError.self
+    )
+  }
+}
+
+@Test func DecodeReplyVoidUsesFallbackThrownErrorType() throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let envelope = XPCReplyEnvelope(
+    kind: .throwError,
+    payload: try SampleReplyError.boom.marshal()
+  )
+
+  #expect(throws: SampleReplyError.boom) {
+    try envelope.decodeReturnVoid(
+      throwing: Error.self,
+      fallbackErrorType: SampleReplyError.self
+    )
+  }
+}
+
+@Test func DecodeReplyRejectsUnsupportedErasedErrorWithoutFallback() throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let envelope = XPCReplyEnvelope(
+    kind: .throwError,
+    payload: try SampleReplyError.boom.marshal()
+  )
+
+  #expect(throws: XPCRemoteCallError.unsupportedThrownErrorType("Error")) {
+    let _: String = try envelope.decodeReturnValue(
+      throwing: Error.self,
+      returning: String.self
+    )
+  }
+}
+
+@Test func DecodeRemoteCallReplyUsesMetadataFallbackThrownErrorType() throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let system = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  _ = SampleReplyMetadataActor(actorSystem: system)
+  let envelope = XPCReplyEnvelope(
+    kind: .throwError,
+    payload: try SampleReplyError.boom.marshal()
+  )
+
+  #expect(throws: SampleReplyError.boom) {
+    let _: String = try system.decodeRemoteCallReply(
+      envelope,
+      for: SampleReplyMetadataActor.self,
+      target: RemoteCallTarget(sampleReplyMetadataTargetIdentifier),
+      throwing: Error.self,
+      returning: String.self
+    )
+  }
+}
+
+@Test func DecodeRemoteCallReplyDoesNotRequireMetadataForMarshalableError() throws {
+  guard #available(macOS 15, *) else {
+    return
+  }
+  let system = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  _ = SampleReplyActorWithoutMetadata(actorSystem: system)
+  let envelope = XPCReplyEnvelope(
+    kind: .throwError,
+    payload: try SampleReplyError.boom.marshal()
+  )
+
+  #expect(throws: SampleReplyError.boom) {
+    let _: String = try system.decodeRemoteCallReply(
+      envelope,
+      for: SampleReplyActorWithoutMetadata.self,
+      target: RemoteCallTarget("missing"),
       throwing: SampleReplyError.self,
       returning: String.self
     )

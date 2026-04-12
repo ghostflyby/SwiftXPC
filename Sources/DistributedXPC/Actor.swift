@@ -117,6 +117,22 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     return reply
   }
 
+  private func fallbackThrownErrorType<Act, Err>(
+    for actorType: Act.Type,
+    target: RemoteCallTarget,
+    throwing errorType: Err.Type
+  ) throws -> (any ErrorXPCMarshal.Type)?
+  where Act: DistributedActor, Act.ID == ActorID, Err: Error {
+    if errorType is any ErrorXPCMarshal.Type {
+      return nil
+    }
+
+    guard let metadataProvider = actorType as? any XPCDistributedTargetMetadataProviding.Type else {
+      return nil
+    }
+    return try metadataProvider.xpcDistributedTargetMetadata(for: target).thrownErrorType
+  }
+
   func handleIncomingMessage(_ object: XPCObject) async throws {
     let received = try XPCDictionary.unmarshal(from: object)
     let resultHandler = XPCInvocationResultHandler(received: received)
@@ -132,6 +148,53 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
         )
       )
     }
+  }
+
+  func decodeRemoteCallReply<Act, Err, Res>(
+    _ envelope: XPCReplyEnvelope,
+    for actorType: Act.Type,
+    target: RemoteCallTarget,
+    throwing errorType: Err.Type,
+    returning returnType: Res.Type
+  ) throws -> Res
+  where
+    Act: DistributedActor,
+    Act.ID == ActorID,
+    Err: Error,
+    Res: SerializationRequirement
+  {
+    let fallbackErrorType = try fallbackThrownErrorType(
+      for: actorType,
+      target: target,
+      throwing: errorType
+    )
+    return try envelope.decodeReturnValue(
+      throwing: errorType,
+      returning: returnType,
+      fallbackErrorType: fallbackErrorType
+    )
+  }
+
+  func decodeRemoteCallVoidReply<Act, Err>(
+    _ envelope: XPCReplyEnvelope,
+    for actorType: Act.Type,
+    target: RemoteCallTarget,
+    throwing errorType: Err.Type
+  ) throws
+  where
+    Act: DistributedActor,
+    Act.ID == ActorID,
+    Err: Error
+  {
+    let fallbackErrorType = try fallbackThrownErrorType(
+      for: actorType,
+      target: target,
+      throwing: errorType
+    )
+    try envelope.decodeReturnVoid(
+      throwing: errorType,
+      fallbackErrorType: fallbackErrorType
+    )
   }
 
   public func remoteCall<Act, Err, Res>(
@@ -156,7 +219,13 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let xpcDict = XPCDictionary(xpc_object: payload.xpc_object)
     let result = try await connection.send(message: xpcDict)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
-    return try envelope.decodeReturnValue(throwing: errorType, returning: returnType)
+    return try decodeRemoteCallReply(
+      envelope,
+      for: Act.self,
+      target: target,
+      throwing: errorType,
+      returning: returnType
+    )
   }
 
   public func remoteCallVoid<Act, Err>(
@@ -179,7 +248,12 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let xpcDict = XPCDictionary(xpc_object: payload.xpc_object)
     let result = try await connection.send(message: xpcDict)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
-    try envelope.decodeReturnVoid(throwing: errorType)
+    try decodeRemoteCallVoidReply(
+      envelope,
+      for: Act.self,
+      target: target,
+      throwing: errorType
+    )
   }
 
 }

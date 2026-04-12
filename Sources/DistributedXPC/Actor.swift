@@ -5,11 +5,6 @@ import Foundation.NSError
 import SwiftXPC
 import Synchronization
 
-/// A `DistributedActorSystem` designed for local only testing.
-///
-/// It will crash on any attempt of remote communication, but can be useful
-/// for learning about `distributed actor` isolation, as well as early
-/// prototyping stages of development where a real system is not necessary yet.
 @available(macOS 15, *)
 public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   public typealias ActorID = XPCActorID

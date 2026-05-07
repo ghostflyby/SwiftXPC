@@ -15,6 +15,10 @@ import Testing
   try roundTrip(1.0)
 }
 
+@Test func RoundTripFloat() async throws {
+  try roundTrip(Float(3.14))
+}
+
 @Test func RoundTripArray() async throws {
   try roundTrip([1, 2, 3])
 }

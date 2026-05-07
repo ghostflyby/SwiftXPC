@@ -13,8 +13,8 @@ private final class DemoServiceSession {
   init(connection: XPCConnection) {
     self.system = XPCDistributedActorSystem(connection: connection)
     self.greeter = DemoGreeter(actorSystem: system)
-    // Remove this session from the global array when the connection is invalidated.
-    connection.addInvalidationHandler { [weak self] in
+    // Remove session from array when connection is invalidated.
+    self.connection.addInvalidationHandler { [weak self] in
       guard let self else { return }
       sessions.withLock { $0.removeAll { $0 === self } }
     }

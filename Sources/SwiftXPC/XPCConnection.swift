@@ -8,8 +8,8 @@ public struct XPCConnection: @unchecked Sendable {
 }
 
 final class _ConnectionHandlerState: @unchecked Sendable {
-  var invalidationHandlers: [@Sendable () -> Void] = []
-  var interruptionHandlers: [@Sendable () -> Void] = []
+  var invalidationHandler: (@Sendable () -> Void)?
+  var interruptionHandler: (@Sendable () -> Void)?
 }
 
 extension XPCConnection {
@@ -51,25 +51,34 @@ extension XPCConnection {
         let obj = XPCObject(xpc_object: xpc_object)
         // Detect XPC error objects (invalidation/interruption) and route to invalidation handler.
         if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INVALID) {
-          for handler in _handlerState.invalidationHandlers { handler() }
+          _handlerState.invalidationHandler?()
           return
         } else if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INTERRUPTED) {
-          for handler in _handlerState.interruptionHandlers { handler() }
+          _handlerState.interruptionHandler?()
           return
         }
         handler(obj)
       }
     )
   }
-
-  /// Register a handler to be called when the connection is invalidated.
+  /// Register a handler to run when the connection is invalidated.
+  /// Multiple handlers are chained: the previous handler runs before the new one.
   public func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
-    _handlerState.invalidationHandlers.append(handler)
+    let previous = _handlerState.invalidationHandler
+    _handlerState.invalidationHandler = {
+      previous?()
+      handler()
+    }
   }
 
-  /// Register a handler to be called when the connection is interrupted.
+  /// Register a handler to run when the connection is interrupted.
+  /// Multiple handlers are chained: the previous handler runs before the new one.
   public func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
-    _handlerState.interruptionHandlers.append(handler)
+    let previous = _handlerState.interruptionHandler
+    _handlerState.interruptionHandler = {
+      previous?()
+      handler()
+    }
   }
 
 }

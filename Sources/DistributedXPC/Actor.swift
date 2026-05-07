@@ -22,6 +22,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   public init(connection: XPCConnection) {
     self.connection = connection
+    // Clean up actor registry when the connection is invalidated.
+    connection.addInvalidationHandler { [weak self] in
+      self?.activeActorsLock.withLock { $0.removeAll() }
+    }
     installEventHandler()
   }
 

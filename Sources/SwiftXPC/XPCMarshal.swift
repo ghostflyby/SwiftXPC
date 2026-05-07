@@ -138,6 +138,16 @@ extension Double: XPCMarshal {
   }
 }
 
+extension Float: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
+    XPCObject(xpc_object: xpc_double_create(Double(self)))
+  }
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+    try ensureType(object, is: XPC_TYPE_DOUBLE)
+    return Float(xpc_double_get_value(object.xpc_object))
+  }
+}
+
 extension Int64: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
     XPCObject(xpc_object: xpc_int64_create(self))
@@ -289,7 +299,7 @@ extension Array: XPCMarshal where Element: XPCMarshal {
     let count = raw.count
     array.reserveCapacity(count)
     for item in raw {
-      let value = try! Element.unmarshal(from: item)
+      let value = try Element.unmarshal(from: item)
       array.append(value)
     }
     return array
@@ -313,7 +323,7 @@ extension Dictionary: XPCMarshal where Key == String, Value: XPCMarshal {
     result.reserveCapacity(count)
     for key in xpcDict.keys {
       if let valueObject = xpcDict[key] {
-        let value = try! Value.unmarshal(from: valueObject)
+        let value = try Value.unmarshal(from: valueObject)
         result[key] = value
       }
     }

@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 import XPC
 
-@frozen
 public struct XPCConnection: @unchecked Sendable {
   internal let xpc_object: xpc_connection_t
+  internal let _handlerState = _ConnectionHandlerState()
+}
+
+final class _ConnectionHandlerState: @unchecked Sendable {
+  var invalidationHandlers: [@Sendable () -> Void] = []
+  var interruptionHandlers: [@Sendable () -> Void] = []
 }
 
 extension XPCConnection {
@@ -44,10 +49,29 @@ extension XPCConnection {
       xpc_object,
       { xpc_object in
         let obj = XPCObject(xpc_object: xpc_object)
+        // Detect XPC error objects (invalidation/interruption) and route to invalidation handler.
+        if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INVALID) {
+          for handler in _handlerState.invalidationHandlers { handler() }
+          return
+        } else if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INTERRUPTED) {
+          for handler in _handlerState.interruptionHandlers { handler() }
+          return
+        }
         handler(obj)
       }
     )
   }
+
+  /// Register a handler to be called when the connection is invalidated.
+  public func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
+    _handlerState.invalidationHandlers.append(handler)
+  }
+
+  /// Register a handler to be called when the connection is interrupted.
+  public func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
+    _handlerState.interruptionHandlers.append(handler)
+  }
+
 }
 
 public func xpcTransactionBegin() {
@@ -220,6 +244,11 @@ extension XPCConnection {
 
 extension XPCConnection {
   public func set<T: Sendable>(context: T?) {
+    // Release previous context before overwriting, preventing leak on repeated calls.
+    if let oldContextPtr = xpc_connection_get_context(xpc_object) {
+      let unmanaged = Unmanaged<AnyObject>.fromOpaque(oldContextPtr)
+      unmanaged.release()
+    }
     let box = Box(context)
     xpc_connection_set_context(
       xpc_object,

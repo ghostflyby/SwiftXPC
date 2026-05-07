@@ -1,6 +1,6 @@
 # DistributedXPC TODO
 
-目标：把当前 `DistributedXPC` 从“能编码出站调用的骨架”推进到“可用、可测的非泛型 distributed actor 系统”。
+目标：把当前 `DistributedXPC` 从"能编码出站调用的骨架"推进到"可用、可测的非泛型 distributed actor 系统"。
 
 ## 当前路线
 
@@ -37,6 +37,92 @@
 - [x] `remoteCallVoid` 已实现 reply envelope 解码。
 - [ ] 没有 `DistributedXPC` 集成测试。
 
+## 代码复审发现的额外缺口
+
+以下问题来自 2026-05-07 的完整代码复审，按优先级排列：
+
+### P0 (崩溃 / 数据竞争风险)
+
+- [ ] `XPCConnection.set(context:)` 重复调用导致前一个 context 泄漏
+  - `Sources/SwiftXPC/XPCConnection.swift:139-150`
+  - `xpc_connection_set_context` 覆盖旧值但不会 release，`setFinalizerF` 也只对最后设置的值生效。
+  - 如果 `set(context:)` 被调用两次，前一个 context 永远不会 release。
+
+- [ ] `XPCDictionary` 是 `@unchecked Sendable` 但内部可变
+  - `Sources/SwiftXPC/XPCArray+XPCDictionary.swift:97-99`
+  - `XPCDictionary` 的 `subscript` setter 修改了 `xpc_object` 指向的字典内容。
+  - 若从多个并发 task 写入同一个 `XPCDictionary` 实例，存在数据竞争。
+  - 当前调用链：macros encode 内部创建临时 `var dict = XPCDictionary()` 是安全的（栈上不逃逸），但公共 API 层面未做防护。
+
+### P1 (行为错误 / 功能缺失)
+
+- [ ] `Array.unmarshal` 和 `Dictionary.unmarshal` 在元素解码失败时 crash
+  - `Sources/SwiftXPC/XPCMarshal.swift:237` 和 `:260`
+  - 使用 `try! Element.unmarshal(from: item)`，数组/字典中某个元素 marshal 失败时会触发运行时崩溃，而不是向上抛出错误。
+  - 应该改用 `try ... catch { throw ... }` 或重新抛出一个聚合错误。
+
+- [ ] Demo 中 `DemoServiceSession` 对象泄漏
+  - `Examples/DistributedXPCDemo/Sources/DemoService/main.swift:22`
+  - 每次新连接追加到全局 `sessions` 数组，但断开的连接从不移除。
+  - 长期运行的服务会累积已断开连接的 session 对象。
+
+- [ ] 无 connection 生命周期管理，actor 注册表泄漏
+  - `Sources/DistributedXPC/Actor.swift:33-50`
+  - `activeActorsLock` 中的 actor 在 connection 断开后永远不会被清理。
+  - 应该有 `connection` invalidation handler 通知 actor system 清理。
+
+### P2 (设计问题 / API 不完整)
+
+- [ ] `XPCDictionary` 的 `subscript` set nil 语义与预期不符
+  - `Sources/SwiftXPC/XPCArray+XPCDictionary.swift:133`
+  - `dict["key"] = nil` 实际把 key 设为 XPC null，而不是删除 key。
+  - 宏依赖这个行为对 optional 属性编解码，但对普通用户来说语义不直觉。
+
+- [ ] `try!` 在 `Array`/`Dictionary` unmarshal 实现中
+  - `Sources/SwiftXPC/XPCMarshal.swift:237,260`
+  - 见 P1 条目。
+
+- [ ] 没有 marshal 错误路径的测试
+  - `Tests/SwiftXPCTests/` 中没有任何测试验证 `XPCMarshalError` 的正确抛出。
+  - 例如：从错误的 XPC type 解码、缺失 key、越界、未知 enum case。
+
+- [ ] `Package.swift` 声明 iOS/macCatalyst 支持但 XPC 是 macOS 独占
+  - `Package.swift:5`
+  - `import XPC` 在 iOS/macCatalyst 上会编译失败。
+  - 要么加 `#if os(macOS)` 条件编译，要么去掉虚假的平台声明。
+
+- [ ] 有标签/无标签 enum 的 wire layout 不一致
+  - `Sources/SwiftXPCMacros/XPCMarshalMacro+Enum.swift`
+  - 无标签 payload：`[caseName, val0, val1, ...]`（扁平在外层 array）
+  - 有标签 payload：`[caseName, [labeled_payload]]`（嵌套子 array）
+  - 这个不对称性给跨版本兼容带来隐患。
+
+- [ ] `XPCConnection` 的 endpoint marshal 是一次性的
+  - `Sources/SwiftXPC/XPCConnection.swift:182-190`
+  - `xpc_endpoint_create` 创建的 endpoint 只能被 consume 一次。
+  - 多次 `unmarshal` 同一个 marshaled data 会失败。
+
+- [ ] `RemoteCallTarget: XPCMarshal` 的 availability 对齐有隐患
+  - `Sources/DistributedXPC/Actor.swift:194-200`
+  - 标注为 `@available(macOS 13.0, *)`，但 `distributed actor` 要求 macOS 15。
+
+### P3 (风格 / 文档)
+
+- [ ] 测试中混用 `assert` 和 `#expect`
+  - 旧测试（layout 测试）用 `assert(...)` 在 Release 中不生效。
+  - 新测试（dispatch/reply）用 `#expect`。应该统一迁移到 `#expect`。
+
+- [ ] `XPCActorID` 的 availability 与实际使用不一致
+  - `Sources/DistributedXPC/Actor.swift:159`
+  - 没有标注 `@available`，但在 `XPCDistributedActorSystem`（macOS 15+）中使用。
+  - 建议统一标注。
+
+- [ ] `@_spi(Experimental)` 覆盖核心 API
+  - `Sources/DistributedXPC/XPCDispatch.swift`
+  - `XPCDistributedTargetMetadataProviding`、`XPCDistributedTargetReturnKind`、`XPCDistributedTargetMetadata` 都是 `@_spi(Experimental)`。
+  - 用户必须写 `@_spi(Experimental) import DistributedXPC` 才能使用。
+  - 在完成 Phase 4 之前可以考虑保留，但在 Phase 6 前需要正式公开。
+
 ## Phase 1: 固定最小协议和测试骨架
 
 目标：固定 v1 的最小协议，只支撑非泛型 distributed method。
@@ -65,7 +151,7 @@
 
 - 能明确写出 request/reply 的字段表。
 - request 不再携带显式类型元数据。
-- 新增的测试可以先 `TODO`/`XCTExpectFailure` 占位，但用例名字和行为要先定下来。
+- 新增的测试可以先占位，但用例名字和行为要先定下来。
 
 ## Phase 2: `executeDistributedTarget` 与服务端分发入口
 
@@ -83,7 +169,7 @@
 
 难点：
 
-- `target.identifier` 只能做路由 key，不能承担“恢复类型”的职责。
+- `target.identifier` 只能做路由 key，不能承担"恢复类型"的职责。
 - 类型关系必须由 compiler accessor 或 metadata 生成时静态写死，不能拖到运行时再猜。
 
 完成标准：
@@ -104,7 +190,7 @@
 
 建议：
 
-- 不要让 reply message 的裸 payload 同时承担“成功值”和“错误对象”两种语义。
+- 不要让 reply message 的裸 payload 同时承担"成功值"和"错误对象"两种语义。
 - 统一 envelope 后，客户端逻辑会简单很多。
 
 完成标准：
@@ -125,7 +211,7 @@
 
 难点：
 
-- 宏应生成“compiler target identifier -> metadata”的静态对应关系，而不是生成“字符串 -> 类型反查”逻辑。
+- 宏应生成"compiler target identifier -> metadata"的静态对应关系，而不是生成"字符串 -> 类型反查"逻辑。
 - 如果要支持重载，需要先定义稳定 key 规则。
 
 完成标准：
@@ -157,13 +243,23 @@
 
 ## Phase 6: 健壮性与工程化
 
-目标：把“能跑”推进到“能维护”。
+目标：把"能跑"推进到"能维护"。
 
+- [ ] 修复 `XPCConnection.set(context:)` 重复调用的 memory leak。
+- [ ] 评估 `XPCDictionary` 的 `Sendable` 安全性。
+- [ ] 修复 `Array.unmarshal` / `Dictionary.unmarshal` 中 `try!` 导致的崩溃风险。
+- [ ] 修复 Demo 中 `DemoServiceSession` 泄漏。
+- [ ] 添加 connection 生命周期管理，连接断开时清理 actor 注册表。
 - [ ] 为公共错误定义稳定错误类型，而不是散落 `fatalError`。
 - [ ] 清理当前占位实现和未使用类型。
 - [ ] 明确线程模型和执行队列。
 - [ ] 明确取消、超时、连接中断的处理策略。
 - [ ] 评估是否需要服务端鉴权/entitlement 校验接入点。
+- [ ] 评估 `XPCDictionary` subscript set nil 语义是否应该改为删除 key。
+- [ ] 为 `Float` 添加 `XPCMarshal` 实现。
+- [ ] 统一测试中的 `assert` 为 `#expect`。
+- [ ] 对齐 `XPCActorID` 的 `@available` 标注与实际使用场景。
+- [ ] 评估是否在 Phase 6 结束时取消 `@_spi(Experimental)`。
 - [ ] 补充 README 或示例。
 
 ## 推荐执行顺序
@@ -177,7 +273,7 @@
 
 ## 当前最小可交付里程碑
 
-若目标是尽快拿到第一个“真的能用”的版本，建议先做到以下范围：
+若目标是尽快拿到第一个"真的能用"的版本，建议先做到以下范围：
 
 - [ ] 单 service、单 connection。
 - [x] 非泛型 distributed method。
@@ -187,3 +283,7 @@
 - [ ] 端到端测试覆盖 1 条成功路径、1 条 `Void` 路径、1 条抛错路径。
 
 做到这里，再继续扩展泛型、复杂重载、类型元数据协商，风险会低很多。
+
+---
+
+> **复审说明**: 2026-05-07 对全部源码进行了完整复审（覆盖 SwiftXPC、SwiftXPCMacros、DistributedXPC 三个模块和测试）。新增的 `P0-P3` 节来自本次复审发现。GPT-5.5 的 Moon Bridge 通道不可用（503），复审由 deepseek-v4-flash 完成。

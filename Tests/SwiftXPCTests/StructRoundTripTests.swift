@@ -8,7 +8,7 @@ import Testing
   let value = Greeting(id: 42, message: "hi", note: Optional<String>.none)
   let encoded = try value.marshal()
   let decoded = try Greeting.unmarshal(from: encoded)
-  assert(value == decoded)
+  #expect(value == decoded)
 }
 
 @Test func XPCMarshalAccessLevels() async throws {
@@ -16,7 +16,7 @@ import Testing
     publicValue: 1, internalValue: "two", filePrivateValue: 3.14, privateValue: true)
   let encoded = try value.marshal()
   let decoded = try AccessControlledAggregate.unmarshal(from: encoded)
-  assert(value == decoded)
+  #expect(value == decoded)
 }
 
 @Test func XPCMarshalPropertyWrappers() async throws {
@@ -24,17 +24,17 @@ import Testing
   value.title = "world"  // verify setters run before marshal
   let encoded = try value.marshal()
   let decoded = try WrappedAggregate.unmarshal(from: encoded)
-  assert(decoded.title == "WORLD")
-  assert(decoded.percentage == 100)
-  assert(value == decoded)
+  #expect(decoded.title == "WORLD")
+  #expect(decoded.percentage == 100)
+  #expect(value == decoded)
 }
 
 @Test func XPCMarshalComputedPropertiesIgnored() async throws {
   let value = ComputedAggregate(first: "Ada", last: "Lovelace")
   let encoded = try value.marshal()
   let decoded = try ComputedAggregate.unmarshal(from: encoded)
-  assert(decoded.fullName == "Ada Lovelace")
-  assert(value == decoded)
+  #expect(decoded.fullName == "Ada Lovelace")
+  #expect(value == decoded)
 }
 
 @Test func XPCMarshalNestedAggregates() async throws {
@@ -48,5 +48,5 @@ import Testing
   )
   let encoded = try nested.marshal()
   let decoded = try NestedAggregate.unmarshal(from: encoded)
-  assert(nested == decoded)
+  #expect(nested == decoded)
 }

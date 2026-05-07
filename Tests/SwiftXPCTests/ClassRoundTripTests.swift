@@ -25,5 +25,5 @@ final class FinalGreeting: Equatable {
   let value = FinalGreeting(id: 1, message: "hello", note: nil)
   let encoded = try value.marshal()
   let decoded = try FinalGreeting.unmarshal(from: encoded)
-  assert(value == decoded)
+  #expect(value == decoded)
 }

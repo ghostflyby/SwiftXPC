@@ -258,6 +258,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 }
 
 @XPCMarshal
+@available(macOS 13.0, *)
 public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
   internal let id: UInt64
 

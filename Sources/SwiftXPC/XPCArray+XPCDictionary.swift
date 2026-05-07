@@ -1,7 +1,7 @@
 import XPC
 
 @frozen
-public struct XPCArray {
+public struct XPCArray: @unchecked Sendable {
   public let xpc_object: xpc_object_t
   public init(xpc_object: xpc_object_t) {
     self.xpc_object = xpc_object

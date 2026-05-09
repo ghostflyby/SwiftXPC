@@ -8,13 +8,12 @@ import Synchronization
 @available(macOS 15, *)
 private final class DemoServiceSession {
   let system: XPCDistributedActorSystem
-  let greeter: DemoGreeter
 
   init(connection: XPCConnection) {
     self.system = XPCDistributedActorSystem(connection: connection)
-    self.greeter = DemoGreeter(actorSystem: system)
+    system.registerDefaultActor(DemoGreeter.self)
     // Remove session from array when connection is invalidated.
-    self.connection.addInvalidationHandler { [weak self] in
+    system.connection.addInvalidationHandler { [weak self] in
       guard let self else { return }
       sessions.withLock { $0.removeAll { $0 === self } }
     }

@@ -52,6 +52,9 @@ extension SampleDispatchActor: XPCDistributedTargetMetadataProviding {
 }
 
 @available(macOS 15, *)
+extension SampleDispatchActor: XPCDefaultActorInitializable {}
+
+@available(macOS 15, *)
 private func makeSystem() -> XPCDistributedActorSystem {
   XPCDistributedActorSystem(connection: XPCConnection(name: nil))
 }
@@ -185,6 +188,79 @@ private func makeSystem() -> XPCDistributedActorSystem {
   try await system.handleIncomingMessage(try message.marshal())
 }
 
+@Test func DispatchInvocationCreatesActorViaRegisteredFactory() async throws {
+  guard #available(macOS 15, *) else { return }
+  let system = makeSystem()
+  system.registerDefaultActor(SampleDispatchActor.self)
+
+  // Do NOT pre-create the actor. dispatchInvocation should getOrCreate via factory.
+  var arguments = XPCArray()
+  arguments.append(try "factory".marshal())
+
+  let reply = try await system.dispatchInvocation(
+    XPCInvocationMessage(
+      actorID: XPCActorID(id: 42),
+      target: RemoteCallTarget(sampleGreetTargetIdentifier),
+      arguments: arguments
+    )
+  )
+
+  #expect(reply.kind == .returnValue)
+  #expect(try String.unmarshal(from: reply.payload!) == "Hello, factory!")
+}
+
+@Test func DispatchInvocationThrowsUnknownActorWithoutFactory() async throws {
+  guard #available(macOS 15, *) else { return }
+  let system = makeSystem()
+  // No factory registered, and no pre-created actor — should throw unknownActor.
+
+  do {
+    _ = try await system.dispatchInvocation(
+      XPCInvocationMessage(
+        actorID: XPCActorID(id: 99),
+        target: RemoteCallTarget(sampleGreetTargetIdentifier),
+        arguments: XPCArray()
+      )
+    )
+    Issue.record("Expected unknown actor to throw")
+  } catch let error as XPCDispatchError {
+    #expect(error == .unknownActor(XPCActorID(id: 99)))
+  } catch {
+    Issue.record("Expected XPCDispatchError, got \(error)")
+  }
+}
+
+@Test func DispatchInvocationCreatesActorWithCorrectID() async throws {
+  guard #available(macOS 15, *) else { return }
+  let system = makeSystem()
+  system.registerDefaultActor(SampleDispatchActor.self)
+
+  let targetID = XPCActorID(id: 7)
+  var arguments = XPCArray()
+  arguments.append(try "idcheck".marshal())
+
+  // First call creates the actor via factory.
+  let reply1 = try await system.dispatchInvocation(
+    XPCInvocationMessage(
+      actorID: targetID,
+      target: RemoteCallTarget(sampleGreetTargetIdentifier),
+      arguments: arguments
+    )
+  )
+  #expect(try String.unmarshal(from: reply1.payload!) == "Hello, idcheck!")
+
+  // Second call to same ID should reuse existing actor.
+  var args2 = XPCArray()
+  args2.append(try "again".marshal())
+  let reply2 = try await system.dispatchInvocation(
+    XPCInvocationMessage(
+      actorID: targetID,
+      target: RemoteCallTarget(sampleGreetTargetIdentifier),
+      arguments: args2
+    )
+  )
+  #expect(try String.unmarshal(from: reply2.payload!) == "Hello, again!")
+}
 @Test func HandleIncomingMessageEncodesDispatchErrors() async throws {
   guard #available(macOS 15, *) else {
     return

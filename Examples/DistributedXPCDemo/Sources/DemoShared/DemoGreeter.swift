@@ -72,3 +72,6 @@ extension DemoGreeter: XPCDistributedTargetMetadataProviding {
     ]
   }
 }
+
+@available(macOS 15, *)
+extension DemoGreeter: XPCDefaultActorInitializable {}

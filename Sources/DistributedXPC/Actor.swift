@@ -18,6 +18,11 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   private let ids = Atomic<UInt64>(0)
   private let assignedIDsLock: Mutex<Set<ActorID>> = Mutex([])
 
+  /// Single-slot reserved ID for the getOrCreate flow.
+  /// When set, the next `assignID` call returns this ID instead of generating one.
+  private let reservedIDLock: Mutex<ActorID?> = Mutex(nil)
+
+  private let defaultActorFactoryLock: Mutex<(@Sendable (ActorID) -> any DistributedActor)?> = Mutex(nil)
   public let connection: XPCConnection
 
   public init(connection: XPCConnection) {
@@ -37,11 +42,62 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   public func assignID<Act>(_ actorType: Act.Type) -> ActorID
   where Act: DistributedActor {
+    // Use reserved ID if one is pending (from getOrCreate flow).
+    if let reserved = reservedIDLock.withLock({
+      let r = $0
+      $0 = nil
+      return r
+    }) {
+      // Advance counter past reserved ID to avoid collisions.
+      var current = ids.load(ordering: .relaxed)
+      while reserved.id >= current {
+        let (success, updated) = ids.compareExchange(expected: current, desired: reserved.id + 1, ordering: .relaxed)
+        if success { break }
+        current = updated
+      }
+      _ = assignedIDsLock.withLock { $0.insert(reserved) }
+      return reserved
+    }
     let id = XPCActorID(id: ids.wrappingAdd(1, ordering: .relaxed).newValue)
     _ = assignedIDsLock.withLock {
       $0.insert(id)
     }
     return id
+  }
+
+  /// Register a default actor factory for this system.
+  /// When a message arrives for an unknown actor ID, the system calls this factory
+  /// to create an actor on demand, using the client-assigned ID.
+  ///
+  /// The factory receives the client-assigned actor ID and this system.
+  /// It must create the actor by calling `Act(actorSystem:)` — the system's
+  /// `assignID` will return the reserved ID automatically.
+  ///
+  /// Example:
+  ///   system.registerDefaultActor { id, system in DemoGreeter(actorSystem: system) }
+  public func registerDefaultActor(
+    _ factory: @escaping @Sendable (ActorID, XPCDistributedActorSystem) -> any DistributedActor
+  ) {
+    defaultActorFactoryLock.withLock {
+      $0 = { [weak self] id in
+        guard let system = self else { fatalError("System deallocated during actor creation") }
+        system.reservedIDLock.withLock { $0 = id }
+        return factory(id, system)
+      }
+    }
+  }
+
+  /// Register a default actor type for this system.
+  /// The actor type must conform to `XPCDefaultActorInitializable`.
+  ///
+  /// Example:
+  ///   extension DemoGreeter: XPCDefaultActorInitializable {}
+  ///   system.registerDefaultActor(DemoGreeter.self)
+  public func registerDefaultActor<Act>(_ type: Act.Type)
+  where Act: XPCDefaultActorInitializable {
+    registerDefaultActor { _, system in
+      Act(actorSystem: system)
+    }
   }
 
   public func actorReady<Act>(_ actor: Act)
@@ -66,22 +122,31 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   func installEventHandler() {
     connection.setEventHandler { [weak self] object in
-      Task { [weak self] in
-        guard let self else {
-          return
-        }
+      guard let self else { return }
+      let done = DispatchSemaphore(value: 0)
+      Task {
         try? await self.handleIncomingMessage(object)
+        done.signal()
       }
+      done.wait()
     }
   }
 
   func dispatchInvocation(_ message: XPCInvocationMessage) async throws -> XPCReplyEnvelope {
-    let actor = try activeActorsLock.withLock { actors in
-      guard let actor = actors[message.actorID] else {
-        throw XPCDispatchError.unknownActor(message.actorID)
-      }
+    func getOrCreateActor(for id: ActorID) throws -> any DistributedActor {
+    if let actor = activeActorsLock.withLock({ $0[id] }) {
       return actor
     }
+    guard let factory = defaultActorFactoryLock.withLock({ $0 }) else {
+      throw XPCDispatchError.unknownActor(id)
+    }
+    _ = factory(id)
+    guard let actor = activeActorsLock.withLock({ $0[id] }) else {
+      fatalError("Default actor factory failed to register actor for \(id)")
+    }
+    return actor
+  }
+    let actor = try getOrCreateActor(for: message.actorID)
 
     guard let metadataProvider = type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type else {
       throw XPCDispatchError.missingTargetMetadata(String(describing: type(of: actor)))
@@ -337,4 +402,14 @@ extension RemoteCallTarget: XPCMarshal {
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
     .init(try .unmarshal(from: object))
   }
+}
+/// Protocol for distributed actors that can be used as default actors
+/// with type-based registration via `registerDefaultActor(_:)`.
+///
+/// Conform your distributed actor to this protocol to enable:
+///   system.registerDefaultActor(MyActor.self)
+@available(macOS 15, *)
+public protocol XPCDefaultActorInitializable: DistributedActor
+where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {
+  init(actorSystem: XPCDistributedActorSystem)
 }

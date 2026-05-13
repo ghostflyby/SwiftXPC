@@ -24,6 +24,10 @@ public struct XPCServiceMacro: ExtensionMacro {
         funcDecl.modifiers.contains { $0.name.text == "distributed" }
       }
 
+    // Match the actor's access level for the generated extension.
+    let isPublic = actorDecl.modifiers.contains { $0.name.text == "public" }
+    let access = isPublic ? "public " : ""
+
     var entries: [String] = []
     for funcDecl in distributedFuncs {
       let baseName = funcDecl.name.text
@@ -69,7 +73,7 @@ public struct XPCServiceMacro: ExtensionMacro {
 
     let extDecl: DeclSyntax = """
       extension \(type.trimmed): XPCDistributedTargetMetadataProviding {
-        static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
+        \(raw: access)static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
           [
       \(raw: body)
           ]

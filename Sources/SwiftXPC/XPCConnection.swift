@@ -5,6 +5,10 @@ import XPC
 public struct XPCConnection: @unchecked Sendable {
   internal let xpc_object: xpc_connection_t
   internal let _handlerState = _ConnectionHandlerState()
+
+  internal init(xpc_object: xpc_connection_t) {
+    self.xpc_object = xpc_object
+  }
 }
 
 final class _ConnectionHandlerState: @unchecked Sendable {

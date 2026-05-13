@@ -12,6 +12,7 @@ import Testing
   arguments.append(try "hello".marshal())
 
   let message = XPCInvocationMessage(
+    method: "test",
     actorID: XPCActorID(id: 7),
     target: RemoteCallTarget("greet"),
     arguments: arguments

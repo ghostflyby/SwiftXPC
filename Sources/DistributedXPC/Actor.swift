@@ -1,7 +1,7 @@
+import Dispatch
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
-import Foundation.NSError
 import SwiftXPC
 import Synchronization
 
@@ -18,16 +18,14 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   private let ids = Atomic<UInt64>(0)
   private let assignedIDsLock: Mutex<Set<ActorID>> = Mutex([])
 
-  /// Single-slot reserved ID for the getOrCreate flow.
-  /// When set, the next `assignID` call returns this ID instead of generating one.
   private let reservedIDLock: Mutex<ActorID?> = Mutex(nil)
 
-  private let defaultActorFactoryLock: Mutex<(@Sendable (ActorID) -> any DistributedActor)?> = Mutex(nil)
+  private let defaultActorFactoryLock: Mutex<(@Sendable (ActorID) -> any DistributedActor)?> =
+    Mutex(nil)
   public let connection: XPCConnection
 
   public init(connection: XPCConnection) {
     self.connection = connection
-    // Clean up actor registry when the connection is invalidated.
     self.connection.addInvalidationHandler { [weak self] in
       self?.activeActorsLock.withLock { $0.removeAll() }
     }
@@ -42,16 +40,15 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   public func assignID<Act>(_ actorType: Act.Type) -> ActorID
   where Act: DistributedActor {
-    // Use reserved ID if one is pending (from getOrCreate flow).
     if let reserved = reservedIDLock.withLock({
       let r = $0
       $0 = nil
       return r
     }) {
-      // Advance counter past reserved ID to avoid collisions.
       var current = ids.load(ordering: .relaxed)
       while reserved.id >= current {
-        let (success, updated) = ids.compareExchange(expected: current, desired: reserved.id + 1, ordering: .relaxed)
+        let (success, updated) = ids.compareExchange(
+          expected: current, desired: reserved.id + 1, ordering: .relaxed)
         if success { break }
         current = updated
       }
@@ -59,22 +56,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       return reserved
     }
     let id = XPCActorID(id: ids.wrappingAdd(1, ordering: .relaxed).newValue)
-    _ = assignedIDsLock.withLock {
-      $0.insert(id)
-    }
+    _ = assignedIDsLock.withLock { $0.insert(id) }
     return id
   }
 
-  /// Register a default actor factory for this system.
-  /// When a message arrives for an unknown actor ID, the system calls this factory
-  /// to create an actor on demand, using the client-assigned ID.
-  ///
-  /// The factory receives the client-assigned actor ID and this system.
-  /// It must create the actor by calling `Act(actorSystem:)` — the system's
-  /// `assignID` will return the reserved ID automatically.
-  ///
-  /// Example:
-  ///   system.registerDefaultActor { id, system in DemoGreeter(actorSystem: system) }
   public func registerDefaultActor(
     _ factory: @escaping @Sendable (ActorID, XPCDistributedActorSystem) -> any DistributedActor
   ) {
@@ -87,17 +72,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     }
   }
 
-  /// Register a default actor type for this system.
-  /// The actor type must conform to `XPCDefaultActorInitializable`.
-  ///
-  /// Example:
-  ///   extension DemoGreeter: XPCDefaultActorInitializable {}
-  ///   system.registerDefaultActor(DemoGreeter.self)
   public func registerDefaultActor<Act>(_ type: Act.Type)
   where Act: XPCDefaultActorInitializable {
-    registerDefaultActor { _, system in
-      Act(actorSystem: system)
-    }
+    registerDefaultActor { _, system in Act(actorSystem: system) }
   }
 
   public func actorReady<Act>(_ actor: Act)
@@ -105,20 +82,14 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     guard self.assignedIDsLock.withLock({ $0.contains(actor.id) }) else {
       fatalError("Attempted to mark an unknown actor '\(actor.id)' ready")
     }
-    self.activeActorsLock.withLock {
-      $0[actor.id] = actor
-    }
+    self.activeActorsLock.withLock { $0[actor.id] = actor }
   }
 
   public func resignID(_ id: ActorID) {
-    _ = self.activeActorsLock.withLock {
-      $0.removeValue(forKey: id)
-    }
+    _ = self.activeActorsLock.withLock { $0.removeValue(forKey: id) }
   }
 
-  public func makeInvocationEncoder() -> InvocationEncoder {
-    .init()
-  }
+  public func makeInvocationEncoder() -> InvocationEncoder { .init() }
 
   func installEventHandler() {
     connection.setEventHandler { [weak self] object in
@@ -134,47 +105,39 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   func dispatchInvocation(_ message: XPCInvocationMessage) async throws -> XPCReplyEnvelope {
     func getOrCreateActor(for id: ActorID) throws -> any DistributedActor {
-    if let actor = activeActorsLock.withLock({ $0[id] }) {
+      if let actor = activeActorsLock.withLock({ $0[id] }) { return actor }
+      guard let factory = defaultActorFactoryLock.withLock({ $0 }) else {
+        throw XPCDispatchError.unknownActor(id)
+      }
+      _ = factory(id)
+      guard let actor = activeActorsLock.withLock({ $0[id] }) else {
+        fatalError("Default actor factory failed to register actor for \(id)")
+      }
       return actor
     }
-    guard let factory = defaultActorFactoryLock.withLock({ $0 }) else {
-      throw XPCDispatchError.unknownActor(id)
-    }
-    _ = factory(id)
-    guard let actor = activeActorsLock.withLock({ $0[id] }) else {
-      fatalError("Default actor factory failed to register actor for \(id)")
-    }
-    return actor
-  }
     let actor = try getOrCreateActor(for: message.actorID)
 
-    guard let metadataProvider = type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type else {
+    guard let metadataProvider = type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type
+    else {
       throw XPCDispatchError.missingTargetMetadata(String(describing: type(of: actor)))
     }
-    let metadata = try metadataProvider.xpcDistributedTargetMetadata(for: message.target)
-    try metadata.validate(arguments: message.arguments)
-
+    guard metadataProvider.xpcDistributedTargetMetadata[message.method] != nil else {
+      throw XPCDispatchError.unknownTarget(message.method)
+    }
     var decoder = XPCInvocationDecoder(array: message.arguments)
     let replyLock = Mutex<XPCReplyEnvelope?>(nil)
     let resultHandler = XPCInvocationResultHandler { envelope in
-      replyLock.withLock {
-        $0 = envelope
-      }
+      replyLock.withLock { $0 = envelope }
     }
-
     do {
       try await executeDistributedTarget(
-        on: actor,
-        target: message.target,
-        invocationDecoder: &decoder,
-        handler: resultHandler
-      )
+        on: actor, target: message.target,
+        invocationDecoder: &decoder, handler: resultHandler)
     } catch let error as any ErrorXPCMarshal {
       throw error
     } catch {
       throw XPCDispatchError.targetExecutionFailed(String(describing: error))
     }
-
     guard let reply = replyLock.withLock({ $0 }) else {
       throw XPCDispatchError.missingInvocationResult
     }
@@ -183,18 +146,14 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   private func fallbackThrownErrorType<Act, Err>(
     for actorType: Act.Type,
-    target: RemoteCallTarget,
+    method: String,
     throwing errorType: Err.Type
   ) throws -> (any ErrorXPCMarshal.Type)?
   where Act: DistributedActor, Act.ID == ActorID, Err: Error {
-    if errorType is any ErrorXPCMarshal.Type {
-      return nil
-    }
-
-    guard let metadataProvider = actorType as? any XPCDistributedTargetMetadataProviding.Type else {
-      return nil
-    }
-    return try metadataProvider.xpcDistributedTargetMetadata(for: target).thrownErrorType
+    if errorType is any ErrorXPCMarshal.Type { return nil }
+    guard let metadataProvider = actorType as? any XPCDistributedTargetMetadataProviding.Type
+    else { return nil }
+    return metadataProvider.xpcDistributedTargetMetadata[method]?.thrownErrorType
   }
 
   func handleIncomingMessage(_ object: XPCObject) async throws {
@@ -206,11 +165,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       try resultHandler.send(envelope)
     } catch let error as any ErrorXPCMarshal {
       try resultHandler.send(
-        XPCReplyEnvelope(
-          kind: .throwError,
-          payload: try error.marshal()
-        )
-      )
+        XPCReplyEnvelope(kind: .throwError, payload: try error.marshal()))
     }
   }
 
@@ -218,47 +173,31 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     _ envelope: XPCReplyEnvelope,
     for actorType: Act.Type,
     target: RemoteCallTarget,
+    method: String,
     throwing errorType: Err.Type,
     returning returnType: Res.Type
   ) throws -> Res
   where
-    Act: DistributedActor,
-    Act.ID == ActorID,
-    Err: Error,
-    Res: SerializationRequirement
+    Act: DistributedActor, Act.ID == ActorID,
+    Err: Error, Res: SerializationRequirement
   {
     let fallbackErrorType = try fallbackThrownErrorType(
-      for: actorType,
-      target: target,
-      throwing: errorType
-    )
+      for: actorType, method: method, throwing: errorType)
     return try envelope.decodeReturnValue(
-      throwing: errorType,
-      returning: returnType,
-      fallbackErrorType: fallbackErrorType
-    )
+      throwing: errorType, returning: returnType, fallbackErrorType: fallbackErrorType)
   }
 
   func decodeRemoteCallVoidReply<Act, Err>(
     _ envelope: XPCReplyEnvelope,
     for actorType: Act.Type,
     target: RemoteCallTarget,
+    method: String,
     throwing errorType: Err.Type
   ) throws
-  where
-    Act: DistributedActor,
-    Act.ID == ActorID,
-    Err: Error
-  {
+  where Act: DistributedActor, Act.ID == ActorID, Err: Error {
     let fallbackErrorType = try fallbackThrownErrorType(
-      for: actorType,
-      target: target,
-      throwing: errorType
-    )
-    try envelope.decodeReturnVoid(
-      throwing: errorType,
-      fallbackErrorType: fallbackErrorType
-    )
+      for: actorType, method: method, throwing: errorType)
+    try envelope.decodeReturnVoid(throwing: errorType, fallbackErrorType: fallbackErrorType)
   }
 
   public func remoteCall<Act, Err, Res>(
@@ -269,27 +208,19 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     returning returnType: Res.Type
   ) async throws -> Res
   where
-    Act: DistributedActor,
-    Act.ID == ActorID,
-    Err: Error,
-    Res: SerializationRequirement
+    Act: DistributedActor, Act.ID == ActorID,
+    Err: Error, Res: SerializationRequirement
   {
+    let method = parseTargetIdentifier(target.identifier) ?? target.identifier
     let message = XPCInvocationMessage(
-      actorID: actor.id,
-      target: target,
-      arguments: invocation.array
-    )
+      method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
     let xpcDict = XPCDictionary(xpc_object: payload.xpc_object)
     let result = try await connection.send(message: xpcDict)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
     return try decodeRemoteCallReply(
-      envelope,
-      for: Act.self,
-      target: target,
-      throwing: errorType,
-      returning: returnType
-    )
+      envelope, for: Act.self, target: target, method: method,
+      throwing: errorType, returning: returnType)
   }
 
   public func remoteCallVoid<Act, Err>(
@@ -298,38 +229,24 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     invocation: inout InvocationEncoder,
     throwing errorType: Err.Type
   ) async throws
-  where
-    Act: DistributedActor,
-    Act.ID == ActorID,
-    Err: Error
-  {
+  where Act: DistributedActor, Act.ID == ActorID, Err: Error {
+    let method = parseTargetIdentifier(target.identifier) ?? target.identifier
     let message = XPCInvocationMessage(
-      actorID: actor.id,
-      target: target,
-      arguments: invocation.array
-    )
+      method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
     let xpcDict = XPCDictionary(xpc_object: payload.xpc_object)
     let result = try await connection.send(message: xpcDict)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
     try decodeRemoteCallVoidReply(
-      envelope,
-      for: Act.self,
-      target: target,
-      throwing: errorType
-    )
+      envelope, for: Act.self, target: target, method: method, throwing: errorType)
   }
-
 }
 
 @XPCMarshal
 @available(macOS 13.0, *)
 public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
   internal let id: UInt64
-
-  public init(id: UInt64) {
-    self.id = id
-  }
+  public init(id: UInt64) { self.id = id }
 }
 
 @available(macOS 15, *)
@@ -343,43 +260,26 @@ public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandl
 
   init(received: SwiftXPC.XPCDictionary) {
     self.sendEnvelope = { envelope in
-      guard var reply = XPCDictionary(replyTo: received), let connection = received.connection else {
-        return
-      }
-
+      guard var reply = XPCDictionary(replyTo: received), let connection = received.connection
+      else { return }
       try envelope.write(to: &reply)
       connection.sendAndForget(message: reply)
     }
   }
 
-  func send(_ envelope: XPCReplyEnvelope) throws {
-    try sendEnvelope(envelope)
-  }
+  func send(_ envelope: XPCReplyEnvelope) throws { try sendEnvelope(envelope) }
 
   public func onReturn<Success: SerializationRequirement>(value: Success) async throws {
-    try send(
-      XPCReplyEnvelope(
-        kind: .returnValue,
-        payload: try value.marshal()
-      )
-    )
+    try send(XPCReplyEnvelope(kind: .returnValue, payload: try value.marshal()))
   }
 
-  public func onReturnVoid() async throws {
-    try send(XPCReplyEnvelope(kind: .returnVoid))
-  }
+  public func onReturnVoid() async throws { try send(XPCReplyEnvelope(kind: .returnVoid)) }
 
   public func onThrow<Err: Error>(error: Err) async throws {
     guard let error = error as? any ErrorXPCMarshal else {
       throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: Err.self))
     }
-
-    try send(
-      XPCReplyEnvelope(
-        kind: .throwError,
-        payload: try error.marshal()
-      )
-    )
+    try send(XPCReplyEnvelope(kind: .throwError, payload: try error.marshal()))
   }
 }
 
@@ -395,19 +295,12 @@ enum XPCRemoteCallError: Error, Sendable, Equatable {
 
 @available(macOS 13.0, *)
 extension RemoteCallTarget: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    try identifier.marshal()
-  }
-
+  public func marshal() throws(XPCMarshalError) -> XPCObject { try identifier.marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
     .init(try .unmarshal(from: object))
   }
 }
-/// Protocol for distributed actors that can be used as default actors
-/// with type-based registration via `registerDefaultActor(_:)`.
-///
-/// Conform your distributed actor to this protocol to enable:
-///   system.registerDefaultActor(MyActor.self)
+
 @available(macOS 15, *)
 public protocol XPCDefaultActorInitializable: DistributedActor
 where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {

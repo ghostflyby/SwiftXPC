@@ -46,7 +46,7 @@ let package = Package(
     ),
     .testTarget(
       name: "SwiftXPCTests",
-      dependencies: ["SwiftXPC", "DistributedXPC"]
+      dependencies: ["SwiftXPC", "DistributedXPC", "SwiftXPCMacros"]
     ),
   ]
 )

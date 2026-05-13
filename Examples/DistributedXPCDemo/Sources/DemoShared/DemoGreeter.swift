@@ -41,6 +41,7 @@ extension DemoGreeterError: XPCMarshal {
 }
 
 @available(macOS 15, *)
+@XPCService
 public distributed actor DemoGreeter {
   public typealias ActorSystem = XPCDistributedActorSystem
 
@@ -56,22 +57,4 @@ public distributed actor DemoGreeter {
 
 @available(macOS 15, *)
 @_spi(Experimental)
-extension DemoGreeter: XPCDistributedTargetMetadataProviding {
-  public static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
-    [
-      DemoTargets.greet: .init(
-        argumentCount: 1,
-        returnKind: .value,
-        returnType: String.self,
-        thrownErrorType: DemoGreeterError.self
-      ),
-      DemoTargets.ping: .init(
-        argumentCount: 0,
-        returnKind: .void
-      ),
-    ]
-  }
-}
-
-@available(macOS 15, *)
 extension DemoGreeter: XPCDefaultActorInitializable {}

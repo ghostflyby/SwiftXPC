@@ -9,41 +9,53 @@ public enum XPCDispatchError: Error, Sendable, Equatable {
   case unknownActor(XPCActorID)
   case unknownTarget(String)
   case missingTargetMetadata(String)
-  case argumentCountMismatch(expected: Int, actual: Int)
   case targetExecutionFailed(String)
   case missingInvocationResult
 }
 
 @available(macOS 15, *)
-public enum XPCDistributedTargetReturnKind {
-  case value
-  case void
-}
-
-@available(macOS 15, *)
 public struct XPCDistributedTargetMetadata {
-  public let argumentCount: Int
-  public let returnKind: XPCDistributedTargetReturnKind
-  public let returnType: Any.Type?
   public let thrownErrorType: (any (XPCMarshal & Error).Type)?
 
   public init(
-    argumentCount: Int,
-    returnKind: XPCDistributedTargetReturnKind,
-    returnType: Any.Type? = nil,
     thrownErrorType: (any (XPCMarshal & Error).Type)? = nil
   ) {
-    self.argumentCount = argumentCount
-    self.returnKind = returnKind
-    self.returnType = returnType
     self.thrownErrorType = thrownErrorType
   }
+}
 
-  func validate(arguments: XPCArray) throws {
-    guard arguments.count == argumentCount else {
-      throw XPCDispatchError.argumentCountMismatch(expected: argumentCount, actual: arguments.count)
-    }
+@available(macOS 15, *)
+public func parseTargetIdentifier(_ identifier: String) -> String? {
+  guard let lastC = identifier.lastIndex(of: "C") else { return nil }
+  var pos = identifier.index(after: lastC)
+  guard pos < identifier.endIndex, identifier[pos].isNumber else { return nil }
+  var digits = ""
+  while pos < identifier.endIndex, identifier[pos].isNumber {
+    digits.append(identifier[pos])
+    pos = identifier.index(after: pos)
   }
+  guard let baseLen = Int(digits),
+    identifier.distance(from: pos, to: identifier.endIndex) >= baseLen
+  else { return nil }
+  let baseEnd = identifier.index(pos, offsetBy: baseLen)
+  let baseName = String(identifier[pos..<baseEnd])
+  pos = baseEnd
+  var labels: [String] = []
+  while pos < identifier.endIndex, identifier[pos].isNumber {
+    digits = ""
+    while pos < identifier.endIndex, identifier[pos].isNumber {
+      digits.append(identifier[pos])
+      pos = identifier.index(after: pos)
+    }
+    guard let labelLen = Int(digits),
+      identifier.distance(from: pos, to: identifier.endIndex) >= labelLen
+    else { return nil }
+    let labelEnd = identifier.index(pos, offsetBy: labelLen)
+    labels.append(String(identifier[pos..<labelEnd]))
+    pos = labelEnd
+  }
+  if labels.isEmpty { return "\(baseName)()" }
+  return "\(baseName)(\(labels.map { "\($0):" }.joined()))"
 }
 
 @available(macOS 15, *)
@@ -52,14 +64,7 @@ where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {
   static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] { get }
 }
 
-@available(macOS 15, *)
-extension XPCDistributedTargetMetadataProviding {
-  static func xpcDistributedTargetMetadata(for target: RemoteCallTarget)
-    throws -> XPCDistributedTargetMetadata
-  {
-    guard let metadata = xpcDistributedTargetMetadata[target.identifier] else {
-      throw XPCDispatchError.unknownTarget(target.identifier)
-    }
-    return metadata
-  }
-}
+@attached(
+  extension, conformances: XPCDistributedTargetMetadataProviding,
+  names: named(xpcDistributedTargetMetadata))
+public macro XPCService() = #externalMacro(module: "SwiftXPCMacros", type: "XPCServiceMacro")

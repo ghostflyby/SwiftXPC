@@ -8,7 +8,7 @@ import SwiftSyntaxMacros
 
 @main
 struct SwiftXPCPlugin: CompilerPlugin {
-  let providingMacros: [Macro.Type] = [XPCMarshalMacro.self]
+  let providingMacros: [Macro.Type] = [XPCMarshalMacro.self, XPCServiceMacro.self]
 }
 
 public struct XPCMarshalMacro: ExtensionMacro {

@@ -3,7 +3,7 @@
 import XPC
 
 nonisolated(unsafe)
-private var mainHandler: @Sendable (XPCConnection) -> Void = { _ in }
+  private var mainHandler: @Sendable (XPCConnection) -> Void = { _ in }
 
 private func handleIncomingConnection(_ connection: xpc_connection_t) {
   mainHandler(XPCConnection(xpc_object: connection))

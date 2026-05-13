@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
-@testable import DistributedXPC
 import SwiftXPC
 import Testing
+
+@testable import DistributedXPC
 
 @available(macOS 15, *)
 @XPCMarshal
@@ -12,36 +13,26 @@ enum SampleReplyError: Error, Equatable {
 }
 
 @available(macOS 15, *)
-private let sampleReplyMetadataTargetIdentifier = "replyError"
+private let sampleReplyMetadataTargetIdentifier = "replyError()"
 
 @available(macOS 15, *)
+@XPCService
 distributed actor SampleReplyMetadataActor {
   typealias ActorSystem = XPCDistributedActorSystem
 
-  distributed func replyError() throws -> String {
+  distributed func replyError() throws(SampleReplyError) -> String {
     throw SampleReplyError.boom
   }
 }
 
 @available(macOS 15, *)
-extension SampleReplyMetadataActor: XPCDistributedTargetMetadataProviding {
-  static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
-    [
-      sampleReplyMetadataTargetIdentifier: .init(
-        argumentCount: 0,
-        returnKind: .value,
-        returnType: String.self,
-        thrownErrorType: SampleReplyError.self
-      )
-    ]
-  }
-}
+extension SampleReplyMetadataActor: XPCDefaultActorInitializable {}
 
 @available(macOS 15, *)
 distributed actor SampleReplyActorWithoutMetadata {
   typealias ActorSystem = XPCDistributedActorSystem
 
-  distributed func replyError() throws -> String {
+  distributed func replyError() throws(SampleReplyError) -> String {
     throw SampleReplyError.boom
   }
 }
@@ -154,6 +145,7 @@ distributed actor SampleReplyActorWithoutMetadata {
       envelope,
       for: SampleReplyMetadataActor.self,
       target: RemoteCallTarget(sampleReplyMetadataTargetIdentifier),
+      method: "replyError()",
       throwing: Error.self,
       returning: String.self
     )
@@ -176,6 +168,7 @@ distributed actor SampleReplyActorWithoutMetadata {
       envelope,
       for: SampleReplyActorWithoutMetadata.self,
       target: RemoteCallTarget("missing"),
+      method: "missing",
       throwing: SampleReplyError.self,
       returning: String.self
     )
@@ -188,7 +181,8 @@ distributed actor SampleReplyActorWithoutMetadata {
   }
   let envelope = XPCReplyEnvelope(kind: .returnVoid)
 
-  #expect(throws: XPCRemoteCallError.invalidReplyKind(expected: .returnValue, actual: .returnVoid)) {
+  #expect(throws: XPCRemoteCallError.invalidReplyKind(expected: .returnValue, actual: .returnVoid))
+  {
     let _: String = try envelope.decodeReturnValue(
       throwing: SampleReplyError.self,
       returning: String.self

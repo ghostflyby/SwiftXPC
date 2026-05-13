@@ -11,17 +11,20 @@ public enum XPCWireProtocol {
 @XPCMarshal
 public struct XPCInvocationMessage {
   public let version: UInt64
+  public let method: String
   public let actorID: XPCActorID
   public let target: RemoteCallTarget
   public let arguments: XPCArray
 
   public init(
     version: UInt64 = XPCWireProtocol.currentVersion,
+    method: String,
     actorID: XPCActorID,
     target: RemoteCallTarget,
     arguments: XPCArray
   ) {
     self.version = version
+    self.method = method
     self.actorID = actorID
     self.target = target
     self.arguments = arguments

@@ -1,7 +1,7 @@
+import DemoShared
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import DistributedXPC
-import DemoShared
 import SwiftXPC
 import Synchronization
 

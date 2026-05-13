@@ -15,14 +15,12 @@ public enum XPCDispatchError: Error, Sendable, Equatable {
 }
 
 @available(macOS 15, *)
-@_spi(Experimental)
 public enum XPCDistributedTargetReturnKind {
   case value
   case void
 }
 
 @available(macOS 15, *)
-@_spi(Experimental)
 public struct XPCDistributedTargetMetadata {
   public let argumentCount: Int
   public let returnKind: XPCDistributedTargetReturnKind
@@ -49,7 +47,6 @@ public struct XPCDistributedTargetMetadata {
 }
 
 @available(macOS 15, *)
-@_spi(Experimental)
 public protocol XPCDistributedTargetMetadataProviding: DistributedActor
 where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {
   static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] { get }

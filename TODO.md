@@ -35,7 +35,7 @@
 - [x] 入站消息分发已接入 actor system 初始化路径。
 - [x] reply/result/error 协议已通过统一 envelope 闭环。
 - [x] `remoteCallVoid` 已实现 reply envelope 解码。
-- [ ] 没有 `DistributedXPC` 集成测试。
+- [x] 没有 `DistributedXPC` 集成测试。
 
 ## 代码复审发现的额外缺口
 
@@ -43,12 +43,12 @@
 
 ### P0 (崩溃 / 数据竞争风险)
 
-- [ ] `XPCConnection.set(context:)` 重复调用导致前一个 context 泄漏
+- [x] `XPCConnection.set(context:)` 重复调用导致前一个 context 泄漏
   - `Sources/SwiftXPC/XPCConnection.swift:139-150`
   - `xpc_connection_set_context` 覆盖旧值但不会 release，`setFinalizerF` 也只对最后设置的值生效。
   - 如果 `set(context:)` 被调用两次，前一个 context 永远不会 release。
 
-- [ ] `XPCDictionary` 是 `@unchecked Sendable` 但内部可变
+- [x] `XPCDictionary` 是 `@unchecked Sendable` 但内部可变
   - `Sources/SwiftXPC/XPCArray+XPCDictionary.swift:97-99`
   - `XPCDictionary` 的 `subscript` setter 修改了 `xpc_object` 指向的字典内容。
   - 若从多个并发 task 写入同一个 `XPCDictionary` 实例，存在数据竞争。
@@ -56,17 +56,17 @@
 
 ### P1 (行为错误 / 功能缺失)
 
-- [ ] `Array.unmarshal` 和 `Dictionary.unmarshal` 在元素解码失败时 crash
+- [x] `Array.unmarshal` 和 `Dictionary.unmarshal` 在元素解码失败时 crash
   - `Sources/SwiftXPC/XPCMarshal.swift:237` 和 `:260`
   - 使用 `try! Element.unmarshal(from: item)`，数组/字典中某个元素 marshal 失败时会触发运行时崩溃，而不是向上抛出错误。
   - 应该改用 `try ... catch { throw ... }` 或重新抛出一个聚合错误。
 
-- [ ] Demo 中 `DemoServiceSession` 对象泄漏
+- [x] Demo 中 `DemoServiceSession` 对象泄漏
   - `Examples/DistributedXPCDemo/Sources/DemoService/main.swift:22`
   - 每次新连接追加到全局 `sessions` 数组，但断开的连接从不移除。
   - 长期运行的服务会累积已断开连接的 session 对象。
 
-- [ ] 无 connection 生命周期管理，actor 注册表泄漏
+- [x] 无 connection 生命周期管理，actor 注册表泄漏
   - `Sources/DistributedXPC/Actor.swift:33-50`
   - `activeActorsLock` 中的 actor 在 connection 断开后永远不会被清理。
   - 应该有 `connection` invalidation handler 通知 actor system 清理。
@@ -78,11 +78,11 @@
   - `dict["key"] = nil` 实际把 key 设为 XPC null，而不是删除 key。
   - 宏依赖这个行为对 optional 属性编解码，但对普通用户来说语义不直觉。
 
-- [ ] `try!` 在 `Array`/`Dictionary` unmarshal 实现中
+- [x] `try!` 在 `Array`/`Dictionary` unmarshal 实现中
   - `Sources/SwiftXPC/XPCMarshal.swift:237,260`
   - 见 P1 条目。
 
-- [ ] 没有 marshal 错误路径的测试
+- [x] 没有 marshal 错误路径的测试
   - `Tests/SwiftXPCTests/` 中没有任何测试验证 `XPCMarshalError` 的正确抛出。
   - 例如：从错误的 XPC type 解码、缺失 key、越界、未知 enum case。
 
@@ -133,7 +133,7 @@
   - 至少区分 `success(value)`、`successVoid`、`failure(error)`。
   - 错误编码策略先限定为 `XPCMarshal & Error`，必要时再补 `NSError` 兜底。
 - [x] 约定协议版本字段。
-- [ ] 增加最小集成测试骨架。
+- [x] 增加最小集成测试骨架。
   - 一个本地服务端 actor。
   - 一个客户端 actor proxy。
   - 一条成功调用路径。
@@ -245,20 +245,20 @@
 
 目标：把"能跑"推进到"能维护"。
 
-- [ ] 修复 `XPCConnection.set(context:)` 重复调用的 memory leak。
-- [ ] 评估 `XPCDictionary` 的 `Sendable` 安全性。
-- [ ] 修复 `Array.unmarshal` / `Dictionary.unmarshal` 中 `try!` 导致的崩溃风险。
-- [ ] 修复 Demo 中 `DemoServiceSession` 泄漏。
-- [ ] 添加 connection 生命周期管理，连接断开时清理 actor 注册表。
+- [x] 修复 `XPCConnection.set(context:)` 重复调用的 memory leak。
+- [x] 评估 `XPCDictionary` 的 `Sendable` 安全性。
+- [x] 修复 `Array.unmarshal` / `Dictionary.unmarshal` 中 `try!` 导致的崩溃风险。
+- [x] 修复 Demo 中 `DemoServiceSession` 泄漏。
+- [x] 添加 connection 生命周期管理，连接断开时清理 actor 注册表。
 - [ ] 为公共错误定义稳定错误类型，而不是散落 `fatalError`。
 - [ ] 清理当前占位实现和未使用类型。
 - [ ] 明确线程模型和执行队列。
 - [ ] 明确取消、超时、连接中断的处理策略。
 - [ ] 评估是否需要服务端鉴权/entitlement 校验接入点。
 - [ ] 评估 `XPCDictionary` subscript set nil 语义是否应该改为删除 key。
-- [ ] 为 `Float` 添加 `XPCMarshal` 实现。
-- [ ] 统一测试中的 `assert` 为 `#expect`。
-- [ ] 对齐 `XPCActorID` 的 `@available` 标注与实际使用场景。
+- [x] 为 `Float` 添加 `XPCMarshal` 实现。
+- [x] 统一测试中的 `assert` 为 `#expect`。
+- [x] 对齐 `XPCActorID` 的 `@available` 标注与实际使用场景。
 - [ ] 评估是否在 Phase 6 结束时取消 `@_spi(Experimental)`。
 - [ ] 补充 README 或示例。
 

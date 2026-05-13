@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
-@_spi(Experimental) import DistributedXPC
+import DistributedXPC
 import SwiftXPC
 
 public let demoServiceIdentifier = "dev.ghostflyby.SwiftXPC.DistributedXPCDemo.Service"

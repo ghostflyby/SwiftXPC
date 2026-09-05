@@ -35,7 +35,7 @@
 - [x] 入站消息分发已接入 actor system 初始化路径。
 - [x] reply/result/error 协议已通过统一 envelope 闭环。
 - [x] `remoteCallVoid` 已实现 reply envelope 解码。
-- [x] 没有 `DistributedXPC` 集成测试。
+- [x] `DistributedXPC` 集成测试已补齐（in-process + 真实 connection pair 两条路径）。
 
 ## 代码复审发现的额外缺口
 
@@ -86,10 +86,21 @@
   - `Tests/SwiftXPCTests/` 中没有任何测试验证 `XPCMarshalError` 的正确抛出。
   - 例如：从错误的 XPC type 解码、缺失 key、越界、未知 enum case。
 
-- [ ] `Package.swift` 声明 iOS/macCatalyst 支持但 XPC 是 macOS 独占
+- [x] `Package.swift` 声明 iOS/macCatalyst 支持但 XPC 是 macOS 独占
   - `Package.swift:5`
   - `import XPC` 在 iOS/macCatalyst 上会编译失败。
   - 要么加 `#if os(macOS)` 条件编译，要么去掉虚假的平台声明。
+  - 2026-09-05：已修复，`Package.swift` 现只声明 `.macOS(.v11)`。
+
+- [x] `parseTargetIdentifier` 从右向左定位类名结束符 `C`，返回类型 mangling 含 `C` 时误解析
+  - `Sources/DistributedXPC/XPCDispatch.swift`
+  - 返回 class/actor 的 distributed method（如 `compose(...) -> IntegrationNote`，
+    返回类型 mangling 为 `AA0C4Note`）中，`lastIndex(of: "C")` 会命中返回类型里的 `C`，
+    把方法名解析成 `"Note()"`，导致服务端 metadata 查不到、客户端 fallback 失败，
+    最终抛 `unsupportedThrownErrorType`。
+  - 2026-09-05：已修复。改为从左到右扫描第一个合法的类名结束符，并跳过以大写开头的
+    返回类型组件；新增 `ParseTargetIdentifier*` 回归测试。
+  - 遗留：参数标签按 Swift 惯例假定小写开头，大写标签仍会被当作返回类型组件截断。
 
 - [ ] 有标签/无标签 enum 的 wire layout 不一致
   - `Sources/SwiftXPCMacros/XPCMarshalMacro+Enum.swift`
@@ -108,20 +119,23 @@
 
 ### P3 (风格 / 文档)
 
-- [ ] 测试中混用 `assert` 和 `#expect`
+- [x] 测试中混用 `assert` 和 `#expect`
   - 旧测试（layout 测试）用 `assert(...)` 在 Release 中不生效。
   - 新测试（dispatch/reply）用 `#expect`。应该统一迁移到 `#expect`。
+  - 2026-09-05：已统一迁移到 `#expect`。
 
-- [ ] `XPCActorID` 的 availability 与实际使用不一致
+- [x] `XPCActorID` 的 availability 与实际使用不一致
   - `Sources/DistributedXPC/Actor.swift:159`
   - 没有标注 `@available`，但在 `XPCDistributedActorSystem`（macOS 15+）中使用。
   - 建议统一标注。
+  - 2026-09-05：已标注。
 
-- [ ] `@_spi(Experimental)` 覆盖核心 API
+- [x] `@_spi(Experimental)` 覆盖核心 API
   - `Sources/DistributedXPC/XPCDispatch.swift`
   - `XPCDistributedTargetMetadataProviding`、`XPCDistributedTargetReturnKind`、`XPCDistributedTargetMetadata` 都是 `@_spi(Experimental)`。
   - 用户必须写 `@_spi(Experimental) import DistributedXPC` 才能使用。
   - 在完成 Phase 4 之前可以考虑保留，但在 Phase 6 前需要正式公开。
+  - 2026-09-05：已从核心 API 移除 `@_spi(Experimental)`，`XPCDefaultActorInitializable` 等直接公开。
 
 ## Phase 1: 固定最小协议和测试骨架
 
@@ -201,13 +215,17 @@
 
 目标：把手写 metadata 表替换为宏生成，减少样板代码，并为 reply 错误解码保留必要类型信息。
 
-- [ ] 设计一个 actor 级宏或辅助宏，为 distributed methods 生成静态 metadata 表。
-- [ ] 生成稳定的 v1 target key。
+- [x] 设计一个 actor 级宏或辅助宏，为 distributed methods 生成静态 metadata 表。
+  - 已落地为 `@XPCService` extension 宏（`Sources/SwiftXPCMacros/XPCServiceMacro.swift`）。
+- [x] 生成稳定的 v1 target key。
   - 当前阶段只支持非泛型。
   - 当前阶段避免复杂重载。
-- [ ] 让宏直接展开 metadata。
+  - v1 key 使用 compiler 生成的 mangled target identifier，客户端由 `parseTargetIdentifier` 解析为方法名。
+- [x] 让宏直接展开 metadata。
   - 参数数量、返回形态、必要时的错误类型在展开代码中静态写死。
-- [ ] 用宏替换示例 actor 的手写 metadata 表。
+  - 当前 metadata 只保留 `thrownErrorType`。
+- [x] 用宏替换示例 actor 的手写 metadata 表。
+  - 测试 fixture 与 `DemoGreeter` 均已改用 `@XPCService`。
 
 难点：
 
@@ -222,17 +240,19 @@
 
 目标：让后续重构有安全网。
 
-- [ ] 新增 `DistributedXPC` 端到端测试。
-- [ ] 覆盖以下场景：
+- [x] 新增 `DistributedXPC` 端到端测试。
+  - `Tests/SwiftXPCTests/DistributedXPCIntegrationTests.swift`，覆盖 in-process 与
+    `xpc_endpoint_create` 真实 connection pair 两条路径。
+- [x] 覆盖以下场景：
   - 成功返回值
   - `Void` 返回
   - actor 方法抛错
-  - 参数解码失败
-  - 未知 actor ID
-  - 未知 target
-  - connection interrupted / invalid
-  - 多参数与嵌套 `XPCMarshal` 类型
-  - 并发调用
+  - 参数解码失败（dispatch 级 + 端到端 raw wire）
+  - 未知 actor ID（dispatch 级 + 端到端错误 envelope 回传）
+  - 未知 target（dispatch 级 + 端到端错误 envelope 回传）
+  - connection interrupted / invalid（send 报错 + actor 注册表清理）
+  - 多参数与嵌套 `XPCMarshal` 类型（`compose(note:greeting:times:)` round-trip）
+  - 并发调用（20 路并发 greet）
 - [x] 增加协议 round-trip 测试。
   - request 编码/解码
   - reply 编码/解码
@@ -259,7 +279,8 @@
 - [x] 为 `Float` 添加 `XPCMarshal` 实现。
 - [x] 统一测试中的 `assert` 为 `#expect`。
 - [x] 对齐 `XPCActorID` 的 `@available` 标注与实际使用场景。
-- [ ] 评估是否在 Phase 6 结束时取消 `@_spi(Experimental)`。
+- [x] 评估是否在 Phase 6 结束时取消 `@_spi(Experimental)`。
+  - 2026-09-05：已提前移除，核心 API 直接公开。
 - [ ] 补充 README 或示例。
 
 ## 推荐执行顺序
@@ -275,15 +296,17 @@
 
 若目标是尽快拿到第一个"真的能用"的版本，建议先做到以下范围：
 
-- [ ] 单 service、单 connection。
+- [x] 单 service、单 connection。
 - [x] 非泛型 distributed method。
 - [x] 参数和返回值都要求 `XPCMarshal`。
 - [x] 支持普通返回值、`Void`、`XPCMarshal & Error`。
 - [x] 服务端通过 `executeDistributedTarget` 分发，不依赖反射恢复签名。
-- [ ] 端到端测试覆盖 1 条成功路径、1 条 `Void` 路径、1 条抛错路径。
+- [x] 端到端测试覆盖 1 条成功路径、1 条 `Void` 路径、1 条抛错路径。
 
 做到这里，再继续扩展泛型、复杂重载、类型元数据协商，风险会低很多。
 
 ---
 
 > **复审说明**: 2026-05-07 对全部源码进行了完整复审（覆盖 SwiftXPC、SwiftXPCMacros、DistributedXPC 三个模块和测试）。新增的 `P0-P3` 节来自本次复审发现。GPT-5.5 的 Moon Bridge 通道不可用（503），复审由 deepseek-v4-flash 完成。
+>
+> **2026-09-05 进度同步**: 勾选状态与代码实际进度对齐（Phase 4 宏已落地、Phase 5 集成测试补齐、Package.swift 平台与 `@_spi(Experimental)` 清理）。补齐 Phase 5 剩余测试场景时发现并修复了 `parseTargetIdentifier` 对含 `C` 返回类型 mangled name 的误解析（见 P2 节）。

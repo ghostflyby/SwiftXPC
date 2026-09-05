@@ -13,8 +13,8 @@
   - key 是 compiler 生成的 `target.identifier`
   - 参数解码和实际调用交给 compiler 生成的 distributed accessor
 - 静态表只作为 metadata registry：
-  - key 是 `target.identifier`
-  - value 是参数数量、返回形态、必要时的错误类型等补充元数据
+  - key 是从 compiler 生成的 `target.identifier` 解析出的 Swift 方法名
+  - value 当前只保存 typed-throws 的错误类型，用于客户端解码被擦除的业务错误
 - reply wire 只区分：
   - `returnValue`
   - `returnVoid`
@@ -173,7 +173,7 @@
 
 - [x] 定义 actor 侧 metadata 协议。
 - [x] 定义 target metadata 结构。
-  - 当前包含 `argumentCount`、`returnKind`、`returnType`、`thrownErrorType`。
+  - 当前只包含 `thrownErrorType`，用于恢复 Swift runtime 擦除后的 typed-throws 错误类型。
 - [x] 为单个示例 distributed actor 手写一张最小 metadata 表。
 - [x] 服务端新增统一入站 dispatch 入口。
   - 从 request 解出 `actorID`、`target`、`arguments`。
@@ -220,7 +220,8 @@
 - [x] 生成稳定的 v1 target key。
   - 当前阶段只支持非泛型。
   - 当前阶段避免复杂重载。
-  - v1 key 使用 compiler 生成的 mangled target identifier，客户端由 `parseTargetIdentifier` 解析为方法名。
+  - v1 wire 仍携带 compiler 生成的 `target.identifier` 供 Swift runtime 执行；metadata key
+    使用 `parseTargetIdentifier` 解析出的 Swift 方法名。
 - [x] 让宏直接展开 metadata。
   - 参数数量、返回形态、必要时的错误类型在展开代码中静态写死。
   - 当前 metadata 只保留 `thrownErrorType`。
@@ -283,27 +284,84 @@
   - 2026-09-05：已提前移除，核心 API 直接公开。
 - [ ] 补充 README 或示例。
 
+## 下一阶段：根 Actor 与 Actor 引用
+
+当前基础 RPC 已闭环，但公开 API 尚未解决两个问题：客户端如何获得第一个服务端 actor，
+以及 distributed actor 如何作为参数或返回值跨进程传递。
+
+### 已形成的方向
+
+- 一个 actor proxy 对应一条独立 XPC connection/channel，而不是在同一 connection 上用全局
+  `actorID` 复用多个 actor。
+- 服务需要一个根 actor 作为 bootstrap 入口。客户端连接服务后，先获得根 actor proxy，再由
+  根 actor 的 distributed methods 创建或返回用户 actor。
+- 根 actor 不应被框架固定成包含所有业务 factory 的具体类型。框架应定义最小根 actor 契约，
+  允许用户提供自己的 distributed actor 作为根，并注册到 listener/service。
+- 使用 `XPCDistributedActorSystem` 的 distributed actor 应通过宏自动获得真正的 `XPCMarshal`
+  一致性，不要求用户编写序列化扩展。
+- actor reference 的 wire payload 至少包含新建的 XPC endpoint 和 actor ID（必要时再附加版本与
+  actor 类型标识）。endpoint 使 `static unmarshal(from:)` 自包含：接收端从 endpoint 创建新的
+  `XPCConnection` 和 `XPCDistributedActorSystem`，再以 payload 中的 ID 解析对应 actor proxy。
+- actor 的 `marshal()` 负责为本地 actor 导出一条匿名 listener/channel，并由原 actor system 持有
+  export session；新 channel 只路由到被导出的这个 actor。
+- Swift 自带的 distributed actor `Codable`（通过 `decoder.userInfo[.actorSystemKey]` 注入 system）
+  可作为实现参考，但当前 endpoint 自包含模型不需要把 actor 解码上下文偷渡到普通值 codec。
+- v1 可以先只允许导出本地 actor；将已经是 remote proxy 的 actor 再转发给第三方需要源端重新
+  mint endpoint 或增加 relay 协议，应单独设计。
+
+### 待决设计
+
+- 根 actor 契约使用 marker protocol、带静态 factory 的协议，还是 listener 初始化时的泛型参数。
+- 根 actor 是否固定使用约定 ID，还是 listener 在 bootstrap reply 中返回 actor reference endpoint。
+- 每次传递同一 actor 是新建独立 channel，还是复用已有 channel；复用时如何管理生命周期和并发。
+- actor reference 是否需要 wire-level 类型标识。静态方法签名已知具体 actor 类型时可以只传 endpoint；
+  existential actor 或未来跨版本场景可能需要稳定标识。
+- endpoint 创建失败、连接失效、actor 已释放、错误 actor 类型的稳定错误语义。
+- connection/channel 的所有权：proxy 释放时是否 cancel，服务端何时 resign actor，循环 actor 引用如何处理。
+- 自动一致性由编译器/runtime 能力、宏生成，还是内部 actor-reference wrapper 完成。不能要求用户手写
+  `XPCMarshal.unmarshal`，因为该 API 没有解析 actor proxy 所需的 actor-system 上下文。
+
+### 建议先完成的验证
+
+- 最小 root bootstrap 原型：用户根 actor 注册、客户端获得根 proxy、根方法返回一个用户 actor。
+- actor 作为返回值的端到端测试，确认 endpoint transfer、proxy resolve 和 connection 生命周期。
+- actor 作为参数的反向端到端测试，确认接收端能调用传入 actor（callback 场景）。
+- 同一 actor 多次传递、channel invalidation、proxy 释放和服务端 actor 注销测试。
+- 原型稳定后再决定是否公开通用 `XPCMarshal` 一致性，避免把 actor-specific 上下文泄露到普通值协议。
+
 ## 推荐执行顺序
 
-1. Phase 1：固定最小协议和测试骨架。
-2. Phase 2：用 `executeDistributedTarget` 打通第一次分发，并保留 metadata 表。
-3. Phase 3：补 reply/void/error 闭环。
-4. Phase 4：把 metadata 表宏化。
-5. Phase 5：补足集成测试。
-6. Phase 6：做健壮性和文档收尾。
+1. Phase 1-5：基础 RPC、metadata 宏和集成测试（已完成）。
+2. 根 actor bootstrap：用户根 actor 注册、客户端获得真实远端根 proxy。
+3. Actor reference：actor 返回值、actor 参数、独立 endpoint/channel 和生命周期。
+4. Phase 6：稳定错误、线程模型、取消/超时、中断和鉴权。
+5. Wire 收尾：版本校验、enum layout、nil 语义、availability 与兼容策略。
+6. 文档与示例：让 DemoApp 通过根 actor 完成真实跨进程调用。
 
-## 当前最小可交付里程碑
+## 已完成的基础 RPC 里程碑
 
-若目标是尽快拿到第一个"真的能用"的版本，建议先做到以下范围：
+以下范围已经完成：
 
 - [x] 单 service、单 connection。
 - [x] 非泛型 distributed method。
 - [x] 参数和返回值都要求 `XPCMarshal`。
 - [x] 支持普通返回值、`Void`、`XPCMarshal & Error`。
 - [x] 服务端通过 `executeDistributedTarget` 分发，不依赖反射恢复签名。
-- [x] 端到端测试覆盖 1 条成功路径、1 条 `Void` 路径、1 条抛错路径。
+- [x] 端到端测试覆盖成功、`Void`、抛错和协议错误路径。
 
-做到这里，再继续扩展泛型、复杂重载、类型元数据协商，风险会低很多。
+## 当前可用 API 里程碑
+
+完成以下范围后，外部客户端才有稳定、明确的服务入口：
+
+- [ ] 用户 distributed actor 可注册为根 actor。
+- [ ] 客户端可从 Mach service connection 获得该根 actor 的远端 proxy。
+- [ ] 根 actor 可返回用户 actor，并为其建立独立 XPC endpoint/channel。
+- [ ] 用户 actor 可作为 distributed method 参数传回另一端（callback）。
+- [ ] DemoApp 不再本地构造 `DemoGreeter`，而是通过根 actor 完成真实跨进程调用。
+- [ ] 覆盖根 channel、子 actor channel、invalidation 和释放生命周期的端到端测试。
+
+基础 RPC 里程碑证明了 compiler accessor 与 XPC wire 可以闭环；下一步优先固定 bootstrap 和
+actor-reference 语义，再扩展泛型、复杂重载或跨版本类型协商。
 
 ---
 

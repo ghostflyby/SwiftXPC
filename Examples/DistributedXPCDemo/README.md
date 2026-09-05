@@ -25,6 +25,10 @@ Run the demo app executable from the assembled bundle:
 Examples/DistributedXPCDemo/.build/demo/DistributedXPCDemo.app/Contents/MacOS/DemoApp
 ```
 
-The demo currently imports `DistributedXPC` experimental SPI for hand-written
-target metadata. That should be replaced by macro-generated metadata before the
-API is treated as stable.
+The shared `DemoGreeter` actor uses `@XPCService` to generate distributed-target
+metadata. No experimental SPI or hand-written metadata table is required.
+
+The bundle currently demonstrates packaging, connection setup, and service-side default actor
+factory registration. `DemoApp` still constructs `DemoGreeter` locally, so its method calls do not yet
+demonstrate remote actor discovery. A stable bootstrap API is still required before the example
+can obtain a service-owned actor proxy and exercise the complete cross-process path.

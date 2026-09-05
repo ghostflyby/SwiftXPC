@@ -234,3 +234,60 @@ private func makeSystem() -> XPCDistributedActorSystem {
 
   try await system.handleIncomingMessage(try message.marshal())
 }
+
+@Test func DispatchInvocationRejectsWrongArgumentType() async throws {
+  guard #available(macOS 15, *) else { return }
+  let system = makeSystem()
+  _ = SampleDispatchActor(actorSystem: system)
+
+  var arguments = XPCArray()
+  arguments.append(try Int(42).marshal())
+
+  let reply = try await system.dispatchInvocation(
+    XPCInvocationMessage(
+      method: "greet(name:)",
+      actorID: XPCActorID(id: 1),
+      target: RemoteCallTarget(sampleGreetTargetIdentifier),
+      arguments: arguments
+    )
+  )
+
+  #expect(reply.kind == .throwError)
+  let error = try XPCMarshalError.unmarshal(from: reply.payload!)
+  #expect(error.kind == .typeMismatch(expected: "string", actual: "int64"))
+}
+
+@Test func DispatchInvocationRejectsMissingArguments() async throws {
+  guard #available(macOS 15, *) else { return }
+  let system = makeSystem()
+  _ = SampleDispatchActor(actorSystem: system)
+
+  let reply = try await system.dispatchInvocation(
+    XPCInvocationMessage(
+      method: "greet(name:)",
+      actorID: XPCActorID(id: 1),
+      target: RemoteCallTarget(sampleGreetTargetIdentifier),
+      arguments: XPCArray()
+    )
+  )
+
+  #expect(reply.kind == .throwError)
+  let error = try XPCMarshalError.unmarshal(from: reply.payload!)
+  #expect(error.kind == .outOfBounds(index: 0, count: 0))
+}
+
+@Test func ParseTargetIdentifierMultiLabelMethodWithClassReturnType() {
+  guard #available(macOS 15, *) else { return }
+  // The return-type mangling `AA0C4Note` contains a `C` after the class
+  // terminator; a rightmost scan would mis-parse this identifier as "Note()".
+  let identifier =
+    "$s13SwiftXPCTests18IntegrationGreeterC7compose4note8greeting5timesAA0C4NoteVAI_SSSitYaKFTE"
+  #expect(parseTargetIdentifier(identifier) == "compose(note:greeting:times:)")
+}
+
+@Test func ParseTargetIdentifierStopsAtReturnTypeComponent() {
+  guard #available(macOS 15, *) else { return }
+  // An unsubstituted struct return type also starts with digits; it must not
+  // be swallowed as a parameter label.
+  #expect(parseTargetIdentifier("$s4demo8GreeterC5greet4name4NoteYT") == "greet(name:)")
+}

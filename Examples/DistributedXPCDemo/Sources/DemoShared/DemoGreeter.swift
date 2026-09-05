@@ -56,5 +56,4 @@ public distributed actor DemoGreeter {
 }
 
 @available(macOS 15, *)
-@_spi(Experimental)
 extension DemoGreeter: XPCDefaultActorInitializable {}

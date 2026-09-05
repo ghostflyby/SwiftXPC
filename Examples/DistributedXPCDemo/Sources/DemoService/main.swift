@@ -6,7 +6,7 @@ import SwiftXPC
 import Synchronization
 
 @available(macOS 15, *)
-private final class DemoServiceSession {
+private final class DemoServiceSession: Sendable {
   let system: XPCDistributedActorSystem
 
   init(connection: XPCConnection) {

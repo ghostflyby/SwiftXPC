@@ -26,9 +26,21 @@ public struct XPCDistributedTargetMetadata {
 
 @available(macOS 15, *)
 public func parseTargetIdentifier(_ identifier: String) -> String? {
-  guard let lastC = identifier.lastIndex(of: "C") else { return nil }
-  var pos = identifier.index(after: lastC)
-  guard pos < identifier.endIndex, identifier[pos].isNumber else { return nil }
+  // The class-name terminator `C` must be found left-to-right: return-type
+  // components later in the mangled name (e.g. `AA0C4Note`) may also contain
+  // a `C` followed by a digit, and a rightmost scan would mis-parse there.
+  var searchStart = identifier.startIndex
+  while let cIndex = identifier[searchStart...].firstIndex(of: "C") {
+    if let parsed = parseMethodSuffix(identifier, from: identifier.index(after: cIndex)) {
+      return parsed
+    }
+    searchStart = identifier.index(after: cIndex)
+  }
+  return nil
+}
+
+private func parseMethodSuffix(_ identifier: String, from start: String.Index) -> String? {
+  var pos = start
   var digits = ""
   while pos < identifier.endIndex, identifier[pos].isNumber {
     digits.append(identifier[pos])
@@ -51,7 +63,11 @@ public func parseTargetIdentifier(_ identifier: String) -> String? {
       identifier.distance(from: pos, to: identifier.endIndex) >= labelLen
     else { return nil }
     let labelEnd = identifier.index(pos, offsetBy: labelLen)
-    labels.append(String(identifier[pos..<labelEnd]))
+    let label = String(identifier[pos..<labelEnd])
+    // Type components (e.g. an unsubstituted struct return type) also start
+    // with a digit; real parameter labels begin lowercase or with `_`.
+    guard let first = label.first, first.isLowercase || first == "_" else { break }
+    labels.append(label)
     pos = labelEnd
   }
   if labels.isEmpty { return "\(baseName)()" }

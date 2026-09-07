@@ -311,11 +311,55 @@
 
 ### v1 明确不支持
 
-- remote proxy 再导出/转发给第三方：抛稳定的 `remoteActorExportUnsupported`。
-- `any DistributedActor` existential actor reference。
+- unbounded `any DistributedActor` existential actor reference。
 - 泛型 distributed method、复杂重载、跨版本协议协商。
 - 无标签参数的 metadata key 按 compiler mangling 记为 `name()`（不带 `_`）；
   大写开头的参数标签仍会被 `parseTargetIdentifier` 当作返回类型组件截断。
+
+## v2：Proxy 转发与 existential actor 探索（actor-references 分支）
+
+### 已实现：proxy 转发（具体类型）
+
+- 导入的 actor proxy 被再次传递时，`export()` 重发其存储的 wire
+  （`StoredActorReference` 以 `xpc_retain` 持有 endpoint 对象），接收方从同一
+  endpoint 建立自己的直连 channel——转发永远直连 owner，不做 relay 链。
+- export session 从"只接受首个 peer"改为接受任意数量 peer：每个 peer 独立
+  bind/activate；peer invalidation 仅将其移出 session，不再销毁 session；
+  session 生命周期 = owner invalidation 或 `resignID`（cancel listener 与全部 peers）。
+- `XPCActorReferenceCodec.decode` 在 resolve 前存储导入引用；root 的
+  `connect(using:)` 不存储——root channel 专属当前客户端，导出 root proxy
+  仍抛 `remoteActorExportUnsupported`。
+- 测试：转发往返（client→server→client 三跳 dial-back）、同一代理两路转发
+  并行调用、root proxy 拒绝。
+
+### 已验证不可行：existential actor 引用（编译器硬限制）
+
+四个 `swiftc -typecheck` 探针（Swift 6.3.2）证实，任何库设计都无法让
+existential actor 出现在 distributed 参数/返回位置：
+
+1. 直接声明 `any WorkerAPI`：`#ProtocolTypeNonConformance` —— Swift 6 已移除
+   existential 自一致性，协议类型不能 conform 任何协议，因此无法满足
+   `SerializationRequirement == XPCMarshal`。
+2. 泛型包装 `struct Ref<Subject: XPCActorReferenceConvertible>`：实例化
+   `Ref<any WorkerAPI>` 同样报 `#ProtocolTypeNonConformance`。
+3. 非泛型包装 + wire 类型注册表：解码需要通过协议 metatype 调用 static-Self
+   成员（`(any P.Type).unmarshal`），编译器直接拒绝
+   （"static member cannot be used on protocol metatype"）。
+4. opaque 返回 `some WorkerAPI`：声明可编译，但 Swift runtime 的
+   `executeDistributedTarget` 分发 opaque 返回时要求 decoder 提供
+   `decodeReturnType()`，库无法在分发点获得 opaque 底层具体类型，
+   runtime 报 `typeDeserializationFailure`（"Failed to decode distributed target
+   return type"）。
+
+结论：这是所有带序列化要求的 distributed actor 系统（包括 Codable 系）的共同
+语言级限制。待 Swift 恢复某种形式的 existential conformance 或提供 opaque
+分发支持后重估；届时 wire 层可能需要补类型标识字段。
+
+### v2 已知权衡
+
+- 多 peer listener 存活至 owner 销毁（每次导出的匿名 port 在 actor 生命周期内保持开放）。
+- `importedReferences` 以 actor ID 为键；同 system 内本地 actor 与导入代理 ID 冲突时
+  本地优先（类型+身份检查保证不误路由）。
 
 ### 已完成的验证
 

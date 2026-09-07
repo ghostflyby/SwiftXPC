@@ -25,10 +25,12 @@ Run the demo app executable from the assembled bundle:
 Examples/DistributedXPCDemo/.build/demo/DistributedXPCDemo.app/Contents/MacOS/DemoApp
 ```
 
-The shared `DemoGreeter` actor uses `@XPCService` to generate distributed-target
-metadata. No experimental SPI or hand-written metadata table is required.
+The shared actors use `@XPCService` to generate distributed-target metadata and
+actor-reference marshaling. No experimental SPI or hand-written metadata table
+is required.
 
-The bundle currently demonstrates packaging, connection setup, and service-side default actor
-factory registration. `DemoApp` still constructs `DemoGreeter` locally, so its method calls do not yet
-demonstrate remote actor discovery. A stable bootstrap API is still required before the example
-can obtain a service-owned actor proxy and exercise the complete cross-process path.
+`DemoRoot` is the service root actor registered via `distributedXPCMain(DemoRoot.self)`.
+`DemoApp` connects with `DemoRoot.connect(toService:)`, obtains the remote root proxy,
+and calls `makeGreeter()`; the returned `DemoGreeter` lives on its own independent
+XPC channel created by actor-reference export. The greet/ping/error calls all run
+across process boundaries.

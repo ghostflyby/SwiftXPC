@@ -154,18 +154,19 @@ private func makeRootChannel() throws -> RootChannelFixture {
   #expect(messages.values == ["called back"])
 }
 
-@Test func RemoteProxyExportIsRejected() async throws {
+@Test func RootProxyExportIsRejected() async throws {
   guard #available(macOS 15, *) else { return }
   let fixture = try makeRootChannel()
   defer { withExtendedLifetime(fixture) {} }
   let root = try ChannelRoot.connect(using: fixture.client)
-  let worker = try await root.makeWorker()
 
   do {
-    _ = try worker.marshal()
-    Issue.record("Expected remote proxy export to fail")
+    // The root channel belongs to this client; it has no stored wire to
+    // re-emit and must not be shared with a third process.
+    _ = try root.marshal()
+    Issue.record("Expected root proxy export to fail")
   } catch let error {
-    #expect(error.kind == .remoteActorExportUnsupported("ChannelWorker"))
+    #expect(error.kind == .remoteActorExportUnsupported("ChannelRoot"))
   }
 }
 

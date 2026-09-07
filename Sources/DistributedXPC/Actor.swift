@@ -25,6 +25,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   private let defaultActorFactoryLock: Mutex<(@Sendable (ActorID) -> any DistributedActor)?> =
     Mutex(nil)
   let exportSessionsLock = Mutex<[UUID: XPCActorExportSession]>([:])
+  let importedReferencesLock = Mutex<[XPCActorID: StoredActorReference]>([:])
   let invalidated = Mutex(false)
   private let ownsConnection: Bool
   public let connection: XPCConnection
@@ -53,11 +54,13 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   func invalidate() {
     let sessions = invalidated.withLock { invalidated in
       invalidated = true
-      return exportSessionsLock.withLock {
+      let sessions = exportSessionsLock.withLock {
         let sessions = Array($0.values)
         $0.removeAll()
         return sessions
       }
+      importedReferencesLock.withLock { $0.removeAll() }
+      return sessions
     }
     for session in sessions { session.cancel() }
     // Actor destruction calls resignID, so release registry contents outside its lock.
@@ -67,6 +70,13 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       return retained
     }
     withExtendedLifetime(actors) {}
+  }
+
+  func rememberImported(_ reference: StoredActorReference) {
+    invalidated.withLock { invalidated in
+      guard !invalidated else { return }
+      importedReferencesLock.withLock { $0[reference.actorID] = reference }
+    }
   }
 
   public func resolve<Act>(id: ActorID, as actorType: Act.Type)

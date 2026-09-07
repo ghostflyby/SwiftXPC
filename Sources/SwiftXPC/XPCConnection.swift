@@ -6,7 +6,7 @@ public struct XPCConnection: @unchecked Sendable {
   internal let xpc_object: xpc_connection_t
   internal let _handlerState = _ConnectionHandlerState()
 
-  internal init(xpc_object: xpc_connection_t) {
+  package init(xpc_object: xpc_connection_t) {
     self.xpc_object = xpc_object
   }
 }
@@ -14,6 +14,14 @@ public struct XPCConnection: @unchecked Sendable {
 final class _ConnectionHandlerState: @unchecked Sendable {
   var invalidationHandler: (@Sendable () -> Void)?
   var interruptionHandler: (@Sendable () -> Void)?
+}
+
+extension XPCConnection {
+  /// True when the wrapped XPC object is a connection, not an error object
+  /// delivered by the event handler (e.g. connection invalid/interrupted).
+  package var isConnectionObject: Bool {
+    xpc_get_type(xpc_object) == XPC_TYPE_CONNECTION
+  }
 }
 
 extension XPCConnection {

@@ -11,6 +11,7 @@ public enum XPCDispatchError: Error, Sendable, Equatable {
   case missingTargetMetadata(String)
   case targetExecutionFailed(String)
   case missingInvocationResult
+  case unsupportedProtocolVersion(expected: UInt64, actual: UInt64)
 }
 
 @available(macOS 15, *)
@@ -81,6 +82,7 @@ where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {
 }
 
 @attached(
-  extension, conformances: XPCDistributedTargetMetadataProviding,
-  names: named(xpcDistributedTargetMetadata))
+  extension,
+  conformances: XPCDistributedTargetMetadataProviding, XPCActorReferenceConvertible,
+  names: named(xpcDistributedTargetMetadata), named(marshal), named(unmarshal(from:)))
 public macro XPCService() = #externalMacro(module: "SwiftXPCMacros", type: "XPCServiceMacro")

@@ -25,6 +25,10 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
     case unknownEnumCase(String, enumName: String)
     case typeMismatch(expected: String, actual: String)
     case outOfBounds(index: Int, count: Int)
+    case invalidActorReference(String)
+    case remoteActorExportUnsupported(String)
+    case actorResolutionFailed(String)
+    case unsupportedProtocolVersion(expected: UInt64, actual: UInt64)
   }
   public let kind: Kind
   public let file: String
@@ -61,6 +65,34 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
       kind: .outOfBounds(index: index, count: count), file: file, line: line, function: function)
   }
 
+  public static func invalidActorReference(
+    _ reason: String, file: String = #file, line: UInt = #line, function: String = #function
+  ) -> Self {
+    .init(kind: .invalidActorReference(reason), file: file, line: line, function: function)
+  }
+
+  public static func remoteActorExportUnsupported(
+    _ actorType: String, file: String = #file, line: UInt = #line, function: String = #function
+  ) -> Self {
+    .init(
+      kind: .remoteActorExportUnsupported(actorType), file: file, line: line, function: function)
+  }
+
+  public static func actorResolutionFailed(
+    _ reason: String, file: String = #file, line: UInt = #line, function: String = #function
+  ) -> Self {
+    .init(kind: .actorResolutionFailed(reason), file: file, line: line, function: function)
+  }
+
+  public static func unsupportedProtocolVersion(
+    expected: UInt64, actual: UInt64, file: String = #file, line: UInt = #line,
+    function: String = #function
+  ) -> Self {
+    .init(
+      kind: .unsupportedProtocolVersion(expected: expected, actual: actual), file: file, line: line,
+      function: function)
+  }
+
   public var description: String {
     switch self.kind {
     case .missingKey(let key):
@@ -71,6 +103,14 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
       return "Expected \(expected) but found \(actual)"
     case .outOfBounds(let index, let count):
       return "Index \(index) out of bounds for array of count \(count)"
+    case .invalidActorReference(let reason):
+      return "Invalid actor reference: \(reason)"
+    case .remoteActorExportUnsupported(let actorType):
+      return "Cannot export remote actor \(actorType)"
+    case .actorResolutionFailed(let reason):
+      return "Actor resolution failed: \(reason)"
+    case .unsupportedProtocolVersion(let expected, let actual):
+      return "Unsupported protocol version \(actual); expected \(expected)"
     }
   }
 }

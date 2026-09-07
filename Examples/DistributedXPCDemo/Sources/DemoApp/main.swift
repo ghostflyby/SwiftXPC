@@ -14,12 +14,10 @@ struct DemoApp {
       return
     }
 
-    let connection = XPCConnection(name: demoServiceIdentifier)
-    let system = XPCDistributedActorSystem(connection: connection)
-    connection.activate()
-
     do {
-      let greeter = DemoGreeter(actorSystem: system)
+      let root = try DemoRoot.connect(toService: demoServiceIdentifier)
+      defer { withExtendedLifetime(root) {} }
+      let greeter = try await root.makeGreeter()
 
       print(try await greeter.greet(name: "SwiftXPC"))
       try await greeter.ping()

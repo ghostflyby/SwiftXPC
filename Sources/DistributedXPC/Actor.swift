@@ -1,9 +1,11 @@
 import Dispatch
+import Foundation
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
 import SwiftXPC
 import Synchronization
+import XPC
 
 @available(macOS 15, *)
 public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
@@ -13,7 +15,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   public typealias InvocationDecoder = XPCInvocationDecoder
   public typealias SerializationRequirement = XPCMarshal
 
-  private let activeActorsLock: Mutex<[ActorID: any DistributedActor]> = Mutex([:])
+  let activeActorsLock: Mutex<[ActorID: any DistributedActor]> = Mutex([:])
 
   private let ids = Atomic<UInt64>(0)
   private let assignedIDsLock: Mutex<Set<ActorID>> = Mutex([])
@@ -22,14 +24,49 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   private let defaultActorFactoryLock: Mutex<(@Sendable (ActorID) -> any DistributedActor)?> =
     Mutex(nil)
+  let exportSessionsLock = Mutex<[UUID: XPCActorExportSession]>([:])
+  let invalidated = Mutex(false)
+  private let ownsConnection: Bool
   public let connection: XPCConnection
 
-  public init(connection: XPCConnection) {
+  public convenience init(connection: XPCConnection) {
+    self.init(connection: connection, ownsConnection: false)
+  }
+
+  init(connection: XPCConnection, ownsConnection: Bool) {
     self.connection = connection
+    self.ownsConnection = ownsConnection
     self.connection.addInvalidationHandler { [weak self] in
-      self?.activeActorsLock.withLock { $0.removeAll() }
+      self?.invalidate()
     }
     installEventHandler()
+  }
+
+  deinit {
+    if ownsConnection { connection.cancel() }
+    // Drain sessions and actors before stored properties (and their locks)
+    // are destroyed: releasing registered actors later would re-enter
+    // resignID on half-destroyed Mutexes.
+    invalidate()
+  }
+
+  func invalidate() {
+    let sessions = invalidated.withLock { invalidated in
+      invalidated = true
+      return exportSessionsLock.withLock {
+        let sessions = Array($0.values)
+        $0.removeAll()
+        return sessions
+      }
+    }
+    for session in sessions { session.cancel() }
+    // Actor destruction calls resignID, so release registry contents outside its lock.
+    let actors = activeActorsLock.withLock { actors in
+      let retained = actors
+      actors.removeAll()
+      return retained
+    }
+    withExtendedLifetime(actors) {}
   }
 
   public func resolve<Act>(id: ActorID, as actorType: Act.Type)
@@ -45,12 +82,14 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       $0 = nil
       return r
     }) {
-      var current = ids.load(ordering: .relaxed)
-      while reserved.id >= current {
-        let (success, updated) = ids.compareExchange(
-          expected: current, desired: reserved.id + 1, ordering: .relaxed)
-        if success { break }
-        current = updated
+      if reserved != .root {
+        var current = ids.load(ordering: .relaxed)
+        while reserved.id >= current {
+          let (success, updated) = ids.compareExchange(
+            expected: current, desired: reserved.id + 1, ordering: .relaxed)
+          if success { break }
+          current = updated
+        }
       }
       _ = assignedIDsLock.withLock { $0.insert(reserved) }
       return reserved
@@ -58,6 +97,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let id = XPCActorID(id: ids.wrappingAdd(1, ordering: .relaxed).newValue)
     _ = assignedIDsLock.withLock { $0.insert(id) }
     return id
+  }
+
+  func reserveRootID() {
+    reservedIDLock.withLock { $0 = .root }
   }
 
   public func registerDefaultActor(
@@ -82,11 +125,21 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     guard self.assignedIDsLock.withLock({ $0.contains(actor.id) }) else {
       fatalError("Attempted to mark an unknown actor '\(actor.id)' ready")
     }
-    self.activeActorsLock.withLock { $0[actor.id] = actor }
+    let previous = invalidated.withLock { invalidated -> (any DistributedActor)? in
+      guard !invalidated else { return nil }
+      return self.activeActorsLock.withLock { $0.updateValue(actor, forKey: actor.id) }
+    }
+    withExtendedLifetime(previous) {}
   }
 
   public func resignID(_ id: ActorID) {
     _ = self.activeActorsLock.withLock { $0.removeValue(forKey: id) }
+    let sessions = self.exportSessionsLock.withLock { exports in
+      let matching = exports.filter { $0.value.actorID == id }
+      for key in matching.keys { exports.removeValue(forKey: key) }
+      return matching.map(\.value)
+    }
+    for session in sessions { session.cancel() }
   }
 
   public func makeInvocationEncoder() -> InvocationEncoder { .init() }
@@ -94,12 +147,26 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   func installEventHandler() {
     connection.setEventHandler { [weak self] object in
       guard let self else { return }
-      let done = DispatchSemaphore(value: 0)
-      Task {
-        try? await self.handleIncomingMessage(object)
-        done.signal()
+      self.runIncomingHandler { try await self.handleIncomingMessage(object) }
+    }
+  }
+
+  private func runIncomingHandler(_ operation: @escaping @Sendable () async throws -> Void) {
+    let done = DispatchSemaphore(value: 0)
+    Task {
+      try? await operation()
+      done.signal()
+    }
+    done.wait()
+  }
+
+  func bind<Act>(_ connection: XPCConnection, to actor: Act)
+  where Act: DistributedActor, Act.ID == ActorID {
+    connection.setEventHandler { [weak self, weak actor] object in
+      guard let self, let actor else { return }
+      self.runIncomingHandler {
+        try await self.handleIncomingMessage(object, on: actor)
       }
-      done.wait()
     }
   }
 
@@ -115,7 +182,50 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       }
       return actor
     }
+    guard message.version == XPCWireProtocol.currentVersion else {
+      throw XPCDispatchError.unsupportedProtocolVersion(
+        expected: XPCWireProtocol.currentVersion, actual: message.version)
+    }
     let actor = try getOrCreateActor(for: message.actorID)
+
+    guard let metadataProvider = type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type
+    else {
+      throw XPCDispatchError.missingTargetMetadata(String(describing: type(of: actor)))
+    }
+    guard metadataProvider.xpcDistributedTargetMetadata[message.method] != nil else {
+      throw XPCDispatchError.unknownTarget(message.method)
+    }
+    var decoder = XPCInvocationDecoder(array: message.arguments)
+    let replyLock = Mutex<XPCReplyEnvelope?>(nil)
+    let resultHandler = XPCInvocationResultHandler { envelope in
+      replyLock.withLock { $0 = envelope }
+    }
+    do {
+      try await executeDistributedTarget(
+        on: actor, target: message.target,
+        invocationDecoder: &decoder, handler: resultHandler)
+    } catch let error as any ErrorXPCMarshal {
+      throw error
+    } catch {
+      throw XPCDispatchError.targetExecutionFailed(String(describing: error))
+    }
+    guard let reply = replyLock.withLock({ $0 }) else {
+      throw XPCDispatchError.missingInvocationResult
+    }
+    return reply
+  }
+
+  func dispatchInvocation<Act>(
+    _ message: XPCInvocationMessage, on actor: Act
+  ) async throws -> XPCReplyEnvelope
+  where Act: DistributedActor, Act.ID == ActorID {
+    guard message.actorID == actor.id else {
+      throw XPCDispatchError.unknownActor(message.actorID)
+    }
+    guard message.version == XPCWireProtocol.currentVersion else {
+      throw XPCDispatchError.unsupportedProtocolVersion(
+        expected: XPCWireProtocol.currentVersion, actual: message.version)
+    }
 
     guard let metadataProvider = type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type
     else {
@@ -162,6 +272,20 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     do {
       let invocation = try XPCInvocationMessage.unmarshal(from: object)
       let envelope = try await dispatchInvocation(invocation)
+      try resultHandler.send(envelope)
+    } catch let error as any ErrorXPCMarshal {
+      try resultHandler.send(
+        XPCReplyEnvelope(kind: .throwError, payload: try error.marshal()))
+    }
+  }
+
+  func handleIncomingMessage<Act>(_ object: XPCObject, on actor: Act) async throws
+  where Act: DistributedActor, Act.ID == ActorID {
+    let received = try XPCDictionary.unmarshal(from: object)
+    let resultHandler = XPCInvocationResultHandler(received: received)
+    do {
+      let invocation = try XPCInvocationMessage.unmarshal(from: object)
+      let envelope = try await dispatchInvocation(invocation, on: actor)
       try resultHandler.send(envelope)
     } catch let error as any ErrorXPCMarshal {
       try resultHandler.send(
@@ -245,6 +369,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 @XPCMarshal
 @available(macOS 13.0, *)
 public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
+  public static let root = XPCActorID(id: 0)
+
   internal let id: UInt64
   public init(id: UInt64) { self.id = id }
 }

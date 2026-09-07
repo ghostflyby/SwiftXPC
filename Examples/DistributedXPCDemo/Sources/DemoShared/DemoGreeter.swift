@@ -7,9 +7,13 @@ import SwiftXPC
 public let demoServiceIdentifier = "dev.ghostflyby.SwiftXPC.DistributedXPCDemo.Service"
 
 @available(macOS 15, *)
-public enum DemoTargets {
-  public static let greet = "$s10DemoShared0A7GreeterC5greet4nameS2S_tYaKFTE"
-  public static let ping = "$s10DemoShared0A7GreeterC4pingyyYaKFTE"
+@XPCService
+public distributed actor DemoRoot: XPCRootActor {
+  public typealias ActorSystem = XPCDistributedActorSystem
+
+  public distributed func makeGreeter() -> DemoGreeter {
+    DemoGreeter(actorSystem: actorSystem)
+  }
 }
 
 @available(macOS 15, *)
@@ -54,6 +58,3 @@ public distributed actor DemoGreeter {
 
   public distributed func ping() {}
 }
-
-@available(macOS 15, *)
-extension DemoGreeter: XPCDefaultActorInitializable {}

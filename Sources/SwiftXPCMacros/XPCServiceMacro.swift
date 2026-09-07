@@ -24,16 +24,17 @@ public struct XPCServiceMacro: ExtensionMacro {
         funcDecl.modifiers.contains { $0.name.text == "distributed" }
       }
 
-    // Match the actor's access level for the generated extension.
-    let isPublic = actorDecl.modifiers.contains { $0.name.text == "public" }
-    let access = isPublic ? "public " : ""
+    let access = XPCMarshalMacro.accessLevelPrefix(for: declaration)
 
     var entries: [String] = []
     for funcDecl in distributedFuncs {
       let baseName = funcDecl.name.text
       let params = funcDecl.signature.parameterClause.parameters
-      let labels = params.map { $0.firstName.text + ":" }.joined()
-      let methodKey = params.isEmpty ? "\(baseName)()" : "\(baseName)(\(labels))"
+      let labels = params.compactMap { parameter in
+        let label = parameter.firstName.text
+        return label == "_" ? nil : "\(label):"
+      }.joined()
+      let methodKey = labels.isEmpty ? "\(baseName)()" : "\(baseName)(\(labels))"
 
       var thrownErrorEntry = ""
 
@@ -72,7 +73,17 @@ public struct XPCServiceMacro: ExtensionMacro {
     let body = entries.joined(separator: ",\n")
 
     let extDecl: DeclSyntax = """
-      extension \(type.trimmed): XPCDistributedTargetMetadataProviding {
+      extension \(type.trimmed): XPCDistributedTargetMetadataProviding, XPCActorReferenceConvertible {
+        \(raw: access)nonisolated func marshal() throws(XPCActorReferenceCodec.Failure) -> XPCActorReferenceCodec.Encoded {
+          try XPCActorReferenceCodec.encode(localActor: self)
+        }
+
+        \(raw: access)static func unmarshal(
+          from object: XPCActorReferenceCodec.Encoded
+        ) throws(XPCActorReferenceCodec.Failure) -> Self {
+          try XPCActorReferenceCodec.decode(Self.self, from: object)
+        }
+
         \(raw: access)static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
           [
       \(raw: body)

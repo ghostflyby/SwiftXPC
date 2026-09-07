@@ -380,6 +380,49 @@ existential actor 出现在 distributed 参数/返回位置：
 - [ ] `handleIncomingMessage` 的 `XPCDictionary.unmarshal` 在 do/catch 之外，非字典垃圾消息
   不回错误 reply；既有行为，量级小。
 
+## 官方 XPC 公开 API 覆盖盘点（2026-09-08，对照 macOS 26.x SDK xpc/* 头文件）
+
+### P1（直接服务鉴权与 daemon 正确性）
+
+- [ ] `xpc_connection_get_pid`（macOS 10.7+）：对端进程识别，鉴权与审计日志的前提。
+- [ ] 错误对象路由：`XPC_ERROR_TERMINATION_IMMINENT`（launchd 要求服务尽快退出）与
+  `XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT`（peer 代码签名校验失败，鉴权失败信号）
+  目前被 `setEventHandler` 静默落入通用 handler；应像 invalid/interrupted 一样提供
+  显式 handler 或 ConnectionError 通道。
+- [ ] `xpc_listener` 家族（listener.h，macOS 14+）：`xpc_listener_create/activate/cancel/
+  reject_peer/set_peer_requirement`——现代服务监听器，支持在 accept 前拒绝 peer，
+  是鉴权接入点的理想位置；当前 `xpcMain` 基于 `xpc_main` 无拒绝能力。
+- [ ] `xpc_peer_requirement_*` 可组合校验对象（peer_requirement.h，macOS 26+）：
+  entitlement/platform/team/LWCR 的对象化组合 + `xpc_peer_requirement_match_received_message`
+  （逐消息鉴权）。当前仅有 connection 上的直接 setter（macOS 14.4+），
+  缺 `xpc_connection_set_peer_requirement` 对象入口。
+
+### P2（现代 API 代际与能力补全）
+
+- [ ] `xpc_session` 家族（session.h，macOS 13+）：带 rich error 的现代连接 API
+  （create_mach_service/create_xpc_service、send/reply、incoming handler、cancel handler）。
+  当前 `XPCConnection` 封装的是 legacy connection API。
+- [ ] `xpc_rich_error`（rich_error.h）：session API 的错误类型，`xpc_rich_error_can_retry`
+  可支撑重试策略。
+- [ ] `xpc_shmem_create/xpc_shmem_map`（XPC_TYPE_SHMEM）：共享内存零拷贝传输，
+  大 payload 场景与 `Data` marshal 互补。
+- [ ] mach send right 传递：`xpc_dictionary_set_mach_send/copy_mach_send`、
+  `xpc_array_set_connection/create_connection`、`xpc_dictionary_create_connection`。
+- [ ] `xpc_data_create_with_dispatch_data`：零拷贝 Data 构造。
+- [ ] `xpc_set_event_stream_handler`（macOS 10.7+）：launchd 事件流（如 SIGTERM 转投），
+  daemon 优雅退出需要；与已封装的 `xpcTransactionBegin/End` 同属服务生命周期。
+
+### P3（调试与便利）
+
+- [ ] `xpc_copy_description`、`xpc_debugger_api_misuse_info`（调试描述与误用信息）。
+- [ ] `xpc_copy`（深拷贝）。
+- [ ] 小项：`xpc_string_get_length`、`xpc_string_create_with_format`、
+  `xpc_date_create_from_current`、`XPCDictionary` 公开 count 访问器。
+
+### 明确不封装
+
+- `xpc_activity_*`（activity.h）：launchd 后台活动调度子系统，与本库的 RPC 定位无关。
+
 ## 推荐执行顺序
 
 1. Phase 1-5：基础 RPC、metadata 宏和集成测试（已完成）。

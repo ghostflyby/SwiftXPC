@@ -2,9 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 import XPC
 
-@frozen
 public struct XPCConnection: @unchecked Sendable {
   internal let xpc_object: xpc_connection_t
+  internal let _handlerState = _ConnectionHandlerState()
+
+  package init(xpc_object: xpc_connection_t) {
+    self.xpc_object = xpc_object
+  }
+}
+
+final class _ConnectionHandlerState: @unchecked Sendable {
+  var invalidationHandler: (@Sendable () -> Void)?
+  var interruptionHandler: (@Sendable () -> Void)?
+}
+
+extension XPCConnection {
+  /// True when the wrapped XPC object is a connection, not an error object
+  /// delivered by the event handler (e.g. connection invalid/interrupted).
+  package var isConnectionObject: Bool {
+    xpc_get_type(xpc_object) == XPC_TYPE_CONNECTION
+  }
 }
 
 extension XPCConnection {
@@ -44,10 +61,38 @@ extension XPCConnection {
       xpc_object,
       { xpc_object in
         let obj = XPCObject(xpc_object: xpc_object)
+        // Detect XPC error objects (invalidation/interruption) and route to invalidation handler.
+        if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INVALID) {
+          _handlerState.invalidationHandler?()
+          return
+        } else if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INTERRUPTED) {
+          _handlerState.interruptionHandler?()
+          return
+        }
         handler(obj)
       }
     )
   }
+  /// Register a handler to run when the connection is invalidated.
+  /// Multiple handlers are chained: the previous handler runs before the new one.
+  public func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
+    let previous = _handlerState.invalidationHandler
+    _handlerState.invalidationHandler = {
+      previous?()
+      handler()
+    }
+  }
+
+  /// Register a handler to run when the connection is interrupted.
+  /// Multiple handlers are chained: the previous handler runs before the new one.
+  public func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
+    let previous = _handlerState.interruptionHandler
+    _handlerState.interruptionHandler = {
+      previous?()
+      handler()
+    }
+  }
+
 }
 
 public func xpcTransactionBegin() {
@@ -71,7 +116,12 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func send(message: XPCObject) {
+  public enum ConnectionError: Error, Sendable {
+    case invalid
+    case interupted
+  }
+
+  public func sendAndForget(message: XPCDictionary) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
@@ -79,26 +129,41 @@ extension XPCConnection {
     xpc_connection_send_barrier(xpc_object, barrier)
   }
 
-  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil) async
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
+    async throws(ConnectionError)
     -> XPCObject
   {
-    await withCheckedContinuation { continuation in
+    let r = await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
         xpc_object,
         message.xpc_object,
         replyQueue,
         { xpc_object in
-          let obj = XPCObject(xpc_object: xpc_object)
-          continuation.resume(returning: obj)
+          continuation.resume(returning: XPCObject(xpc_object: xpc_object))
         }
       )
+    }.xpc_object
+    if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
+      throw ConnectionError.invalid
+    } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
+      throw ConnectionError.interupted
+    } else {
+      return XPCObject(xpc_object: r)
     }
   }
 
   @available(*, noasync)
-  public func send(message: XPCObject, replyQueue: DispatchQueue? = nil) -> XPCObject {
-    XPCObject(
-      xpc_object: xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object))
+  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil) throws(ConnectionError)
+    -> XPCObject
+  {
+    let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object)
+    if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
+      throw ConnectionError.invalid
+    } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
+      throw ConnectionError.interupted
+    } else {
+      return XPCObject(xpc_object: r)
+    }
   }
 
 }
@@ -200,6 +265,11 @@ extension XPCConnection {
 
 extension XPCConnection {
   public func set<T: Sendable>(context: T?) {
+    // Release previous context before overwriting, preventing leak on repeated calls.
+    if let oldContextPtr = xpc_connection_get_context(xpc_object) {
+      let unmanaged = Unmanaged<AnyObject>.fromOpaque(oldContextPtr)
+      unmanaged.release()
+    }
     let box = Box(context)
     xpc_connection_set_context(
       xpc_object,
@@ -228,14 +298,14 @@ private final class Box<T> where T: Sendable {
 }
 
 extension XPCConnection: XPCMarshal {
-  public func marshal() throws -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
     XPCObject(xpc_object: xpc_endpoint_create(self.xpc_object))
   }
 
-  public static func unmarshal(from object: XPCObject) throws -> XPCConnection {
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCConnection {
     let type = xpc_get_type(object.xpc_object)
     guard type == XPC_TYPE_ENDPOINT else {
-      throw typeMismatch(XPCConnection.self, object, actual: type)
+      throw typeMismatch(expected: XPC_TYPE_ENDPOINT, actual: type)
     }
     return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object.xpc_object))
   }

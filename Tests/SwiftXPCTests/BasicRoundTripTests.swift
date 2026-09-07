@@ -2,64 +2,66 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Testing
-import XPC
 
-@testable import SwiftXPC
-
-@Test func Int() async throws {
+@Test func RoundTripInt() async throws {
   try roundTrip(1)
 }
 
-@Test func UInt() async throws {
+@Test func RoundTripUInt() async throws {
   try roundTrip(UInt(1))
 }
 
-@Test func Double() async throws {
+@Test func RoundTripDouble() async throws {
   try roundTrip(1.0)
 }
 
-@Test func array() async throws {
+@Test func RoundTripFloat() async throws {
+  try roundTrip(Float(3.14))
+}
+
+@Test func RoundTripArray() async throws {
   try roundTrip([1, 2, 3])
 }
 
-@Test func Date() async throws {
+@Test func RoundTripDate() async throws {
   try roundTrip(Date(timeIntervalSince1970: 0))
 }
 
-@Test func UUID() async throws {
+@Test func RoundTripUUID() async throws {
   try roundTrip(UUID())
 }
 
-@Test func String() async throws {
+@Test func RoundTripString() async throws {
   try roundTrip("Hello, XPC!")
 }
 
-@Test func Dictionary() async throws {
+@Test func RoundTripDictionary() async throws {
   try roundTrip(["key": 1, "number": 42])
 }
 
-@Test func Data() async throws {
+@Test func RoundTripData() async throws {
   try roundTrip("Hello, XPC!".data(using: .utf8))
 }
 
-@Test func OptionalString() async throws {
+@Test func RoundTripOptionalString() async throws {
   try roundTrip(Optional<String>.some("Hello, XPC!"))
   try roundTrip(Optional<String>.none)
 }
 
-@Test func ArrayArray() async throws {
+@Test func RoundTripArrayArray() async throws {
   try roundTrip([[1, 2, 3], [4, 5, 6]])
 }
 
-@Test func DictionaryArray() async throws {
+@Test func RoundTripDictionaryArray() async throws {
+
   try roundTrip([["key1": 1], ["key2": 2]])
 }
 
-@Test func NestedDictionary() async throws {
+@Test func RoundTripNestedDictionary() async throws {
   try roundTrip(["outerKey": ["innerKey": 1]])
 }
 
-@Test func FileHandle() async throws {
+@Test func RoundTripFileHandle() async throws {
   let original = FileHandle.standardOutput
   let v = try original.marshal()
   let decoded = try FileHandle.unmarshal(from: v)

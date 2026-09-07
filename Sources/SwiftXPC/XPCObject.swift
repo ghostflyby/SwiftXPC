@@ -5,6 +5,11 @@ import XPC
 @frozen
 public struct XPCObject: @unchecked Sendable, Equatable, Hashable {
   public let xpc_object: xpc_object_t
+
+  package init(xpc_object: xpc_object_t) {
+    self.xpc_object = xpc_object
+  }
+
   public func hash(into hasher: inout Hasher) {
     hasher.combine(xpc_hash(xpc_object))
   }
@@ -13,24 +18,12 @@ public struct XPCObject: @unchecked Sendable, Equatable, Hashable {
   }
 }
 
-@frozen
-public struct XPCRichError: Error, @unchecked Sendable {
-
-  public let xpc_object: xpc_object_t
-  public init(xpc_object: xpc_endpoint_t) {
-    self.xpc_object = xpc_object
+extension XPCObject: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> XPCObject {
+    self
   }
 
-  @available(macOS 14, *)
-  var message: String {
-    if let s = xpc_rich_error_copy_description(xpc_object) {
-      String(cString: s)
-    } else {
-      ""
-    }
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCObject {
+    object
   }
-
-  @available(macOS 14, *)
-  var canRetry: Bool { xpc_rich_error_can_retry(xpc_object) }
-
 }

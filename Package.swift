@@ -8,13 +8,17 @@ import PackageDescription
 
 let package = Package(
   name: "SwiftXPC",
-  platforms: [.macOS(.v11), .iOS(.v12), .macCatalyst(.v14)],
+  platforms: [.macOS(.v11)],
   products: [
     // Products define the executables and libraries a package produces, making them visible to other packages.
     .library(
       name: "SwiftXPC",
       targets: ["SwiftXPC"]
-    )
+    ),
+    .library(
+      name: "DistributedXPC",
+      targets: ["DistributedXPC"]
+    ),
   ],
   dependencies: [
     .package(url: "https://github.com/apple/swift-syntax.git", from: "510.0.0")
@@ -36,9 +40,13 @@ let package = Package(
         .product(name: "SwiftSyntaxBuilder", package: "swift-syntax"),
       ]
     ),
+    .target(
+      name: "DistributedXPC",
+      dependencies: ["SwiftXPC"]
+    ),
     .testTarget(
       name: "SwiftXPCTests",
-      dependencies: ["SwiftXPC"]
+      dependencies: ["SwiftXPC", "DistributedXPC", "SwiftXPCMacros"]
     ),
   ]
 )

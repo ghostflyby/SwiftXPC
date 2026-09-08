@@ -380,43 +380,53 @@ existential actor 出现在 distributed 参数/返回位置：
 - [ ] `handleIncomingMessage` 的 `XPCDictionary.unmarshal` 在 do/catch 之外，非字典垃圾消息
   不回错误 reply；既有行为，量级小。
 
-## 官方 XPC 公开 API 覆盖盘点（2026-09-08，对照 macOS 26.x SDK xpc/* 头文件）
+## 官方 XPC 公开 API 覆盖盘点（2026-09-08，对照 macOS 26.5 SDK xpc/* 头文件 + XPC Swift overlay swiftinterface）
 
-### P1（直接服务鉴权与 daemon 正确性）
+### Swift 可见性事实（决定封装边界）
 
-- [ ] `xpc_connection_get_pid`（macOS 10.7+）：对端进程识别，鉴权与审计日志的前提。
-- [ ] 错误对象路由：`XPC_ERROR_TERMINATION_IMMINENT`（launchd 要求服务尽快退出）与
-  `XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT`（peer 代码签名校验失败，鉴权失败信号）
-  目前被 `setEventHandler` 静默落入通用 handler；应像 invalid/interrupted 一样提供
-  显式 handler 或 ConnectionError 通道。
-- [ ] `xpc_listener` 家族（listener.h，macOS 14+）：`xpc_listener_create/activate/cancel/
-  reject_peer/set_peer_requirement`——现代服务监听器，支持在 accept 前拒绝 peer，
-  是鉴权接入点的理想位置；当前 `xpcMain` 基于 `xpc_main` 无拒绝能力。
-- [ ] `xpc_peer_requirement_*` 可组合校验对象（peer_requirement.h，macOS 26+）：
-  entitlement/platform/team/LWCR 的对象化组合 + `xpc_peer_requirement_match_received_message`
-  （逐消息鉴权）。当前仅有 connection 上的直接 setter（macOS 14.4+），
-  缺 `xpc_connection_set_peer_requirement` 对象入口。
+- `XPC_SWIFT_NOEXPORT` 的 C 函数在 Swift 中**完全不可用**：`xpc_listener_*`、
+  `xpc_peer_requirement_*`、session 的 flags/handler typedef 均在其列。
+- Apple 为现代 API 提供 Swift overlay 类型（`XPCListener`/`XPCSession`/
+  `XPCPeerRequirement`/`XPCRichError`/`XPCEndpoint`/`XPCReceivedMessage`），
+  但它们基于 session 模型，与本库基于 `xpc_connection_t` 的运行时不兼容。
+- 无 NOEXPORT 的 C 函数（`xpc_connection_get_pid`、14.4 requirement setter 家族、
+  `xpc_copy_description`、`xpc_shmem_*` 等）可直接封装。
+
+### P1（鉴权可观测性与 daemon 正确性）——已落地
+
+- [x] `xpc_connection_get_pid`：`XPCConnection.pid`。
+- [x] 错误对象路由：`addTerminationImminentHandler` /
+  `addPeerCodeSigningErrorHandler`（macOS 15+），未注册时错误对象照旧进通用
+  handler（向后兼容）；`XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT` 是代码签名
+  requirement 校验失败的鉴权失败信号，此前被静默吞掉。
+- [x] `XPCRootActorServer(shouldAccept:)` 接入校验钩子：activate 前自定义校验
+  （pid/euid 等），拒绝走"空 handler → activate → cancel"安全序列，客户端观察到
+  interrupted。
+- [x] 调试描述：`XPCConnection`/`XPCObject` 的 `debugDescription`
+  （`xpc_copy_description`）。
+- 内核级强制路径（macOS 12+）：accepted peer 在 activate 前设字符串
+  requirement（`setPeerCodeSigningRequirement`，已封装），违规连接由 XPC 直接丢弃，
+  失败信号经上述错误路由可观测。
 
 ### P2（现代 API 代际与能力补全）
 
-- [ ] `xpc_session` 家族（session.h，macOS 13+）：带 rich error 的现代连接 API
-  （create_mach_service/create_xpc_service、send/reply、incoming handler、cancel handler）。
-  当前 `XPCConnection` 封装的是 legacy connection API。
-- [ ] `xpc_rich_error`（rich_error.h）：session API 的错误类型，`xpc_rich_error_can_retry`
-  可支撑重试策略。
-- [ ] `xpc_shmem_create/xpc_shmem_map`（XPC_TYPE_SHMEM）：共享内存零拷贝传输，
-  大 payload 场景与 `Data` marshal 互补。
-- [ ] mach send right 传递：`xpc_dictionary_set_mach_send/copy_mach_send`、
-  `xpc_array_set_connection/create_connection`、`xpc_dictionary_create_connection`。
-- [ ] `xpc_data_create_with_dispatch_data`：零拷贝 Data 构造。
-- [ ] `xpc_set_event_stream_handler`（macOS 10.7+）：launchd 事件流（如 SIGTERM 转投），
-  daemon 优雅退出需要；与已封装的 `xpcTransactionBegin/End` 同属服务生命周期。
+- [ ] **runtime v3 方向：采纳 XPC overlay（XPCListener/XPCSession）**。这是解锁
+  以下能力的唯一路径：`XPCPeerRequirement`（macOS 26+，可组合鉴权对象 +
+  `XPCReceivedMessage.senderSatisfies` 逐消息鉴权）、`XPCRichError` 重试语义、
+  listener 的 accept/reject 显式模型（`IncomingSessionRequest.reject(reason:)`）。
+  overlay 基于 session 模型，意味着传输层从 `xpc_connection_t` 迁移到
+  `XPCSession`——需要独立的架构设计与迁移计划，不是顺手封装。
+- [ ] `xpc_shmem_create/map`（可直接封装）：共享内存零拷贝传输，大 payload 场景。
+- [ ] mach send right 传递（`xpc_dictionary_set_mach_send/copy_mach_send`、
+  `xpc_array/dictionary_create_connection`）。
+- [ ] `xpc_data_create_with_dispatch_data` 零拷贝构造。
+- [ ] `xpc_set_event_stream_handler`：launchd 事件流（SIGTERM 转投等），
+  daemon 优雅退出。
 
 ### P3（调试与便利）
 
-- [ ] `xpc_copy_description`、`xpc_debugger_api_misuse_info`（调试描述与误用信息）。
-- [ ] `xpc_copy`（深拷贝）。
-- [ ] 小项：`xpc_string_get_length`、`xpc_string_create_with_format`、
+- [ ] `xpc_debugger_api_misuse_info`、`xpc_copy`（深拷贝）、
+  `xpc_string_get_length`、`xpc_string_create_with_format`、
   `xpc_date_create_from_current`、`XPCDictionary` 公开 count 访问器。
 
 ### 明确不封装

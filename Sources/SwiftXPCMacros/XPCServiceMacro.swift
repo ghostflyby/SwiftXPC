@@ -73,7 +73,7 @@ public struct XPCServiceMacro: ExtensionMacro {
     let body = entries.joined(separator: ",\n")
 
     let extDecl: DeclSyntax = """
-      extension \(type.trimmed): XPCDistributedTargetMetadataProviding, XPCActorReferenceConvertible {
+      extension \(type.trimmed): XPCDistributedTargetMetadataProviding, XPCExportableActor {
         \(raw: access)static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
           [
       \(raw: body)

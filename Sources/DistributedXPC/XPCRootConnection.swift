@@ -12,15 +12,18 @@ import Synchronization
 public struct XPCRetryPolicy: Sendable {
   /// Total number of attempts, including the first one. Must be >= 1.
   public let maxAttempts: Int
+  /// Wait before the first retry.
   public let initialBackoff: Duration
+  /// Growth factor applied to the wait after each failed attempt.
   public let multiplier: Double
+  /// Upper bound for any single wait.
   public let maxBackoff: Duration
 
   /// A single attempt, never retried.
   public static let once = XPCRetryPolicy(
     maxAttempts: 1, initialBackoff: .zero, multiplier: 1, maxBackoff: .zero)
 
-  /// Tolerates a service restart: retries for up to ~7.6s of cumulative wait.
+  /// Tolerates a service restart: retries for up to ~11.3s of cumulative wait.
   public static let resilient = XPCRetryPolicy(
     maxAttempts: 8, initialBackoff: .milliseconds(100), multiplier: 2, maxBackoff: .seconds(5))
 
@@ -64,7 +67,7 @@ public enum XPCRootConnectionEvent: Sendable {
 /// Unlike child actor references, the root proxy rides a *named* mach service
 /// connection: when the service process dies, launchd relaunches it and the
 /// same proxy transparently works again on its next call (verified by probe;
-/// see Docs/XPCSessionMigrationFeasibility.md sibling notes in TODO). This
+/// same proxy transparently works again on its next call). This
 /// handle adds lifecycle events and a retry policy for infrastructure
 /// failures. Callers observe `events` to rebuild dependent child-actor state
 /// after `.disconnected`.

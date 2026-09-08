@@ -1,8 +1,17 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import Synchronization
 import XPC
 
+/// A handle to an XPC connection: the named or anonymous channel over which
+/// dictionaries travel between processes.
+///
+/// Configure handlers before `activate()`; after activation the connection
+/// delivers events through those handlers. Errors arrive as dedicated
+/// signals (`addInvalidationHandler`, `addInterruptionHandler`,
+/// `addTerminationImminentHandler`, `addPeerCodeSigningErrorHandler`) rather
+/// than as generic events.
 public struct XPCConnection: @unchecked Sendable {
   internal let xpc_object: xpc_connection_t
   internal let _handlerState = _ConnectionHandlerState()
@@ -12,43 +21,74 @@ public struct XPCConnection: @unchecked Sendable {
   }
 }
 
+/// Per-connection event handler storage. Thread-safe: XPC delivers events on
+/// the connection's target queue while handlers may be chained from any
+/// queue, so all access is lock-protected. Handlers should be installed
+/// before `activate()`; later additions take effect for subsequent events.
 final class _ConnectionHandlerState: @unchecked Sendable {
-  var genericHandler: (@Sendable (XPCObject) -> Void)?
-  var invalidationHandler: (@Sendable () -> Void)?
-  var interruptionHandler: (@Sendable () -> Void)?
-  var terminationImminentHandler: (@Sendable () -> Void)?
-  var peerCodeSigningErrorHandler: (@Sendable () -> Void)?
-}
+  struct Handlers {
+    var generic: (@Sendable (XPCObject) -> Void)?
+    var invalidation: (@Sendable () -> Void)?
+    var interruption: (@Sendable () -> Void)?
+    var terminationImminent: (@Sendable () -> Void)?
+    var peerCodeSigningError: (@Sendable () -> Void)?
+  }
 
-/// Routes one connection event object to the matching dedicated handler.
-/// Error objects whose dedicated handler was never registered fall through to
-/// the generic handler, preserving pre-routing behavior for existing callers.
-internal func routeConnectionEvent(
-  _ state: _ConnectionHandlerState, _ object: XPCObject
-) {
-  let raw = object.xpc_object
-  if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
-    state.invalidationHandler?()
-    return
+  private let lock = NSLock()
+  private var handlers = Handlers()
+
+  private func withHandlers<T>(_ body: (inout Handlers) -> T) -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    return body(&handlers)
   }
-  if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
-    state.interruptionHandler?()
-    return
+
+  func setGenericHandler(_ handler: @escaping @Sendable (XPCObject) -> Void) {
+    withHandlers { $0.generic = handler }
   }
-  if xpc_equal(raw, XPC_ERROR_TERMINATION_IMMINENT) {
-    if let handler = state.terminationImminentHandler {
+
+  func chain(
+    _ keyPath: WritableKeyPath<Handlers, (@Sendable () -> Void)?>,
+    _ handler: @escaping @Sendable () -> Void
+  ) {
+    withHandlers { state in
+      let previous = state[keyPath: keyPath]
+      state[keyPath: keyPath] = {
+        previous?()
+        handler()
+      }
+    }
+  }
+
+  /// Routes one connection event object to the matching dedicated handler.
+  /// Error objects whose dedicated handler was never registered fall through
+  /// to the generic handler, preserving behavior for existing callers.
+  func route(_ object: XPCObject) {
+    let snapshot = withHandlers { $0 }
+    let raw = object.xpc_object
+    if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
+      snapshot.invalidation?()
+      return
+    }
+    if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
+      snapshot.interruption?()
+      return
+    }
+    if xpc_equal(raw, XPC_ERROR_TERMINATION_IMMINENT) {
+      if let handler = snapshot.terminationImminent {
+        handler()
+        return
+      }
+    }
+    if #available(macOS 15.0, *),
+      xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
+      let handler = snapshot.peerCodeSigningError
+    {
       handler()
       return
     }
+    snapshot.generic?(object)
   }
-  if #available(macOS 15.0, *),
-    xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
-    let handler = state.peerCodeSigningErrorHandler
-  {
-    handler()
-    return
-  }
-  state.genericHandler?(object)
 }
 
 extension XPCConnection {
@@ -64,23 +104,23 @@ extension XPCConnection {
     xpc_object = xpc_connection_create(name, dispatchQueue)
   }
 
-  public enum MachServiceFlag: Sendable {
-    case listener
-    case privileged
+  /// Creation options for a named mach service connection. Mirrors the C
+  /// flags, which are combinable.
+  public struct MachServiceOptions: OptionSet, Sendable {
+    public let rawValue: UInt64
+    public init(rawValue: UInt64) { self.rawValue = rawValue }
+
+    /// Advertise the name as a listener this process serves.
+    public static let listener = MachServiceOptions(rawValue: 1 << 0)
+    /// Request privileged (root) access semantics for the name.
+    public static let privileged = MachServiceOptions(rawValue: 1 << 1)
   }
 
   public init(
-    machServiceName: String, flags: MachServiceFlag, dispatchQueue: DispatchQueue? = nil
+    machServiceName: String, options: MachServiceOptions = [], dispatchQueue: DispatchQueue? = nil
   ) {
-    let flag =
-      switch flags {
-      case .listener:
-        XPC_CONNECTION_MACH_SERVICE_LISTENER
-      case .privileged:
-        XPC_CONNECTION_MACH_SERVICE_PRIVILEGED
-      }
     xpc_object = xpc_connection_create_mach_service(
-      machServiceName, dispatchQueue, UInt64(flag))
+      machServiceName, dispatchQueue, options.rawValue)
   }
 
   public func setTargetQueue(_ queue: DispatchQueue?) {
@@ -90,33 +130,25 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func setEventHandler(handler: @escaping @Sendable (XPCObject) -> Void) {
-    _handlerState.genericHandler = handler
+  public func setEventHandler(_ handler: @escaping @Sendable (XPCObject) -> Void) {
+    _handlerState.setGenericHandler(handler)
     xpc_connection_set_event_handler(
       xpc_object,
       { [state = _handlerState] xpc_object in
-        routeConnectionEvent(state, XPCObject(xpc_object: xpc_object))
+        state.route(XPCObject(xpc_object: xpc_object))
       }
     )
   }
   /// Register a handler to run when the connection is invalidated.
   /// Multiple handlers are chained: the previous handler runs before the new one.
   public func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
-    let previous = _handlerState.invalidationHandler
-    _handlerState.invalidationHandler = {
-      previous?()
-      handler()
-    }
+    _handlerState.chain(\.invalidation, handler)
   }
 
   /// Register a handler to run when the connection is interrupted.
   /// Multiple handlers are chained: the previous handler runs before the new one.
   public func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
-    let previous = _handlerState.interruptionHandler
-    _handlerState.interruptionHandler = {
-      previous?()
-      handler()
-    }
+    _handlerState.chain(\.interruption, handler)
   }
 
   /// Register a handler to run when launchd announces imminent service
@@ -125,11 +157,7 @@ extension XPCConnection {
   /// arrive afterwards.
   /// Multiple handlers are chained: the previous handler runs before the new one.
   public func addTerminationImminentHandler(_ handler: @escaping @Sendable () -> Void) {
-    let previous = _handlerState.terminationImminentHandler
-    _handlerState.terminationImminentHandler = {
-      previous?()
-      handler()
-    }
+    _handlerState.chain(\.terminationImminent, handler)
   }
 
   /// Register a handler to run when the peer fails this connection's code
@@ -137,19 +165,18 @@ extension XPCConnection {
   /// Multiple handlers are chained: the previous handler runs before the new one.
   @available(macOS 15.0, *)
   public func addPeerCodeSigningErrorHandler(_ handler: @escaping @Sendable () -> Void) {
-    let previous = _handlerState.peerCodeSigningErrorHandler
-    _handlerState.peerCodeSigningErrorHandler = {
-      previous?()
-      handler()
-    }
+    _handlerState.chain(\.peerCodeSigningError, handler)
   }
 
 }
 
+/// Signals to launchd that this process is busy. While a transaction is
+/// open the service is not considered idle-eligible. (C: xpc_transaction_begin)
 public func xpcTransactionBegin() {
   xpc_transaction_begin()
 }
 
+/// Signals that a previously opened transaction finished. (C: xpc_transaction_end)
 public func xpcTransactionEnd() {
   xpc_transaction_end()
 }
@@ -167,6 +194,9 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
+  /// The reason an asynchronous send failed. Note that a named service
+  /// connection may recover from `.interrupted` on a later send (launchd
+  /// relaunches the service), while `.invalid` is terminal.
   public enum ConnectionError: Error, Sendable {
     case invalid
     case interrupted
@@ -243,7 +273,9 @@ extension XPCConnection: CustomDebugStringConvertible {
 }
 
 extension XPCConnection {
-  var name: String? {
+  /// The service name the connection was created with, or nil for anonymous
+  /// and received connections.
+  public var name: String? {
     let cString = xpc_connection_get_name(xpc_object)
     if let cString = cString {
       return String(cString: cString)
@@ -252,16 +284,19 @@ extension XPCConnection {
     }
   }
 
-  var euid: uid_t {
-    return xpc_connection_get_euid(xpc_object)
+  /// Effective user ID of the peer.
+  public var euid: uid_t {
+    xpc_connection_get_euid(xpc_object)
   }
 
-  var egitid: gid_t {
-    return xpc_connection_get_egid(xpc_object)
+  /// Effective group ID of the peer.
+  public var egid: gid_t {
+    xpc_connection_get_egid(xpc_object)
   }
 
-  var asid: au_asid_t {
-    return xpc_connection_get_asid(xpc_object)
+  /// Audit session ID of the peer.
+  public var asid: au_asid_t {
+    xpc_connection_get_asid(xpc_object)
   }
 
 }
@@ -269,6 +304,8 @@ extension XPCConnection {
 @available(macOS 14.4, *)
 extension XPCConnection {
   /// The reason a peer requirement could not be installed on this connection.
+  /// The reason a peer requirement could not be installed on this
+  /// connection.
   public struct PeerRequirementError: Error, Sendable {
     /// The raw status returned by XPC (errno-style, e.g. `ENOTSUP` on
     /// platforms without code signing requirement support).

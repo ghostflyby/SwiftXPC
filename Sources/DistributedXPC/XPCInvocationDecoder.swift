@@ -3,6 +3,9 @@
 import Distributed
 import SwiftXPC
 
+@available(macOS 13.0, *)
+/// Decodes the arguments of an inbound invocation for the target accessor.
+/// Internal plumbing for `executeDistributedTarget`.
 public struct XPCInvocationDecoder: DistributedTargetInvocationDecoder {
 
   public typealias SerializationRequirement = XPCMarshal

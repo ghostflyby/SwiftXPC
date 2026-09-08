@@ -28,11 +28,11 @@ private func assertRouting(
 ) {
   let state = _ConnectionHandlerState()
   let log = EventLog()
-  state.genericHandler = { _ in log.record("generic") }
-  state.invalidationHandler = { log.record("invalid") }
-  state.interruptionHandler = { log.record("interrupted") }
+  state.setGenericHandler { _ in log.record("generic") }
+  state.chain(\.invalidation, { log.record("invalid") })
+  state.chain(\.interruption, { log.record("interrupted") })
   configured(state, log)
-  routeConnectionEvent(state, object)
+  state.route(object)
   #expect(log.values == expected, sourceLocation: sourceLocation)
 }
 
@@ -55,7 +55,7 @@ private func assertRouting(
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_TERMINATION_IMMINENT),
     configured: { state, log in
-      state.terminationImminentHandler = { log.record("termination") }
+      state.chain(\.terminationImminent, { log.record("termination") })
     },
     expected: ["termination"])
 }
@@ -72,7 +72,7 @@ private func assertRouting(
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
     configured: { state, log in
-      state.peerCodeSigningErrorHandler = { log.record("peer-error") }
+      state.chain(\.peerCodeSigningError, { log.record("peer-error") })
     },
     expected: ["peer-error"])
 }

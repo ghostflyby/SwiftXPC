@@ -3,7 +3,12 @@
 import Foundation
 import XPC
 
-/// A protocol for types that can be marshaled to and from XPC objects
+/// A protocol for types that can be marshaled to and from XPC objects.
+///
+/// Conform standard types via `@XPCMarshal` (generates both witnesses for
+/// structs, enums, and final classes) or implement the requirements by
+/// hand. Distributed actors get actor-reference marshaling through
+/// `XPCExportableActor` instead.
 public protocol XPCMarshal {
   /// Marshals the value into an XPC object.
   func marshal() throws(XPCMarshalError) -> XPCObject
@@ -17,6 +22,9 @@ public protocol XPCMarshal {
 )
 public macro XPCMarshal() = #externalMacro(module: "SwiftXPCMacros", type: "XPCMarshalMacro")
 
+/// The only error type thrown by marshaling APIs. Equality is determined
+/// entirely by `kind`; construct via the static factories, which mirror
+/// the cases with better labels.
 @XPCMarshal
 public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatable, Hashable {
   @XPCMarshal

@@ -14,12 +14,16 @@ struct XPCActorReferenceWire {
   let endpoint: XPCObject
 }
 
+/// A distributed actor that can cross process boundaries as an XPC actor
+/// reference. Applied automatically by `@XPCService`; provides default
+/// `marshal()` (export on a fresh channel) and `unmarshal(from:)` (dial the
+/// embedded endpoint, resolve a proxy) implementations.
 @available(macOS 15, *)
-public protocol XPCActorReferenceConvertible: DistributedActor, XPCMarshal
+public protocol XPCExportableActor: DistributedActor, XPCMarshal
 where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {}
 
 @available(macOS 15, *)
-extension XPCActorReferenceConvertible {
+extension XPCExportableActor {
   /// Exports this local actor as a self-contained XPC actor reference:
   /// `{ version, actorID, endpoint }` on a freshly minted channel.
   public nonisolated func marshal() throws(XPCMarshalError) -> XPCObject {
@@ -124,7 +128,7 @@ final class PeerBox: @unchecked Sendable {
 @available(macOS 15, *)
 extension XPCDistributedActorSystem {
   func export<Act>(_ actor: Act) throws(XPCMarshalError) -> XPCObject
-  where Act: XPCActorReferenceConvertible {
+  where Act: XPCExportableActor {
     let isLocal = activeActorsLock.withLock { actors in
       guard let registered = actors[actor.id] as? Act else { return false }
       return registered === actor
@@ -146,7 +150,7 @@ extension XPCDistributedActorSystem {
   }
 
   private func mintExportSession<Act>(for actor: Act) throws(XPCMarshalError) -> XPCObject
-  where Act: XPCActorReferenceConvertible {
+  where Act: XPCExportableActor {
     let listener = XPCConnection(name: nil)
     let sessionID = UUID()
     let session = XPCActorExportSession(id: sessionID, actorID: actor.id, listener: listener)

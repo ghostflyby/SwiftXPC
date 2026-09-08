@@ -33,7 +33,8 @@ struct XPCInvocationMessage {
 
 @available(macOS 13.0, *)
 @XPCMarshal
-enum XPCReplyKind: Sendable, Hashable, Equatable {
+public enum XPCReplyKind: Sendable, Hashable, Equatable {
+  /// The reply carries a return value.
   case returnValue
   case returnVoid
   case throwError
@@ -124,3 +125,12 @@ extension XPCReplyEnvelope {
     throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: errorType))
   }
 }
+
+@available(macOS 13.0, *)
+extension RemoteCallTarget: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> XPCObject { try identifier.marshal() }
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
+    .init(try .unmarshal(from: object))
+  }
+}
+

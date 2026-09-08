@@ -5,8 +5,12 @@ import Foundation
 import SwiftXPC
 import Synchronization
 
+/// Marks a concrete distributed actor as the bootstrap entry point of an
+/// XPC service: every accepted peer channel serves one instance of this
+/// actor under `XPCActorID.root`. Clients obtain it via
+/// `connect(toService:)` / `connect(using:)`.
 @available(macOS 15, *)
-public protocol XPCRootActor: XPCActorReferenceConvertible,
+public protocol XPCRootActor: XPCExportableActor,
   XPCDistributedTargetMetadataProviding
 {
   init(actorSystem: XPCDistributedActorSystem)

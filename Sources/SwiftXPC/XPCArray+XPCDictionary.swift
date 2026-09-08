@@ -37,20 +37,16 @@ extension XPCArray: RandomAccessCollection {
 extension XPCArray: MutableCollection {
   public typealias Element = XPCObject
 
-  private func validateIndex(_ position: Int) throws {
-    guard position >= startIndex && position < endIndex else {
-      throw XPCMarshalError.outOfBounds(index: position, count: count)
-    }
-  }
-
+  /// Accesses the element at `position`. Like `Array`, an out-of-range index
+  /// is a programming error and traps.
   public subscript(position: Int) -> XPCObject {
     get {
-      try! validateIndex(position)
+      precondition(position >= startIndex && position < endIndex, "XPCArray index out of range")
       let item = xpc_array_get_value(xpc_object, position)
       return .init(xpc_object: item)
     }
     set {
-      try! validateIndex(position)
+      precondition(position >= startIndex && position < endIndex, "XPCArray index out of range")
       xpc_array_set_value(xpc_object, position, newValue.xpc_object)
     }
   }

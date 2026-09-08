@@ -410,12 +410,12 @@ existential actor 出现在 distributed 参数/返回位置：
 
 ### P2（现代 API 代际与能力补全）
 
-- [ ] **runtime v3 方向：采纳 XPC overlay（XPCListener/XPCSession）**。这是解锁
-  以下能力的唯一路径：`XPCPeerRequirement`（macOS 26+，可组合鉴权对象 +
-  `XPCReceivedMessage.senderSatisfies` 逐消息鉴权）、`XPCRichError` 重试语义、
-  listener 的 accept/reject 显式模型（`IncomingSessionRequest.reject(reason:)`）。
-  overlay 基于 session 模型，意味着传输层从 `xpc_connection_t` 迁移到
-  `XPCSession`——需要独立的架构设计与迁移计划，不是顺手封装。
+- [ ] **runtime v3 方向：采纳 XPC overlay（XPCListener/XPCSession）**。可行性研究已完成
+  （`Docs/XPCSessionMigrationFeasibility.md`，探针实跑验证）：session 模型的 reply 链路、
+  reject 模型、rich error 取消语义、裸对象桥接全部可用；但对端身份 API（pid/euid）完全缺失、
+  字符串 code-signing requirement 在 26 前不可用、TERMINATION_IMMINENT 不可观测——
+  部署目标 < 26 时迁移是鉴权净倒退。**当前选择维持 connection 体系（方案 D）**，
+  把双传输层抽象（方案 B）作为 v3 预案；重估触发条件见报告。
 - [ ] `xpc_shmem_create/map`（可直接封装）：共享内存零拷贝传输，大 payload 场景。
 - [ ] mach send right 传递（`xpc_dictionary_set_mach_send/copy_mach_send`、
   `xpc_array/dictionary_create_connection`）。

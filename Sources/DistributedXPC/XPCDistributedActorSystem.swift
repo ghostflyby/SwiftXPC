@@ -7,6 +7,15 @@ import SwiftXPC
 import Synchronization
 import XPC
 
+
+/// The `DistributedActorSystem` implementation that carries distributed
+/// actor calls over XPC.
+///
+/// Every inbound XPC channel serves exactly one bound actor: the initial
+/// mach service channel serves a root actor (ID `.root`), and each exported
+/// actor reference mints its own channel. Outbound calls ride the named
+/// connection, which launchd re-establishes transparently after a service
+/// restart.
 @available(macOS 15, *)
 public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   public typealias ActorID = XPCActorID
@@ -77,12 +86,17 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     }
   }
 
+  /// Returns the local actor registered under `id`, or nil so the runtime
+  /// creates a remote proxy. This is the standard distributed resolution
+  /// entry point; see `XPCRootActor.connect` for bootstrap.
   public func resolve<Act>(id: ActorID, as actorType: Act.Type)
     throws -> Act? where Act: DistributedActor
   {
     activeActorsLock.withLock { $0[id] as? Act }
   }
 
+  /// Assigns the next local actor ID (starting at 1), unless a framework
+  /// reservation (root bootstrap) is pending.
   public func assignID<Act>(_ actorType: Act.Type) -> ActorID
   where Act: DistributedActor {
     if let reserved = reservedIDLock.withLock({
@@ -102,6 +116,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     reservedIDLock.withLock { $0 = .root }
   }
 
+  /// Registers a freshly created local actor under its assigned ID.
+  /// Called by the runtime during local actor initialization.
   public func actorReady<Act>(_ actor: Act)
   where Act: DistributedActor, Act.ID == ActorID {
     guard self.assignedIDsLock.withLock({ $0.contains(actor.id) }) else {
@@ -114,6 +130,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     withExtendedLifetime(previous) {}
   }
 
+  /// Removes a local actor and tears down any channels exporting it.
+  /// Called by the runtime when a local actor is destroyed.
   public func resignID(_ id: ActorID) {
     _ = self.activeActorsLock.withLock { $0.removeValue(forKey: id) }
     let sessions = self.exportSessionsLock.withLock { exports in
@@ -248,6 +266,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     try envelope.decodeReturnVoid(throwing: errorType, fallbackErrorType: fallbackErrorType)
   }
 
+  /// Sends an invocation over the connection and decodes the reply.
+  /// Called by compiler-generated distributed thunks.
   public func remoteCall<Act, Err, Res>(
     on actor: Act,
     target: RemoteCallTarget,
@@ -271,6 +291,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       throwing: errorType, returning: returnType)
   }
 
+  /// Sends a void invocation over the connection. Called by
+  /// compiler-generated distributed thunks.
   public func remoteCallVoid<Act, Err>(
     on actor: Act,
     target: RemoteCallTarget,
@@ -290,63 +312,3 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   }
 }
 
-@XPCMarshal
-@available(macOS 13.0, *)
-public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
-  public static let root = XPCActorID(id: 0)
-
-  internal let id: UInt64
-  public init(id: UInt64) { self.id = id }
-}
-
-@available(macOS 15, *)
-public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandler {
-  public typealias SerializationRequirement = XPCMarshal
-  private let sendEnvelope: @Sendable (XPCReplyEnvelope) throws -> Void
-
-  init(_ sendEnvelope: @escaping @Sendable (XPCReplyEnvelope) throws -> Void) {
-    self.sendEnvelope = sendEnvelope
-  }
-
-  init(received: SwiftXPC.XPCDictionary) {
-    self.sendEnvelope = { envelope in
-      guard var reply = XPCDictionary(replyTo: received), let connection = received.connection
-      else { return }
-      try envelope.write(to: &reply)
-      connection.sendAndForget(message: reply)
-    }
-  }
-
-  func send(_ envelope: XPCReplyEnvelope) throws { try sendEnvelope(envelope) }
-
-  public func onReturn<Success: SerializationRequirement>(value: Success) async throws {
-    try send(XPCReplyEnvelope(kind: .returnValue, payload: try value.marshal()))
-  }
-
-  public func onReturnVoid() async throws { try send(XPCReplyEnvelope(kind: .returnVoid)) }
-
-  public func onThrow<Err: Error>(error: Err) async throws {
-    guard let error = error as? any ErrorXPCMarshal else {
-      throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: Err.self))
-    }
-    try send(XPCReplyEnvelope(kind: .throwError, payload: try error.marshal()))
-  }
-}
-
-typealias ErrorXPCMarshal = XPCMarshal & Error
-
-@available(macOS 15, *)
-@XPCMarshal
-enum XPCRemoteCallError: Error, Sendable, Equatable {
-  case invalidReplyKind(expected: XPCReplyKind, actual: XPCReplyKind)
-  case missingPayload(XPCReplyKind)
-  case unsupportedThrownErrorType(String)
-}
-
-@available(macOS 13.0, *)
-extension RemoteCallTarget: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try identifier.marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
-    .init(try .unmarshal(from: object))
-  }
-}

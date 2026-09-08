@@ -112,6 +112,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     return id
   }
 
+  /// Reserves `.root` for the next actor created on this system. Only call
+  /// on a freshly created system before any concurrent `assignID` (the
+  /// framework does this inside `XPCRootActorServer.accept`).
   func reserveRootID() {
     reservedIDLock.withLock { $0 = .root }
   }

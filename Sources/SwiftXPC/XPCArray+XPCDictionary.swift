@@ -159,7 +159,9 @@ extension XPCDictionary: Sequence {
     }
   }
 
-  /// Iterates all `(key, value)` pairs in XPC's iteration order.
+  /// Iterates a snapshot of all `(key, value)` pairs in XPC's iteration
+  /// order. The values are non-owning views: finish iterating (and use the
+  /// pairs) while the dictionary is alive.
   public func makeIterator() -> Iterator {
     Iterator(dictionary: self)
   }

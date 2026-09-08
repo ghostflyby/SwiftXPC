@@ -397,10 +397,11 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
   `XPCDefaultActorInitializable`、getOrCreateActor、双 dispatch 重复代码）；
   `assignID` 收敛为仅 root 预留语义；unbound 系统的 handler 只路由生命周期错误。
 - [x] `XPCActorReferenceCodec` 公共命名空间消灭：marshal/unmarshal 移入
-  `XPCActorReferenceConvertible` 协议扩展默认实现，`@XPCService` 不再生成 witness。
-- [x] internal 收回：`XPCWireProtocol`、`XPCInvocationMessage`、`XPCReplyKind`、
-  `XPCReplyEnvelope`、`parseTargetIdentifier`。`XPCInvocationEncoder/Decoder/
-  ResultHandler` 因 Distributed 协议公共要求强制保持 public（语言约束）。
+  `XPCExportableActor` 协议扩展默认实现，`@XPCService` 不再生成 witness。
+- [x] internal 收回：`XPCWireProtocol`、`XPCInvocationMessage`、`XPCReplyEnvelope`、
+  `parseTargetIdentifier`。`XPCInvocationEncoder/Decoder/ResultHandler` 因 Distributed
+  协议公共要求强制保持 public（语言约束）；`XPCReplyKind` 同理保持 public——
+  public 的 `XPCRemoteCallError` 关联值引用它。
 - [x] `setPeer*Requirement` 家族从 C 风格 Bool 返回改为 typed throws
   （`PeerRequirementError`，含 errno 状态）。
 - [x] 命名与冗余：`set(targetQueue:)` → `setTargetQueue(_:)`；删除零使用的

@@ -55,10 +55,11 @@ public struct XPCRetryPolicy: Sendable {
 public enum XPCRootConnectionEvent: Sendable {
   /// The connection to the service is established.
   case connected
-  /// The underlying connection was invalidated (service exited, crashed, or
-  /// was cancelled). Named-service connections re-establish transparently on
-  /// the next call, but child actor proxies obtained before this event are
-  /// permanently stale and must be re-acquired through `root`.
+  /// The underlying connection was invalidated or interrupted (service
+  /// exited, crashed, or was cancelled). May be delivered multiple times for
+  /// repeated service deaths. Named-service connections re-establish
+  /// transparently on the next call, but child actor proxies obtained before
+  /// this event are permanently stale and must be re-acquired through `root`.
   case disconnected
 }
 

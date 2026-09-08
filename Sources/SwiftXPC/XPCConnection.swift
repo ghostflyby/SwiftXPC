@@ -61,8 +61,10 @@ final class _ConnectionHandlerState: @unchecked Sendable {
   }
 
   /// Routes one connection event object to the matching dedicated handler.
-  /// Error objects whose dedicated handler was never registered fall through
-  /// to the generic handler, preserving behavior for existing callers.
+  /// Invalidation and interruption events are always consumed by their
+  /// dedicated chain (even when empty, matching historical behavior);
+  /// termination-imminent and peer-code-signing errors fall through to the
+  /// generic handler when their dedicated handler was never registered.
   func route(_ object: XPCObject) {
     let snapshot = withHandlers { $0 }
     let raw = object.xpc_object
@@ -194,9 +196,10 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  /// The reason an asynchronous send failed. Note that a named service
-  /// connection may recover from `.interrupted` on a later send (launchd
-  /// relaunches the service), while `.invalid` is terminal.
+  /// The reason an asynchronous send failed. A named service connection may
+  /// recover from `.interrupted` on a later send (launchd relaunches the
+  /// service); `.invalid` is usually terminal, though retries may still cover
+  /// brief cold-start or registration gaps.
   public enum ConnectionError: Error, Sendable {
     case invalid
     case interrupted

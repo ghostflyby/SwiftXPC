@@ -22,8 +22,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   private let reservedIDLock: Mutex<ActorID?> = Mutex(nil)
 
-  private let defaultActorFactoryLock: Mutex<(@Sendable (ActorID) -> any DistributedActor)?> =
-    Mutex(nil)
   let exportSessionsLock = Mutex<[UUID: XPCActorExportSession]>([:])
   let importedReferencesLock = Mutex<[XPCActorID: StoredActorReference]>([:])
   let invalidated = Mutex(false)
@@ -92,15 +90,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       $0 = nil
       return r
     }) {
-      if reserved != .root {
-        var current = ids.load(ordering: .relaxed)
-        while reserved.id >= current {
-          let (success, updated) = ids.compareExchange(
-            expected: current, desired: reserved.id + 1, ordering: .relaxed)
-          if success { break }
-          current = updated
-        }
-      }
       _ = assignedIDsLock.withLock { $0.insert(reserved) }
       return reserved
     }
@@ -111,23 +100,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   func reserveRootID() {
     reservedIDLock.withLock { $0 = .root }
-  }
-
-  public func registerDefaultActor(
-    _ factory: @escaping @Sendable (ActorID, XPCDistributedActorSystem) -> any DistributedActor
-  ) {
-    defaultActorFactoryLock.withLock {
-      $0 = { [weak self] id in
-        guard let system = self else { fatalError("System deallocated during actor creation") }
-        system.reservedIDLock.withLock { $0 = id }
-        return factory(id, system)
-      }
-    }
-  }
-
-  public func registerDefaultActor<Act>(_ type: Act.Type)
-  where Act: XPCDefaultActorInitializable {
-    registerDefaultActor { _, system in Act(actorSystem: system) }
   }
 
   public func actorReady<Act>(_ actor: Act)
@@ -154,11 +126,11 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   public func makeInvocationEncoder() -> InvocationEncoder { .init() }
 
+  /// Installs the connection's event plumbing. Unbound systems only ever see
+  /// lifecycle error objects here (there is no actor to dispatch messages to);
+  /// channels serving an actor overwrite this handler via `bind`.
   func installEventHandler() {
-    connection.setEventHandler { [weak self] object in
-      guard let self else { return }
-      self.runIncomingHandler { try await self.handleIncomingMessage(object) }
-    }
+    connection.setEventHandler { _ in }
   }
 
   private func runIncomingHandler(_ operation: @escaping @Sendable () async throws -> Void) {
@@ -178,51 +150,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
         try await self.handleIncomingMessage(object, on: actor)
       }
     }
-  }
-
-  func dispatchInvocation(_ message: XPCInvocationMessage) async throws -> XPCReplyEnvelope {
-    func getOrCreateActor(for id: ActorID) throws -> any DistributedActor {
-      if let actor = activeActorsLock.withLock({ $0[id] }) { return actor }
-      guard let factory = defaultActorFactoryLock.withLock({ $0 }) else {
-        throw XPCDispatchError.unknownActor(id)
-      }
-      _ = factory(id)
-      guard let actor = activeActorsLock.withLock({ $0[id] }) else {
-        fatalError("Default actor factory failed to register actor for \(id)")
-      }
-      return actor
-    }
-    guard message.version == XPCWireProtocol.currentVersion else {
-      throw XPCDispatchError.unsupportedProtocolVersion(
-        expected: XPCWireProtocol.currentVersion, actual: message.version)
-    }
-    let actor = try getOrCreateActor(for: message.actorID)
-
-    guard let metadataProvider = type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type
-    else {
-      throw XPCDispatchError.missingTargetMetadata(String(describing: type(of: actor)))
-    }
-    guard metadataProvider.xpcDistributedTargetMetadata[message.method] != nil else {
-      throw XPCDispatchError.unknownTarget(message.method)
-    }
-    var decoder = XPCInvocationDecoder(array: message.arguments)
-    let replyLock = Mutex<XPCReplyEnvelope?>(nil)
-    let resultHandler = XPCInvocationResultHandler { envelope in
-      replyLock.withLock { $0 = envelope }
-    }
-    do {
-      try await executeDistributedTarget(
-        on: actor, target: message.target,
-        invocationDecoder: &decoder, handler: resultHandler)
-    } catch let error as any ErrorXPCMarshal {
-      throw error
-    } catch {
-      throw XPCDispatchError.targetExecutionFailed(String(describing: error))
-    }
-    guard let reply = replyLock.withLock({ $0 }) else {
-      throw XPCDispatchError.missingInvocationResult
-    }
-    return reply
   }
 
   func dispatchInvocation<Act>(
@@ -274,19 +201,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     guard let metadataProvider = actorType as? any XPCDistributedTargetMetadataProviding.Type
     else { return nil }
     return metadataProvider.xpcDistributedTargetMetadata[method]?.thrownErrorType
-  }
-
-  func handleIncomingMessage(_ object: XPCObject) async throws {
-    let received = try XPCDictionary.unmarshal(from: object)
-    let resultHandler = XPCInvocationResultHandler(received: received)
-    do {
-      let invocation = try XPCInvocationMessage.unmarshal(from: object)
-      let envelope = try await dispatchInvocation(invocation)
-      try resultHandler.send(envelope)
-    } catch let error as any ErrorXPCMarshal {
-      try resultHandler.send(
-        XPCReplyEnvelope(kind: .throwError, payload: try error.marshal()))
-    }
   }
 
   func handleIncomingMessage<Act>(_ object: XPCObject, on actor: Act) async throws
@@ -435,10 +349,4 @@ extension RemoteCallTarget: XPCMarshal {
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
     .init(try .unmarshal(from: object))
   }
-}
-
-@available(macOS 15, *)
-public protocol XPCDefaultActorInitializable: DistributedActor
-where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {
-  init(actorSystem: XPCDistributedActorSystem)
 }

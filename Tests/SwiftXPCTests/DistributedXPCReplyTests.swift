@@ -26,9 +26,6 @@ distributed actor SampleReplyMetadataActor {
 }
 
 @available(macOS 15, *)
-extension SampleReplyMetadataActor: XPCDefaultActorInitializable {}
-
-@available(macOS 15, *)
 distributed actor SampleReplyActorWithoutMetadata {
   typealias ActorSystem = XPCDistributedActorSystem
 

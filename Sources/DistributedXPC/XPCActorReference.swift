@@ -19,19 +19,16 @@ public protocol XPCActorReferenceConvertible: DistributedActor, XPCMarshal
 where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {}
 
 @available(macOS 15, *)
-public enum XPCActorReferenceCodec {
-  public typealias Encoded = XPCObject
-  public typealias Failure = XPCMarshalError
-
-  public static func encode<Act>(localActor actor: Act) throws(Failure) -> Encoded
-  where Act: XPCActorReferenceConvertible {
-    try actor.actorSystem.export(actor)
+extension XPCActorReferenceConvertible {
+  /// Exports this local actor as a self-contained XPC actor reference:
+  /// `{ version, actorID, endpoint }` on a freshly minted channel.
+  public nonisolated func marshal() throws(XPCMarshalError) -> XPCObject {
+    try actorSystem.export(self)
   }
 
-  public static func decode<Act>(
-    _ actorType: Act.Type, from object: Encoded
-  ) throws(Failure) -> Act
-  where Act: XPCActorReferenceConvertible {
+  /// Imports an actor reference by dialing the embedded endpoint and resolving
+  /// the actor against the fresh channel, yielding a remote proxy.
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     let reference = try XPCActorReferenceWire.unmarshal(from: object)
     guard reference.version == XPCWireProtocol.currentVersion else {
       throw .unsupportedProtocolVersion(
@@ -47,7 +44,7 @@ public enum XPCActorReferenceCodec {
       StoredActorReference(actorID: reference.actorID, endpoint: reference.endpoint))
     connection.activate()
     do {
-      return try Act.resolve(id: reference.actorID, using: system)
+      return try Self.resolve(id: reference.actorID, using: system)
     } catch {
       throw .actorResolutionFailed(String(describing: error))
     }

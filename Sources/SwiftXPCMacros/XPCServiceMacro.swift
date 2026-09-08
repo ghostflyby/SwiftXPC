@@ -74,16 +74,6 @@ public struct XPCServiceMacro: ExtensionMacro {
 
     let extDecl: DeclSyntax = """
       extension \(type.trimmed): XPCDistributedTargetMetadataProviding, XPCActorReferenceConvertible {
-        \(raw: access)nonisolated func marshal() throws(XPCActorReferenceCodec.Failure) -> XPCActorReferenceCodec.Encoded {
-          try XPCActorReferenceCodec.encode(localActor: self)
-        }
-
-        \(raw: access)static func unmarshal(
-          from object: XPCActorReferenceCodec.Encoded
-        ) throws(XPCActorReferenceCodec.Failure) -> Self {
-          try XPCActorReferenceCodec.decode(Self.self, from: object)
-        }
-
         \(raw: access)static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] {
           [
       \(raw: body)

@@ -123,7 +123,7 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   }
 
   /// Runs `operation` against the root actor, retrying only when the
-  /// infrastructure fails (`ConnectionError.invalid`/`.interupted`), which
+  /// infrastructure fails (`ConnectionError.invalid`/`.interrupted`), which
   /// covers a service restart in progress. Business errors propagate at once.
   public func retrying<T>(
     _ policy: XPCRetryPolicy = .resilient,

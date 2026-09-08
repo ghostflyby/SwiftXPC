@@ -129,10 +129,10 @@ private func makeForwardChannel() throws -> ForwardChannelFixture {
   do {
     _ = try await client.send(message: XPCDictionary())
     Issue.record("Expected rejected peer send to fail")
-  } catch XPCConnection.ConnectionError.interupted {
+  } catch XPCConnection.ConnectionError.interrupted {
     // expected: the server cancels rejected peers, which the client observes
     // as interruption rather than service invalidation.
   } catch {
-    Issue.record("Expected .interupted, got \(error)")
+    Issue.record("Expected .interrupted, got \(error)")
   }
 }

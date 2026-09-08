@@ -64,10 +64,9 @@ extension XPCConnection {
     xpc_object = xpc_connection_create(name, dispatchQueue)
   }
 
-  public enum MachServiceFlag {
-    case Listener
-    case Privileged
-
+  public enum MachServiceFlag: Sendable {
+    case listener
+    case privileged
   }
 
   public init(
@@ -75,9 +74,9 @@ extension XPCConnection {
   ) {
     let flag =
       switch flags {
-      case .Listener:
+      case .listener:
         XPC_CONNECTION_MACH_SERVICE_LISTENER
-      case .Privileged:
+      case .privileged:
         XPC_CONNECTION_MACH_SERVICE_PRIVILEGED
       }
     xpc_object = xpc_connection_create_mach_service(
@@ -170,7 +169,7 @@ extension XPCConnection {
 extension XPCConnection {
   public enum ConnectionError: Error, Sendable {
     case invalid
-    case interupted
+    case interrupted
   }
 
   public func sendAndForget(message: XPCDictionary) {
@@ -198,7 +197,7 @@ extension XPCConnection {
     if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
       throw ConnectionError.invalid
     } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
-      throw ConnectionError.interupted
+      throw ConnectionError.interrupted
     } else {
       return XPCObject(xpc_object: r)
     }
@@ -212,7 +211,7 @@ extension XPCConnection {
     if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
       throw ConnectionError.invalid
     } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
-      throw ConnectionError.interupted
+      throw ConnectionError.interrupted
     } else {
       return XPCObject(xpc_object: r)
     }

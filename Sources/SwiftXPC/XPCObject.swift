@@ -3,11 +3,18 @@
 import Foundation
 import XPC
 
+/// A non-owning wrapper around a raw XPC object, the vocabulary type every
+/// marshaling API exchanges. Use `XPCMarshal` conformances to convert between
+/// Swift values and XPC objects; use `xpc_object` only to interoperate with
+/// the C API directly.
 @frozen
 public struct XPCObject: @unchecked Sendable, Equatable, Hashable {
   public let xpc_object: xpc_object_t
 
-  package init(xpc_object: xpc_object_t) {
+  /// Wraps a raw XPC object without retaining it. The wrapper is a
+  /// non-owning view: lifetime remains governed by XPC's own reference
+  /// counting on the underlying object graph.
+  public init(xpc_object: xpc_object_t) {
     self.xpc_object = xpc_object
   }
 

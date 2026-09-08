@@ -6,6 +6,19 @@ import SwiftXPC
 
 public let demoServiceIdentifier = "dev.ghostflyby.SwiftXPC.DistributedXPCDemo.Service"
 
+/// Out-of-package smoke type: exercising @XPCMarshal from a consumer package
+/// keeps the macro's generated code honest about SwiftXPC's public surface.
+@XPCMarshal
+public struct DemoPayload: Equatable, Sendable {
+  public let title: String
+  public let count: Int
+
+  public init(title: String, count: Int) {
+    self.title = title
+    self.count = count
+  }
+}
+
 @available(macOS 15, *)
 @XPCService
 public distributed actor DemoRoot: XPCRootActor {

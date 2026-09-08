@@ -40,6 +40,11 @@ struct DemoApp {
       } catch {
         print("received expected error: \(error)")
       }
+      // Out-of-package @XPCMarshal round trip (compile + runtime check).
+      let payload = DemoPayload(title: "smoke", count: 42)
+      let decoded = try DemoPayload.unmarshal(from: try payload.marshal())
+      print("payload round trip ok: \(decoded)")
+
     } catch {
       fputs("DistributedXPCDemo failed: \(error)\n", stderr)
       Foundation.exit(1)

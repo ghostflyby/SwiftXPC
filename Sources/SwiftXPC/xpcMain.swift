@@ -14,15 +14,3 @@ public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection)
   mainHandler = handler
   xpc_main(handleIncomingConnection)
 }
-
-extension XPCConnection {
-  /// An asynchronous stream of incoming XPC connections to this service.
-  @MainActor
-  public static var incoming: AsyncStream<XPCConnection> {
-    AsyncStream { continuation in
-      xpcMain { connection in
-        continuation.yield(connection)
-      }
-    }
-  }
-}

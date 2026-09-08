@@ -26,7 +26,7 @@ public struct XPCDistributedTargetMetadata {
 }
 
 @available(macOS 15, *)
-public func parseTargetIdentifier(_ identifier: String) -> String? {
+func parseTargetIdentifier(_ identifier: String) -> String? {
   // The class-name terminator `C` must be found left-to-right: return-type
   // components later in the mangled name (e.g. `AA0C4Note`) may also contain
   // a `C` followed by a digit, and a rightmost scan would mis-parse there.
@@ -84,5 +84,5 @@ where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {
 @attached(
   extension,
   conformances: XPCDistributedTargetMetadataProviding, XPCActorReferenceConvertible,
-  names: named(xpcDistributedTargetMetadata), named(marshal), named(unmarshal(from:)))
+  names: named(xpcDistributedTargetMetadata))
 public macro XPCService() = #externalMacro(module: "SwiftXPCMacros", type: "XPCServiceMacro")

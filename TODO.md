@@ -391,6 +391,24 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
 - 下游模式：observe `.disconnected` → 重建业务子 actor/session 状态；对 root 调用使用
   `retrying` 平滑服务重启窗口。
 
+### API 审查清理（swift-api-review 分支，2026-09-08）
+
+- [x] 删除 legacy registry/default-factory 整条路径（`registerDefaultActor`×2、
+  `XPCDefaultActorInitializable`、getOrCreateActor、双 dispatch 重复代码）；
+  `assignID` 收敛为仅 root 预留语义；unbound 系统的 handler 只路由生命周期错误。
+- [x] `XPCActorReferenceCodec` 公共命名空间消灭：marshal/unmarshal 移入
+  `XPCActorReferenceConvertible` 协议扩展默认实现，`@XPCService` 不再生成 witness。
+- [x] internal 收回：`XPCWireProtocol`、`XPCInvocationMessage`、`XPCReplyKind`、
+  `XPCReplyEnvelope`、`parseTargetIdentifier`。`XPCInvocationEncoder/Decoder/
+  ResultHandler` 因 Distributed 协议公共要求强制保持 public（语言约束）。
+- [x] `setPeer*Requirement` 家族从 C 风格 Bool 返回改为 typed throws
+  （`PeerRequirementError`，含 errno 状态）。
+- [x] 命名与冗余：`set(targetQueue:)` → `setTargetQueue(_:)`；删除零使用的
+  `XPCConnection.incoming`、`set(context:)/getContext`、`send(barrier:)`、
+  `resume()`/`suspend()`；`DistributedXPC` `@_exported import SwiftXPC`（下游单 import）。
+- [x] P1：`.interrupted` 拼写、`MachServiceFlag` case 小写、`XPCMarshalError`
+  移除 throw 位置元数据、`XPCArray` 下标越界 precondition（保留可变下标供自定义序列化）。
+
 ### 审查跟进项
 
 - [ ] 两条 dispatch 路径（legacy registry 与 bound channel）约 35 行逻辑重复且曾有检查顺序漂移；

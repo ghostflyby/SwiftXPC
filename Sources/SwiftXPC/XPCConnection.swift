@@ -83,8 +83,8 @@ extension XPCConnection {
       machServiceName, dispatchQueue, UInt64(flag))
   }
 
-  public func set(targetQueue: DispatchQueue?) {
-    xpc_connection_set_target_queue(xpc_object, targetQueue)
+  public func setTargetQueue(_ queue: DispatchQueue?) {
+    xpc_connection_set_target_queue(xpc_object, queue)
   }
 
 }
@@ -176,10 +176,6 @@ extension XPCConnection {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
-  public func send(barrier: @escaping () -> Void) {
-    xpc_connection_send_barrier(xpc_object, barrier)
-  }
-
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
     async throws(ConnectionError)
     -> XPCObject
@@ -222,14 +218,6 @@ extension XPCConnection {
 extension XPCConnection {
   public func activate() {
     xpc_connection_activate(xpc_object)
-  }
-
-  public func resume() {
-    xpc_connection_resume(xpc_object)
-  }
-
-  public func suspend() {
-    xpc_connection_suspend(xpc_object)
   }
 
   public func cancel() {
@@ -280,93 +268,90 @@ extension XPCConnection {
 
 @available(macOS 14.4, *)
 extension XPCConnection {
-  public func setPeerEntitlementExistsRequirement(_ entitlement: String) -> Bool {
-    xpc_connection_set_peer_entitlement_exists_requirement(xpc_object, entitlement) == 0
+  /// The reason a peer requirement could not be installed on this connection.
+  public struct PeerRequirementError: Error, Sendable {
+    /// The raw status returned by XPC (errno-style, e.g. `ENOTSUP` on
+    /// platforms without code signing requirement support).
+    public let status: Int32
+  }
+
+  private func checkPeerRequirementStatus(
+    _ status: Int32
+  ) throws(PeerRequirementError) {
+    if status != 0 {
+      throw PeerRequirementError(status: status)
+    }
+  }
+
+  public func setPeerCodeSigningRequirement(
+    _ requirement: String
+  ) throws(PeerRequirementError) {
+    try checkPeerRequirementStatus(
+      xpc_connection_set_peer_code_signing_requirement(xpc_object, requirement))
+  }
+
+  public func setPeerEntitlementExistsRequirement(
+    _ entitlement: String
+  ) throws(PeerRequirementError) {
+    try checkPeerRequirementStatus(
+      xpc_connection_set_peer_entitlement_exists_requirement(xpc_object, entitlement))
   }
 
   private func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, object: xpc_object_t
-  ) -> Bool {
-    xpc_connection_set_peer_entitlement_matches_value_requirement(
-      xpc_object, entitlement, object) == 0
+  ) throws(PeerRequirementError) {
+    try checkPeerRequirementStatus(
+      xpc_connection_set_peer_entitlement_matches_value_requirement(
+        xpc_object, entitlement, object))
   }
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Int64
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, object: xpc_int64_create(value))
+  ) throws(PeerRequirementError) {
+    try setPeerEntitlementMatchesValueRequirement(
+      entitlement, object: xpc_int64_create(value))
   }
+
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Bool
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(
+  ) throws(PeerRequirementError) {
+    try setPeerEntitlementMatchesValueRequirement(
       entitlement, object: value ? XPC_BOOL_TRUE : XPC_BOOL_FALSE)
   }
+
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: String
-  ) -> Bool {
-    setPeerEntitlementMatchesValueRequirement(entitlement, object: xpc_string_create(value))
+  ) throws(PeerRequirementError) {
+    try setPeerEntitlementMatchesValueRequirement(
+      entitlement, object: xpc_string_create(value))
   }
 
-  private func setPeerLightweightCodeRequirement(_ requirement: XPCObject) -> Bool {
-    xpc_connection_set_peer_lightweight_code_requirement(
-      xpc_object, requirement.xpc_object) == 0
+  private func setPeerLightweightCodeRequirement(
+    _ requirement: XPCObject
+  ) throws(PeerRequirementError) {
+    try checkPeerRequirementStatus(
+      xpc_connection_set_peer_lightweight_code_requirement(
+        xpc_object, requirement.xpc_object))
   }
 
-  public func setPeerPlatformIdentityRequirement(_ signingIdentifier: String?) -> Bool {
-    xpc_connection_set_peer_platform_identity_requirement(
-      xpc_object, signingIdentifier) == 0
+  public func setPeerPlatformIdentityRequirement(
+    _ signingIdentifier: String?
+  ) throws(PeerRequirementError) {
+    try checkPeerRequirementStatus(
+      xpc_connection_set_peer_platform_identity_requirement(xpc_object, signingIdentifier))
   }
 
-  public func setPeerTeamIdentityRequirement(_ teamIdentifier: String?) -> Bool {
-    xpc_connection_set_peer_team_identity_requirement(
-      xpc_object, teamIdentifier) == 0
+  public func setPeerTeamIdentityRequirement(
+    _ teamIdentifier: String?
+  ) throws(PeerRequirementError) {
+    try checkPeerRequirementStatus(
+      xpc_connection_set_peer_team_identity_requirement(xpc_object, teamIdentifier))
   }
-
-  public func setPeerCodeSigningRequirement(_ requirement: String) -> Bool {
-    xpc_connection_set_peer_code_signing_requirement(
-      xpc_object, requirement) == 0
-  }
-
-}
-
-extension XPCConnection {
-  public func set<T: Sendable>(context: T?) {
-    // Release previous context before overwriting, preventing leak on repeated calls.
-    if let oldContextPtr = xpc_connection_get_context(xpc_object) {
-      let unmanaged = Unmanaged<AnyObject>.fromOpaque(oldContextPtr)
-      unmanaged.release()
-    }
-    let box = Box(context)
-    xpc_connection_set_context(
-      xpc_object,
-      Unmanaged.passRetained(box).toOpaque()
-    )
-    xpc_connection_set_finalizer_f(xpc_object) { contextPtr in
-      if let contextPtr = contextPtr {
-        let unmanaged = Unmanaged<AnyObject>.fromOpaque(contextPtr)
-        unmanaged.release()
-      }
-    }
-  }
-
-  public func getContext<T: Sendable>() -> T? {
-    guard let contextPtr = xpc_connection_get_context(xpc_object) else {
-      return nil
-    }
-    let unmanaged = Unmanaged<AnyObject>.fromOpaque(contextPtr)
-    return (unmanaged.takeUnretainedValue() as? Box<T>)?.value
-  }
-}
-
-private final class Box<T> where T: Sendable {
-  let value: T
-  init(_ value: consuming T) { self.value = value }
 }
 
 extension XPCConnection: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: xpc_endpoint_create(self.xpc_object))
+    XPCObject(xpc_object: xpc_endpoint_create(xpc_object))
   }
 
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCConnection {

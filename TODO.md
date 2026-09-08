@@ -371,6 +371,26 @@ existential actor 出现在 distributed 参数/返回位置：
 - [x] actor-reference wire 版本不匹配返回稳定错误。
 - [x] DemoApp 通过 root actor 完成真实跨进程调用（bundle 实测）。
 
+### 重连策略（root-reconnection 分支，已落地）
+
+launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含干净环境对照）：
+
+- **root 通道自愈**：root proxy 走 named mach service connection；服务进程被 `kill -9` 后
+  launchd 按需重启，**同一 root proxy 的下一次调用自动成功**（actorID=0 与新实例对齐），
+  无需任何重建。
+- **子 actor-reference 通道不可恢复**：匿名 endpoint 通道随服务进程死亡而永久失效，
+  旧子 proxy 调用抛 `.invalid`；必须经 root 重新获取（崩溃后服务端状态本就不存在，
+  重建是必然路径）。
+- 已落地 API：
+  - `XPCRootConnection<Root>`：`root` 常驻 proxy + `events`（connected/disconnected，
+    invalidation 与 interruption 双信号）+ `retrying(policy)`（仅对
+    `ConnectionError` 重试、指数退避；业务错误立即抛出）+ `close()`。
+  - `XPCRetryPolicy`：`once` / `resilient`（8 次、100ms 起 ×2、上限 5s）。
+  - `XPCRootActorServer(onPeerAccept:onPeerEnd:)`：服务端 peer 生命周期回调（带 pid 可审计）。
+  - handle 持有 ownsConnection 的 client system，保活连接生命周期。
+- 下游模式：observe `.disconnected` → 重建业务子 actor/session 状态；对 root 调用使用
+  `retrying` 平滑服务重启窗口。
+
 ### 审查跟进项
 
 - [ ] 两条 dispatch 路径（legacy registry 与 bound channel）约 35 行逻辑重复且曾有检查顺序漂移；

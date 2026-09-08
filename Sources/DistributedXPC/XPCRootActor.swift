@@ -31,6 +31,8 @@ where Root: XPCRootActor {
   }
   private let state = Mutex(State())
   private let shouldAccept: @Sendable (XPCConnection) -> Bool
+  private let onPeerAccept: @Sendable (XPCConnection) -> Void
+  private let onPeerEnd: @Sendable (XPCConnection) -> Void
 
   /// - Parameters:
   ///   - rootType: the concrete root actor type served on every accepted peer.
@@ -39,11 +41,20 @@ where Root: XPCRootActor {
   ///     for custom checks such as `connection.pid` or `connection.euid`.
   ///     Kernel-level enforcement belongs in code signing requirements set via
   ///     `XPCConnection.setPeerCodeSigningRequirement` before activation.
+  ///   - onPeerAccept: invoked once a peer is bound to a fresh root session
+  ///     (before activation). Useful for audit logging via `connection.pid`.
+  ///   - onPeerEnd: invoked when an accepted peer disconnects. The connection
+  ///     object is already invalid at this point; only identity inspection is
+  ///     meaningful.
   public init(
     _ rootType: Root.Type = Root.self,
-    shouldAccept: @escaping @Sendable (XPCConnection) -> Bool = { _ in true }
+    shouldAccept: @escaping @Sendable (XPCConnection) -> Bool = { _ in true },
+    onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
+    onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil
   ) {
     self.shouldAccept = shouldAccept
+    self.onPeerAccept = onPeerAccept ?? { _ in }
+    self.onPeerEnd = onPeerEnd ?? { _ in }
   }
 
   deinit { cancel() }
@@ -80,7 +91,9 @@ where Root: XPCRootActor {
 
     let key = UUID()
     let session = Session(system: system, root: root)
+    self.onPeerAccept(connection)
     connection.addInvalidationHandler { [weak self] in
+      self?.onPeerEnd(connection)
       let removed = self?.state.withLock { $0.sessions.removeValue(forKey: key) }
       withExtendedLifetime(removed) {}
     }

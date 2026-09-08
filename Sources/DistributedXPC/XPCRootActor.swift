@@ -30,8 +30,21 @@ where Root: XPCRootActor {
     var cancelled = false
   }
   private let state = Mutex(State())
+  private let shouldAccept: @Sendable (XPCConnection) -> Bool
 
-  public init(_ rootType: Root.Type = Root.self) {}
+  /// - Parameters:
+  ///   - rootType: the concrete root actor type served on every accepted peer.
+  ///   - shouldAccept: invoked with each incoming peer connection before any
+  ///     session state is created; returning `false` rejects the peer. Use it
+  ///     for custom checks such as `connection.pid` or `connection.euid`.
+  ///     Kernel-level enforcement belongs in code signing requirements set via
+  ///     `XPCConnection.setPeerCodeSigningRequirement` before activation.
+  public init(
+    _ rootType: Root.Type = Root.self,
+    shouldAccept: @escaping @Sendable (XPCConnection) -> Bool = { _ in true }
+  ) {
+    self.shouldAccept = shouldAccept
+  }
 
   deinit { cancel() }
 
@@ -52,6 +65,14 @@ where Root: XPCRootActor {
     // xpcMain forwards every listener event, including error objects for the
     // listener itself; only real peer connections bootstrap a root session.
     guard connection.isConnectionObject else { return }
+    guard shouldAccept(connection) else {
+      // Reject without releasing an inactive connection (libxpc misuse):
+      // activate first, then cancel so the peer observes invalidation.
+      connection.setEventHandler { _ in }
+      connection.activate()
+      connection.cancel()
+      return
+    }
     let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
     system.reserveRootID()
     let root = Root(actorSystem: system)

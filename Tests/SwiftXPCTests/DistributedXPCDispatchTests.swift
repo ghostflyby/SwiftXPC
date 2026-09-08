@@ -42,7 +42,7 @@ extension SampleDispatchActor: XPCDefaultActorInitializable {}
 
 @available(macOS 15, *)
 private func makeSystem() -> XPCDistributedActorSystem {
-  XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  XPCDistributedActorSystem(connection: makeIdleConnection())
 }
 
 @Test func DispatchInvocationExecutesDistributedTarget() async throws {

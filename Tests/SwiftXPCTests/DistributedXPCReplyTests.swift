@@ -133,7 +133,7 @@ distributed actor SampleReplyActorWithoutMetadata {
   guard #available(macOS 15, *) else {
     return
   }
-  let system = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   _ = SampleReplyMetadataActor(actorSystem: system)
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
@@ -156,7 +156,7 @@ distributed actor SampleReplyActorWithoutMetadata {
   guard #available(macOS 15, *) else {
     return
   }
-  let system = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   _ = SampleReplyActorWithoutMetadata(actorSystem: system)
   let envelope = XPCReplyEnvelope(
     kind: .throwError,

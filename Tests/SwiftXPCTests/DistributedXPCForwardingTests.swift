@@ -110,3 +110,29 @@ private func makeForwardChannel() throws -> ForwardChannelFixture {
       "worked: original",
     ])
 }
+
+@Test func RootServerRejectsPeerBeforeActivation() async throws {
+  guard #available(macOS 15, *) else { return }
+  let listener = XPCConnection(name: nil)
+  let server = XPCRootActorServer(ForwardRoot.self, shouldAccept: { _ in false })
+  listener.setEventHandler { object in
+    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
+    server.accept(XPCConnection(xpc_object: object.xpc_object))
+  }
+  listener.activate()
+
+  let client = try XPCConnection.unmarshal(from: listener.marshal())
+  client.setEventHandler { _ in }
+  client.activate()
+  defer { client.cancel(); listener.cancel() }
+
+  do {
+    _ = try await client.send(message: XPCDictionary())
+    Issue.record("Expected rejected peer send to fail")
+  } catch XPCConnection.ConnectionError.interupted {
+    // expected: the server cancels rejected peers, which the client observes
+    // as interruption rather than service invalidation.
+  } catch {
+    Issue.record("Expected .interupted, got \(error)")
+  }
+}

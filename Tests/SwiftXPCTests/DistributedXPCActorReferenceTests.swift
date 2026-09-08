@@ -111,7 +111,7 @@ private func makeRootChannel() throws -> RootChannelFixture {
 
 @Test func DirectLocalActorReferenceRoundTrip() async throws {
   guard #available(macOS 15, *) else { return }
-  let system = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   let worker = ChannelWorker(actorSystem: system)
 
   let object = try worker.marshal()
@@ -146,7 +146,7 @@ private func makeRootChannel() throws -> RootChannelFixture {
   let root = try ChannelRoot.connect(using: fixture.client)
   let worker = try await root.makeWorker()
   let messages = MessageStore()
-  let callbackSystem = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  let callbackSystem = XPCDistributedActorSystem(connection: makeIdleConnection())
   let callback = ChannelCallback(messages: messages, actorSystem: callbackSystem)
 
   try await worker.notify(callback)

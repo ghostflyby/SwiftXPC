@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Foundation
 import XPC
 
 @frozen
@@ -25,5 +26,13 @@ extension XPCObject: XPCMarshal {
 
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCObject {
     object
+  }
+}
+
+extension XPCObject: CustomDebugStringConvertible {
+  public var debugDescription: String {
+    let cString = xpc_copy_description(xpc_object)
+    defer { free(cString) }
+    return String(cString: cString)
   }
 }

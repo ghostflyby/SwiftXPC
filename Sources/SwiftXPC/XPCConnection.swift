@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Foundation
 import XPC
 
 public struct XPCConnection: @unchecked Sendable {
@@ -12,8 +13,42 @@ public struct XPCConnection: @unchecked Sendable {
 }
 
 final class _ConnectionHandlerState: @unchecked Sendable {
+  var genericHandler: (@Sendable (XPCObject) -> Void)?
   var invalidationHandler: (@Sendable () -> Void)?
   var interruptionHandler: (@Sendable () -> Void)?
+  var terminationImminentHandler: (@Sendable () -> Void)?
+  var peerCodeSigningErrorHandler: (@Sendable () -> Void)?
+}
+
+/// Routes one connection event object to the matching dedicated handler.
+/// Error objects whose dedicated handler was never registered fall through to
+/// the generic handler, preserving pre-routing behavior for existing callers.
+internal func routeConnectionEvent(
+  _ state: _ConnectionHandlerState, _ object: XPCObject
+) {
+  let raw = object.xpc_object
+  if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
+    state.invalidationHandler?()
+    return
+  }
+  if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
+    state.interruptionHandler?()
+    return
+  }
+  if xpc_equal(raw, XPC_ERROR_TERMINATION_IMMINENT) {
+    if let handler = state.terminationImminentHandler {
+      handler()
+      return
+    }
+  }
+  if #available(macOS 15.0, *),
+    xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
+    let handler = state.peerCodeSigningErrorHandler
+  {
+    handler()
+    return
+  }
+  state.genericHandler?(object)
 }
 
 extension XPCConnection {
@@ -57,19 +92,11 @@ extension XPCConnection {
 
 extension XPCConnection {
   public func setEventHandler(handler: @escaping @Sendable (XPCObject) -> Void) {
+    _handlerState.genericHandler = handler
     xpc_connection_set_event_handler(
       xpc_object,
-      { xpc_object in
-        let obj = XPCObject(xpc_object: xpc_object)
-        // Detect XPC error objects (invalidation/interruption) and route to invalidation handler.
-        if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INVALID) {
-          _handlerState.invalidationHandler?()
-          return
-        } else if xpc_equal(xpc_object, XPC_ERROR_CONNECTION_INTERRUPTED) {
-          _handlerState.interruptionHandler?()
-          return
-        }
-        handler(obj)
+      { [state = _handlerState] xpc_object in
+        routeConnectionEvent(state, XPCObject(xpc_object: xpc_object))
       }
     )
   }
@@ -88,6 +115,31 @@ extension XPCConnection {
   public func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
     let previous = _handlerState.interruptionHandler
     _handlerState.interruptionHandler = {
+      previous?()
+      handler()
+    }
+  }
+
+  /// Register a handler to run when launchd announces imminent service
+  /// termination (`XPC_ERROR_TERMINATION_IMMINENT`). Delivered only to peer
+  /// connections received through a listener or `xpcMain`; no further messages
+  /// arrive afterwards.
+  /// Multiple handlers are chained: the previous handler runs before the new one.
+  public func addTerminationImminentHandler(_ handler: @escaping @Sendable () -> Void) {
+    let previous = _handlerState.terminationImminentHandler
+    _handlerState.terminationImminentHandler = {
+      previous?()
+      handler()
+    }
+  }
+
+  /// Register a handler to run when the peer fails this connection's code
+  /// signing requirement (`XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT`).
+  /// Multiple handlers are chained: the previous handler runs before the new one.
+  @available(macOS 15.0, *)
+  public func addPeerCodeSigningErrorHandler(_ handler: @escaping @Sendable () -> Void) {
+    let previous = _handlerState.peerCodeSigningErrorHandler
+    _handlerState.peerCodeSigningErrorHandler = {
       previous?()
       handler()
     }
@@ -185,6 +237,22 @@ extension XPCConnection {
     xpc_connection_cancel(xpc_object)
   }
 
+}
+
+extension XPCConnection {
+  /// The process identifier of the peer, or a value without meaning if the
+  /// connection has no peer yet. Primary input for peer validation.
+  public var pid: pid_t {
+    xpc_connection_get_pid(xpc_object)
+  }
+}
+
+extension XPCConnection: CustomDebugStringConvertible {
+  public var debugDescription: String {
+    let cString = xpc_copy_description(xpc_object)
+    defer { free(cString) }
+    return String(cString: cString)
+  }
 }
 
 extension XPCConnection {

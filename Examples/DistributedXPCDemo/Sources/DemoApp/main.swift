@@ -15,9 +15,21 @@ struct DemoApp {
     }
 
     do {
-      let root = try DemoRoot.connect(toService: demoServiceIdentifier)
-      defer { withExtendedLifetime(root) {} }
-      let greeter = try await root.makeGreeter()
+      // XPCRootConnection survives engine restarts: `handle.root` rides a
+      // named mach connection that launchd transparently re-establishes, so
+      // root calls can be wrapped in `retrying` to ride out a restart.
+      let handle = try XPCRootConnection<DemoRoot>.connect(toService: demoServiceIdentifier)
+      defer { handle.close() }
+      for await event in handle.events {
+        print("connection event: \(event)")
+        break
+      }
+
+      // Child actor references do NOT survive a service restart; re-acquire
+      // them from the root inside `retrying` after (or during) a restart.
+      let greeter = try await handle.retrying { _ in
+        try await handle.root.makeGreeter()
+      }
 
       print(try await greeter.greet(name: "SwiftXPC"))
       try await greeter.ping()

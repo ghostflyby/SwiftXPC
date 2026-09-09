@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Foundation
 import SwiftDiagnostics
 import SwiftSyntax
 import SwiftSyntaxBuilder
@@ -38,29 +39,12 @@ public struct XPCServiceMacro: ExtensionMacro {
 
       var thrownErrorEntry = ""
 
-      // SwiftSyntax 510 recovery: typed throws `throws(Type) -> Ret` puts
-      // `(`, Type, `)`, `->`, Ret into body.unexpectedBeforeLeftBrace.
-      if let eff = funcDecl.signature.effectSpecifiers,
-        eff.throwsSpecifier != nil,
-        let body = funcDecl.body,
-        let unexpected = body.unexpectedBeforeLeftBrace
+      // SwiftSyntax 603 parses typed throws as a structured `ThrowsClause`;
+      // its `type` is the error type of `throws(Type)`.
+      if let errorType = funcDecl.signature.effectSpecifiers?
+        .throwsClause?.type
       {
-        let tokens = unexpected.tokens(viewMode: .all)
-        // Collect identifier tokens between the first `(` and `)`.
-        var inParen = false
-        var typeParts: [String] = []
-        for tok in tokens {
-          let text = tok.text.trimmingCharacters(in: .whitespaces)
-          if text == "(" {
-            inParen = true
-            continue
-          }
-          if text == ")" { break }
-          if inParen && !text.isEmpty { typeParts.append(text) }
-        }
-        if !typeParts.isEmpty {
-          thrownErrorEntry = "thrownErrorType: \(typeParts.joined()).self"
-        }
+        thrownErrorEntry = "thrownErrorType: \(errorType.trimmed).self"
       }
 
       if thrownErrorEntry.isEmpty {

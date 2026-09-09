@@ -82,24 +82,25 @@ API family, and `TODO.md` for the current roadmap.
 
 ## Platform support
 
-The package resolves and imports on iOS/tvOS/watchOS, but every public symbol
-is gated behind `#if os(macOS)`: XPC does not exist outside macOS. Downstream
-multiplatform apps therefore need no module split:
+SwiftXPC is macOS-only by design (XPC does not exist on other platforms).
+Multiplatform consumers keep working by scoping the dependency to macOS on
+their side — the package never needs to declare other platforms:
 
-```swift
-import DistributedXPC          // compiles everywhere
+- **Package consumers**: attach the dependency to macOS-only targets, or add
+  a condition to the target dependency so iOS builds never touch it:
 
-#if os(macOS)
-let connection = try XPCRootConnection<ServiceRoot>.connect(toService: service)
-#endif
-```
+  ```swift
+  .target(
+    name: "MyMacService",
+    dependencies: [
+      .product(name: "DistributedXPC", package: "SwiftXPC",
+               condition: .when(platforms: [.macOS]))
+    ]
+  )
+  ```
 
-Tips for downstream:
-
-- `@XPCMarshal` may be attached to multiplatform DTOs — the generated code is
-  itself gated and compiles away on non-macOS.
-- `@XPCService` must be applied inside `#if os(macOS)` code (the macro needs
-  `XPCDistributedActorSystem`, which exists only on macOS).
+- **Xcode app targets**: add the package product with a macOS platform
+  filter, and gate call sites with `#if os(macOS)`.
 - For a distributed actor shared across platforms, switch the actor system
   with a conditional typealias:
 
@@ -109,8 +110,6 @@ Tips for downstream:
   #else
   typealias AppActorSystem = SomeOtherSystem
   #endif
-
-  distributed actor Greeter: XPCExportableActor {}  // when AppActorSystem fits
   ```
 
 ## Status

@@ -188,6 +188,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     // as a method whitelist and supplies typed-throws error decoding for the
     // caller; without it (or with an empty table) dispatch is permissive and
     // unknown targets fail in executeDistributedTarget instead.
+    print("DEBUG-TARGET identifier=\(message.target.identifier) method=\(message.method)")
     let metadataTable = (type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type)?
       .xpcDistributedTargetMetadata
     if let metadataTable, !metadataTable.isEmpty, metadataTable[message.method] == nil {
@@ -203,8 +204,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
         on: actor, target: message.target,
         invocationDecoder: &decoder, handler: resultHandler)
     } catch let error as any ErrorXPCMarshal {
+      print("DEBUG-DISPATCH marshalable error: \(error)")
       throw error
     } catch {
+      print("DEBUG-DISPATCH other error: \(error)")
       throw XPCDispatchError.targetExecutionFailed(String(describing: error))
     }
     guard let reply = replyLock.withLock({ $0 }) else {

@@ -106,27 +106,24 @@ private func makeSystem() -> XPCDistributedActorSystem {
   }
 }
 
-@Test func DispatchInvocationRequiresTargetMetadata() async throws {
+/// Actors without metadata conformance dispatch permissively: every target
+/// the actor exposes is callable.
+@Test func DispatchInvocationPermitsNonConformingActor() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleActorWithoutMetadata(actorSystem: system)
 
-  do {
-    _ = try await system.dispatchInvocation(
-      XPCInvocationMessage(
-        method: "ping()",
-        actorID: actor.id,
-        target: RemoteCallTarget(sampleActorWithoutMetadataPingTargetIdentifier),
-        arguments: XPCArray()
-      ),
-      on: actor
-    )
-    Issue.record("Expected missing target metadata to throw")
-  } catch let error as XPCDispatchError {
-    #expect(error == .missingTargetMetadata("SampleActorWithoutMetadata"))
-  } catch {
-    Issue.record("Expected XPCDispatchError, got \(error)")
-  }
+  let reply = try await system.dispatchInvocation(
+    XPCInvocationMessage(
+      method: "ping()",
+      actorID: actor.id,
+      target: RemoteCallTarget(sampleActorWithoutMetadataPingTargetIdentifier),
+      arguments: XPCArray()
+    ),
+    on: actor
+  )
+
+  #expect(reply.kind == .returnVoid)
 }
 
 @Test func DispatchInvocationRejectsMismatchedActorID() async throws {

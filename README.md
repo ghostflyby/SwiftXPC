@@ -80,6 +80,39 @@ See [Docs/XPCSessionMigrationFeasibility.md](Docs/XPCSessionMigrationFeasibility
 for the study comparing this implementation with the newer `XPCSession`
 API family, and `TODO.md` for the current roadmap.
 
+## Platform support
+
+The package resolves and imports on iOS/tvOS/watchOS, but every public symbol
+is gated behind `#if os(macOS)`: XPC does not exist outside macOS. Downstream
+multiplatform apps therefore need no module split:
+
+```swift
+import DistributedXPC          // compiles everywhere
+
+#if os(macOS)
+let connection = try XPCRootConnection<ServiceRoot>.connect(toService: service)
+#endif
+```
+
+Tips for downstream:
+
+- `@XPCMarshal` may be attached to multiplatform DTOs — the generated code is
+  itself gated and compiles away on non-macOS.
+- `@XPCService` must be applied inside `#if os(macOS)` code (the macro needs
+  `XPCDistributedActorSystem`, which exists only on macOS).
+- For a distributed actor shared across platforms, switch the actor system
+  with a conditional typealias:
+
+  ```swift
+  #if os(macOS)
+  typealias AppActorSystem = XPCDistributedActorSystem
+  #else
+  typealias AppActorSystem = SomeOtherSystem
+  #endif
+
+  distributed actor Greeter: XPCExportableActor {}  // when AppActorSystem fits
+  ```
+
 ## Status
 
 Pre-1.0: the wire protocol and API surface may still change. Known limits are

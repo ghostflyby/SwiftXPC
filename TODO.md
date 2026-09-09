@@ -410,6 +410,20 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
 - [x] P1：`.interrupted` 拼写、`MachServiceFlag` case 小写、`XPCMarshalError`
   移除 throw 位置元数据、`XPCArray` 下标越界 precondition（保留可变下标供自定义序列化）。
 
+### 多平台消费与追加分发（multiplatform-import 分支，2026-09-09）
+
+- [x] 包声明 iOS/tvOS/watchOS 平台：下游可直接依赖，非 macOS 上模块为空
+  （全部符号 `#if os(macOS)` 门控；iOS 13+ typecheck 实测通过）。
+- [x] 宽松分发：dispatch 不再要求 metadata conformance。`@XPCService` 类型
+  （非空表）继续走白名单 + typed-throws 错误解码；无遵循/空表的 actor 走
+  宽松分发，未知目标由 runtime 以 target-accessor 错误失败（不再是
+  `unknownTarget`）。
+- [x] 追加 XPC 支持 = 服务端对任意 actor 直接 `bind`（零手写遵循）；
+  actor 引用传递仍需类型处 `XPCExportableActor` 遵循（编译器强制的序列化要求）。
+- [x] 语言约束记录：`@attached(extension)` 宏无法附着到 extension 声明
+  （编译器拒绝），extension 追加宏支持不可行——追加持性走上述遵循/bind 路径。
+- [ ] 下游文档：README 已给多平台消费样例（含条件 typealias 模式）。
+
 ### 审查跟进项
 
 - [ ] 两条 dispatch 路径（legacy registry 与 bound channel）约 35 行逻辑重复且曾有检查顺序漂移；

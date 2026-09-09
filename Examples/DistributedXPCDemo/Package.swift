@@ -5,6 +5,7 @@ let package = Package(
   name: "DistributedXPCDemo",
   platforms: [.macOS(.v15)],
   products: [
+    .library(name: "DemoShared", targets: ["DemoShared"]),
     .executable(name: "DemoApp", targets: ["DemoApp"]),
     .executable(name: "DemoService", targets: ["DemoService"]),
   ],

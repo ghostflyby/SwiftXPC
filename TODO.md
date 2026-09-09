@@ -311,11 +311,55 @@
 
 ### v1 明确不支持
 
-- remote proxy 再导出/转发给第三方：抛稳定的 `remoteActorExportUnsupported`。
-- `any DistributedActor` existential actor reference。
+- unbounded `any DistributedActor` existential actor reference。
 - 泛型 distributed method、复杂重载、跨版本协议协商。
 - 无标签参数的 metadata key 按 compiler mangling 记为 `name()`（不带 `_`）；
   大写开头的参数标签仍会被 `parseTargetIdentifier` 当作返回类型组件截断。
+
+## v2：Proxy 转发与 existential actor 探索（actor-references 分支）
+
+### 已实现：proxy 转发（具体类型）
+
+- 导入的 actor proxy 被再次传递时，`export()` 重发其存储的 wire
+  （`StoredActorReference` 以 `xpc_retain` 持有 endpoint 对象），接收方从同一
+  endpoint 建立自己的直连 channel——转发永远直连 owner，不做 relay 链。
+- export session 从"只接受首个 peer"改为接受任意数量 peer：每个 peer 独立
+  bind/activate；peer invalidation 仅将其移出 session，不再销毁 session；
+  session 生命周期 = owner invalidation 或 `resignID`（cancel listener 与全部 peers）。
+- `XPCActorReferenceCodec.decode` 在 resolve 前存储导入引用；root 的
+  `connect(using:)` 不存储——root channel 专属当前客户端，导出 root proxy
+  仍抛 `remoteActorExportUnsupported`。
+- 测试：转发往返（client→server→client 三跳 dial-back）、同一代理两路转发
+  并行调用、root proxy 拒绝。
+
+### 已验证不可行：existential actor 引用（编译器硬限制）
+
+四个 `swiftc -typecheck` 探针（Swift 6.3.2）证实，任何库设计都无法让
+existential actor 出现在 distributed 参数/返回位置：
+
+1. 直接声明 `any WorkerAPI`：`#ProtocolTypeNonConformance` —— Swift 6 已移除
+   existential 自一致性，协议类型不能 conform 任何协议，因此无法满足
+   `SerializationRequirement == XPCMarshal`。
+2. 泛型包装 `struct Ref<Subject: XPCActorReferenceConvertible>`：实例化
+   `Ref<any WorkerAPI>` 同样报 `#ProtocolTypeNonConformance`。
+3. 非泛型包装 + wire 类型注册表：解码需要通过协议 metatype 调用 static-Self
+   成员（`(any P.Type).unmarshal`），编译器直接拒绝
+   （"static member cannot be used on protocol metatype"）。
+4. opaque 返回 `some WorkerAPI`：声明可编译，但 Swift runtime 的
+   `executeDistributedTarget` 分发 opaque 返回时要求 decoder 提供
+   `decodeReturnType()`，库无法在分发点获得 opaque 底层具体类型，
+   runtime 报 `typeDeserializationFailure`（"Failed to decode distributed target
+   return type"）。
+
+结论：这是所有带序列化要求的 distributed actor 系统（包括 Codable 系）的共同
+语言级限制。待 Swift 恢复某种形式的 existential conformance 或提供 opaque
+分发支持后重估；届时 wire 层可能需要补类型标识字段。
+
+### v2 已知权衡
+
+- 多 peer listener 存活至 owner 销毁（每次导出的匿名 port 在 actor 生命周期内保持开放）。
+- `importedReferences` 以 actor ID 为键；同 system 内本地 actor 与导入代理 ID 冲突时
+  本地优先（类型+身份检查保证不误路由）。
 
 ### 已完成的验证
 
@@ -327,6 +371,45 @@
 - [x] actor-reference wire 版本不匹配返回稳定错误。
 - [x] DemoApp 通过 root actor 完成真实跨进程调用（bundle 实测）。
 
+### 重连策略（root-reconnection 分支，已落地）
+
+launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含干净环境对照）：
+
+- **root 通道自愈**：root proxy 走 named mach service connection；服务进程被 `kill -9` 后
+  launchd 按需重启，**同一 root proxy 的下一次调用自动成功**（actorID=0 与新实例对齐），
+  无需任何重建。
+- **子 actor-reference 通道不可恢复**：匿名 endpoint 通道随服务进程死亡而永久失效，
+  旧子 proxy 调用抛 `.invalid`；必须经 root 重新获取（崩溃后服务端状态本就不存在，
+  重建是必然路径）。
+- 已落地 API：
+  - `XPCRootConnection<Root>`：`root` 常驻 proxy + `events`（connected/disconnected，
+    invalidation 与 interruption 双信号）+ `retrying(policy)`（仅对
+    `ConnectionError` 重试、指数退避；业务错误立即抛出）+ `close()`。
+  - `XPCRetryPolicy`：`once` / `resilient`（8 次、100ms 起 ×2、上限 5s）。
+  - `XPCRootActorServer(onPeerAccept:onPeerEnd:)`：服务端 peer 生命周期回调（带 pid 可审计）。
+  - handle 持有 ownsConnection 的 client system，保活连接生命周期。
+- 下游模式：observe `.disconnected` → 重建业务子 actor/session 状态；对 root 调用使用
+  `retrying` 平滑服务重启窗口。
+
+### API 审查清理（swift-api-review 分支，2026-09-08）
+
+- [x] 删除 legacy registry/default-factory 整条路径（`registerDefaultActor`×2、
+  `XPCDefaultActorInitializable`、getOrCreateActor、双 dispatch 重复代码）；
+  `assignID` 收敛为仅 root 预留语义；unbound 系统的 handler 只路由生命周期错误。
+- [x] `XPCActorReferenceCodec` 公共命名空间消灭：marshal/unmarshal 移入
+  `XPCExportableActor` 协议扩展默认实现，`@XPCService` 不再生成 witness。
+- [x] internal 收回：`XPCWireProtocol`、`XPCInvocationMessage`、`XPCReplyEnvelope`、
+  `parseTargetIdentifier`。`XPCInvocationEncoder/Decoder/ResultHandler` 因 Distributed
+  协议公共要求强制保持 public（语言约束）；`XPCReplyKind` 同理保持 public——
+  public 的 `XPCRemoteCallError` 关联值引用它。
+- [x] `setPeer*Requirement` 家族从 C 风格 Bool 返回改为 typed throws
+  （`PeerRequirementError`，含 errno 状态）。
+- [x] 命名与冗余：`set(targetQueue:)` → `setTargetQueue(_:)`；删除零使用的
+  `XPCConnection.incoming`、`set(context:)/getContext`、`send(barrier:)`、
+  `resume()`/`suspend()`；`DistributedXPC` `@_exported import SwiftXPC`（下游单 import）。
+- [x] P1：`.interrupted` 拼写、`MachServiceFlag` case 小写、`XPCMarshalError`
+  移除 throw 位置元数据、`XPCArray` 下标越界 precondition（保留可变下标供自定义序列化）。
+
 ### 审查跟进项
 
 - [ ] 两条 dispatch 路径（legacy registry 与 bound channel）约 35 行逻辑重复且曾有检查顺序漂移；
@@ -335,6 +418,59 @@
   v1 单 actor 单 channel 下可接受，重设计执行模型时一并处理。
 - [ ] `handleIncomingMessage` 的 `XPCDictionary.unmarshal` 在 do/catch 之外，非字典垃圾消息
   不回错误 reply；既有行为，量级小。
+
+## 官方 XPC 公开 API 覆盖盘点（2026-09-08，对照 macOS 26.5 SDK xpc/* 头文件 + XPC Swift overlay swiftinterface）
+
+### Swift 可见性事实（决定封装边界）
+
+- `XPC_SWIFT_NOEXPORT` 的 C 函数在 Swift 中**完全不可用**：`xpc_listener_*`、
+  `xpc_peer_requirement_*`、session 的 flags/handler typedef 均在其列。
+- Apple 为现代 API 提供 Swift overlay 类型（`XPCListener`/`XPCSession`/
+  `XPCPeerRequirement`/`XPCRichError`/`XPCEndpoint`/`XPCReceivedMessage`），
+  但它们基于 session 模型，与本库基于 `xpc_connection_t` 的运行时不兼容。
+- 无 NOEXPORT 的 C 函数（`xpc_connection_get_pid`、14.4 requirement setter 家族、
+  `xpc_copy_description`、`xpc_shmem_*` 等）可直接封装。
+
+### P1（鉴权可观测性与 daemon 正确性）——已落地
+
+- [x] `xpc_connection_get_pid`：`XPCConnection.pid`。
+- [x] 错误对象路由：`addTerminationImminentHandler` /
+  `addPeerCodeSigningErrorHandler`（macOS 15+），未注册时错误对象照旧进通用
+  handler（向后兼容）；`XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT` 是代码签名
+  requirement 校验失败的鉴权失败信号，此前被静默吞掉。
+- [x] `XPCRootActorServer(shouldAccept:)` 接入校验钩子：activate 前自定义校验
+  （pid/euid 等），拒绝走"空 handler → activate → cancel"安全序列，客户端观察到
+  interrupted。
+- [x] 调试描述：`XPCConnection`/`XPCObject` 的 `debugDescription`
+  （`xpc_copy_description`）。
+- 内核级强制路径（macOS 12+）：accepted peer 在 activate 前设字符串
+  requirement（`setPeerCodeSigningRequirement`，已封装），违规连接由 XPC 直接丢弃，
+  失败信号经上述错误路由可观测。
+
+### P2（现代 API 代际与能力补全）
+
+- [ ] **runtime v3 方向：采纳 XPC overlay（XPCListener/XPCSession）**。可行性研究已完成
+  （`Docs/XPCSessionMigrationFeasibility.md`，探针实跑验证）：session 模型的 reply 链路、
+  reject 模型、rich error 取消语义、裸对象桥接全部可用；但对端身份 API（pid/euid）完全缺失、
+  字符串 code-signing requirement 在 26 前不可用、TERMINATION_IMMINENT 不可观测——
+  部署目标 < 26 时迁移是鉴权净倒退。**当前选择维持 connection 体系（方案 D）**，
+  把双传输层抽象（方案 B）作为 v3 预案；重估触发条件见报告。
+- [ ] `xpc_shmem_create/map`（可直接封装）：共享内存零拷贝传输，大 payload 场景。
+- [ ] mach send right 传递（`xpc_dictionary_set_mach_send/copy_mach_send`、
+  `xpc_array/dictionary_create_connection`）。
+- [ ] `xpc_data_create_with_dispatch_data` 零拷贝构造。
+- [ ] `xpc_set_event_stream_handler`：launchd 事件流（SIGTERM 转投等），
+  daemon 优雅退出。
+
+### P3（调试与便利）
+
+- [ ] `xpc_debugger_api_misuse_info`、`xpc_copy`（深拷贝）、
+  `xpc_string_get_length`、`xpc_string_create_with_format`、
+  `xpc_date_create_from_current`、`XPCDictionary` 公开 count 访问器。
+
+### 明确不封装
+
+- `xpc_activity_*`（activity.h）：launchd 后台活动调度子系统，与本库的 RPC 定位无关。
 
 ## 推荐执行顺序
 

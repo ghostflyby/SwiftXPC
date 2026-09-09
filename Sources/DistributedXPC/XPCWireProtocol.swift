@@ -3,20 +3,20 @@
 import Distributed
 import SwiftXPC
 
-public enum XPCWireProtocol {
+enum XPCWireProtocol {
   public static let currentVersion: UInt64 = 1
 }
 
 @available(macOS 13.0, *)
 @XPCMarshal
-public struct XPCInvocationMessage {
+struct XPCInvocationMessage {
   public let version: UInt64
   public let method: String
   public let actorID: XPCActorID
   public let target: RemoteCallTarget
   public let arguments: XPCArray
 
-  public init(
+  init(
     version: UInt64 = XPCWireProtocol.currentVersion,
     method: String,
     actorID: XPCActorID,
@@ -34,6 +34,7 @@ public struct XPCInvocationMessage {
 @available(macOS 13.0, *)
 @XPCMarshal
 public enum XPCReplyKind: Sendable, Hashable, Equatable {
+  /// The reply carries a return value.
   case returnValue
   case returnVoid
   case throwError
@@ -41,12 +42,12 @@ public enum XPCReplyKind: Sendable, Hashable, Equatable {
 
 @available(macOS 13.0, *)
 @XPCMarshal
-public struct XPCReplyEnvelope: Sendable {
+struct XPCReplyEnvelope: Sendable {
   public let version: UInt64
   public let kind: XPCReplyKind
   public let payload: XPCObject?
 
-  public init(
+  init(
     version: UInt64 = XPCWireProtocol.currentVersion,
     kind: XPCReplyKind,
     payload: XPCObject? = nil
@@ -124,3 +125,12 @@ extension XPCReplyEnvelope {
     throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: errorType))
   }
 }
+
+@available(macOS 13.0, *)
+extension RemoteCallTarget: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> XPCObject { try identifier.marshal() }
+  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
+    .init(try .unmarshal(from: object))
+  }
+}
+

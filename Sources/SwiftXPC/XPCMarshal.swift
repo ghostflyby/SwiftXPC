@@ -3,7 +3,12 @@
 import Foundation
 import XPC
 
-/// A protocol for types that can be marshaled to and from XPC objects
+/// A protocol for types that can be marshaled to and from XPC objects.
+///
+/// Conform standard types via `@XPCMarshal` (generates both witnesses for
+/// structs, enums, and final classes) or implement the requirements by
+/// hand. Distributed actors get actor-reference marshaling through
+/// `XPCExportableActor` instead.
 public protocol XPCMarshal {
   /// Marshals the value into an XPC object.
   func marshal() throws(XPCMarshalError) -> XPCObject
@@ -17,6 +22,9 @@ public protocol XPCMarshal {
 )
 public macro XPCMarshal() = #externalMacro(module: "SwiftXPCMacros", type: "XPCMarshalMacro")
 
+/// The only error type thrown by marshaling APIs. Equality is determined
+/// entirely by `kind`; construct via the static factories, which mirror
+/// the cases with better labels.
 @XPCMarshal
 public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatable, Hashable {
   @XPCMarshal
@@ -31,66 +39,41 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
     case unsupportedProtocolVersion(expected: UInt64, actual: UInt64)
   }
   public let kind: Kind
-  public let file: String
-  public let line: UInt
-  public let function: String
 
-  public static func missingKey(
-    _ key: String, file: String = #file, line: UInt = #line, function: String = #function
-  ) -> Self {
-    .init(kind: .missingKey(key), file: file, line: line, function: function)
+  public init(kind: Kind) {
+    self.kind = kind
   }
 
-  public static func unknownEnumCase(
-    _ name: String, enumName: String, file: String = #file, line: UInt = #line,
-    function: String = #function
-  ) -> Self {
-    .init(
-      kind: .unknownEnumCase(name, enumName: enumName), file: file, line: line, function: function)
+  public static func missingKey(_ key: String) -> Self {
+    .init(kind: .missingKey(key))
   }
 
-  public static func typeMismatch(
-    expected: String, actual: String, file: String = #file, line: UInt = #line,
-    function: String = #function
-  ) -> Self {
-    .init(
-      kind: .typeMismatch(expected: expected, actual: actual), file: file, line: line,
-      function: function)
+  public static func unknownEnumCase(_ name: String, enumName: String) -> Self {
+    .init(kind: .unknownEnumCase(name, enumName: enumName))
   }
 
-  public static func outOfBounds(
-    index: Int, count: Int, file: String = #file, line: UInt = #line, function: String = #function
-  ) -> Self {
-    .init(
-      kind: .outOfBounds(index: index, count: count), file: file, line: line, function: function)
+  public static func typeMismatch(expected: String, actual: String) -> Self {
+    .init(kind: .typeMismatch(expected: expected, actual: actual))
   }
 
-  public static func invalidActorReference(
-    _ reason: String, file: String = #file, line: UInt = #line, function: String = #function
-  ) -> Self {
-    .init(kind: .invalidActorReference(reason), file: file, line: line, function: function)
+  public static func outOfBounds(index: Int, count: Int) -> Self {
+    .init(kind: .outOfBounds(index: index, count: count))
   }
 
-  public static func remoteActorExportUnsupported(
-    _ actorType: String, file: String = #file, line: UInt = #line, function: String = #function
-  ) -> Self {
-    .init(
-      kind: .remoteActorExportUnsupported(actorType), file: file, line: line, function: function)
+  public static func invalidActorReference(_ reason: String) -> Self {
+    .init(kind: .invalidActorReference(reason))
   }
 
-  public static func actorResolutionFailed(
-    _ reason: String, file: String = #file, line: UInt = #line, function: String = #function
-  ) -> Self {
-    .init(kind: .actorResolutionFailed(reason), file: file, line: line, function: function)
+  public static func remoteActorExportUnsupported(_ actorType: String) -> Self {
+    .init(kind: .remoteActorExportUnsupported(actorType))
   }
 
-  public static func unsupportedProtocolVersion(
-    expected: UInt64, actual: UInt64, file: String = #file, line: UInt = #line,
-    function: String = #function
-  ) -> Self {
-    .init(
-      kind: .unsupportedProtocolVersion(expected: expected, actual: actual), file: file, line: line,
-      function: function)
+  public static func actorResolutionFailed(_ reason: String) -> Self {
+    .init(kind: .actorResolutionFailed(reason))
+  }
+
+  public static func unsupportedProtocolVersion(expected: UInt64, actual: UInt64) -> Self {
+    .init(kind: .unsupportedProtocolVersion(expected: expected, actual: actual))
   }
 
   public var description: String {

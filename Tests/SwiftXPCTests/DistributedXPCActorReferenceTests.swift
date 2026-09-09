@@ -111,7 +111,7 @@ private func makeRootChannel() throws -> RootChannelFixture {
 
 @Test func DirectLocalActorReferenceRoundTrip() async throws {
   guard #available(macOS 15, *) else { return }
-  let system = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   let worker = ChannelWorker(actorSystem: system)
 
   let object = try worker.marshal()
@@ -146,7 +146,7 @@ private func makeRootChannel() throws -> RootChannelFixture {
   let root = try ChannelRoot.connect(using: fixture.client)
   let worker = try await root.makeWorker()
   let messages = MessageStore()
-  let callbackSystem = XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  let callbackSystem = XPCDistributedActorSystem(connection: makeIdleConnection())
   let callback = ChannelCallback(messages: messages, actorSystem: callbackSystem)
 
   try await worker.notify(callback)
@@ -154,18 +154,19 @@ private func makeRootChannel() throws -> RootChannelFixture {
   #expect(messages.values == ["called back"])
 }
 
-@Test func RemoteProxyExportIsRejected() async throws {
+@Test func RootProxyExportIsRejected() async throws {
   guard #available(macOS 15, *) else { return }
   let fixture = try makeRootChannel()
   defer { withExtendedLifetime(fixture) {} }
   let root = try ChannelRoot.connect(using: fixture.client)
-  let worker = try await root.makeWorker()
 
   do {
-    _ = try worker.marshal()
-    Issue.record("Expected remote proxy export to fail")
+    // The root channel belongs to this client; it has no stored wire to
+    // re-emit and must not be shared with a third process.
+    _ = try root.marshal()
+    Issue.record("Expected root proxy export to fail")
   } catch let error {
-    #expect(error.kind == .remoteActorExportUnsupported("ChannelWorker"))
+    #expect(error.kind == .remoteActorExportUnsupported("ChannelRoot"))
   }
 }
 

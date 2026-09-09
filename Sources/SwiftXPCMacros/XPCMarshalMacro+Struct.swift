@@ -95,7 +95,8 @@ extension XPCMarshalMacro {
         let array = SwiftXPC.XPCArray(xpc_object: object.xpc_object)
         let count = array.count
         guard count >= \(properties.count) else {
-          throw SwiftXPC.XPCMarshalError.missingKey(\"\(properties.count - 1)\")
+          throw SwiftXPC.XPCMarshalError.outOfBounds(
+            index: count, count: \(properties.count))
         }
         \(bindings)
         return Self.init(\(arguments))

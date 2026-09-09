@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Dispatch
 import Distributed
-import DistributedXPC
+@testable import DistributedXPC
 import SwiftXPCMacros
 import Synchronization
 import Testing
@@ -59,9 +59,6 @@ distributed actor IntegrationGreeter {
   distributed func ping() {}
 }
 
-@available(macOS 15, *)
-extension IntegrationGreeter: XPCDefaultActorInitializable {}
-
 // MARK: - Raw wire helpers
 
 @available(macOS 15, *)
@@ -88,6 +85,7 @@ private enum IntegrationConnectionError: Error {
 private struct AcceptedPeer: Sendable {
   let connection: XPCConnection
   let system: XPCDistributedActorSystem
+  let root: IntegrationGreeter
 }
 
 @available(macOS 15, *)
@@ -97,6 +95,7 @@ private struct IntegrationConnectionPair: Sendable {
   let client: XPCConnection
   let serverSystem: XPCDistributedActorSystem
   let clientSystem: XPCDistributedActorSystem
+  let serverRoot: IntegrationGreeter?
 }
 
 @available(macOS 15, *)
@@ -109,7 +108,12 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
     guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
     let server = XPCConnection(xpc_object: object.xpc_object)
     let serverSystem = XPCDistributedActorSystem(connection: server)
-    acceptedPeer.withLock { $0 = AcceptedPeer(connection: server, system: serverSystem) }
+    serverSystem.reserveRootID()
+    let root = IntegrationGreeter(actorSystem: serverSystem)
+    serverSystem.bind(server, to: root)
+    acceptedPeer.withLock {
+      $0 = AcceptedPeer(connection: server, system: serverSystem, root: root)
+    }
     server.activate()
     accepted.signal()
   }
@@ -132,26 +136,17 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
     server: peer.connection,
     client: client,
     serverSystem: peer.system,
-    clientSystem: clientSystem
+    clientSystem: clientSystem,
+    serverRoot: peer.root
   )
 }
 
 // MARK: - Tests
 
-@Test func InProcessRoundTripGreet() async throws {
-  guard #available(macOS 15, *) else { return }
-  let pair = try makeConnectionPair()
-  pair.serverSystem.registerDefaultActor(IntegrationGreeter.self)
-  let greeter = IntegrationGreeter(actorSystem: pair.clientSystem)
-  let result = try await greeter.greet(name: "World")
-  #expect(result == "Hello, World!")
-}
-
 @Test func RemoteCallRoundTripGreet() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
-  let stub = try IntegrationGreeter.resolve(id: serverActor.id, using: pair.clientSystem)
+  let stub = try IntegrationGreeter.resolve(id: .root, using: pair.clientSystem)
   let result = try await stub.greet(name: "Remote")
   #expect(result == "Hello, Remote!")
 }
@@ -159,8 +154,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 @Test func RemoteCallRoundTripError() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
-  let stub = try IntegrationGreeter.resolve(id: serverActor.id, using: pair.clientSystem)
+  let stub = try IntegrationGreeter.resolve(id: .root, using: pair.clientSystem)
   await #expect(throws: IntegrationError.rejected) {
     _ = try await stub.greet(name: "error")
   }
@@ -169,16 +163,14 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 @Test func RemoteCallRoundTripVoid() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
-  let stub = try IntegrationGreeter.resolve(id: serverActor.id, using: pair.clientSystem)
+  let stub = try IntegrationGreeter.resolve(id: .root, using: pair.clientSystem)
   try await stub.ping()
 }
 
 @Test func RemoteCallRoundTripMultiArgumentNestedPayload() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
-  let stub = try IntegrationGreeter.resolve(id: serverActor.id, using: pair.clientSystem)
+  let stub = try IntegrationGreeter.resolve(id: .root, using: pair.clientSystem)
 
   let note = IntegrationNote(
     title: "notes",
@@ -198,8 +190,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 @Test func RemoteCallRoundTripConcurrentCalls() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
-  let stub = try IntegrationGreeter.resolve(id: serverActor.id, using: pair.clientSystem)
+  let stub = try IntegrationGreeter.resolve(id: .root, using: pair.clientSystem)
 
   var expected: Set<String> = []
   try await withThrowingTaskGroup(of: String.self) { group in
@@ -218,7 +209,6 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 @Test func RemoteCallSurfacesUnknownActorError() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  _ = IntegrationGreeter(actorSystem: pair.serverSystem)
 
   let reply = try await sendRawInvocation(
     XPCInvocationMessage(
@@ -236,12 +226,11 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 @Test func RemoteCallSurfacesUnknownTargetError() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
 
   let reply = try await sendRawInvocation(
     XPCInvocationMessage(
       method: "missing",
-      actorID: serverActor.id,
+      actorID: .root,
       target: RemoteCallTarget("missing"),
       arguments: SwiftXPC.XPCArray()
     ), over: pair)
@@ -254,15 +243,13 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 @Test func RemoteCallSurfacesArgumentDecodeError() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
-
   var arguments = SwiftXPC.XPCArray()
   arguments.append(try Int(42).marshal())
 
   let reply = try await sendRawInvocation(
     XPCInvocationMessage(
       method: "greet(name:)",
-      actorID: serverActor.id,
+      actorID: .root,
       target: RemoteCallTarget(integrationGreetTargetIdentifier),
       arguments: arguments
     ), over: pair)
@@ -290,14 +277,14 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 @Test func ConnectionInvalidationClearsActorRegistry() async throws {
   guard #available(macOS 15, *) else { return }
   let pair = try makeConnectionPair()
-  let serverActor = IntegrationGreeter(actorSystem: pair.serverSystem)
-  #expect(try pair.serverSystem.resolve(id: serverActor.id, as: IntegrationGreeter.self) != nil)
+  let root = pair.serverRoot!
+  #expect(try pair.serverSystem.resolve(id: root.id, as: IntegrationGreeter.self) != nil)
 
   pair.client.cancel()
 
   let deadline = ContinuousClock.now + .seconds(2)
   while ContinuousClock.now < deadline {
-    if try pair.serverSystem.resolve(id: serverActor.id, as: IntegrationGreeter.self) == nil {
+    if try pair.serverSystem.resolve(id: root.id, as: IntegrationGreeter.self) == nil {
       return
     }
     try await Task.sleep(for: .milliseconds(20))

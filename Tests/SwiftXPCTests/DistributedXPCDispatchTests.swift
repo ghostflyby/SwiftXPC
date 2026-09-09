@@ -38,17 +38,14 @@ private let sampleActorWithoutMetadataPingTargetIdentifier =
   "$s13SwiftXPCTests26SampleActorWithoutMetadataC4pingyyYaKFTE"
 
 @available(macOS 15, *)
-extension SampleDispatchActor: XPCDefaultActorInitializable {}
-
-@available(macOS 15, *)
 private func makeSystem() -> XPCDistributedActorSystem {
-  XPCDistributedActorSystem(connection: XPCConnection(name: nil))
+  XPCDistributedActorSystem(connection: makeIdleConnection())
 }
 
 @Test func DispatchInvocationExecutesDistributedTarget() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleDispatchActor(actorSystem: system)
+  let actor = SampleDispatchActor(actorSystem: system)
 
   var arguments = XPCArray()
   arguments.append(try "world".marshal())
@@ -56,10 +53,11 @@ private func makeSystem() -> XPCDistributedActorSystem {
   let reply = try await system.dispatchInvocation(
     XPCInvocationMessage(
       method: "greet(name:)",
-      actorID: XPCActorID(id: 1),
+      actorID: actor.id,
       target: RemoteCallTarget(sampleGreetTargetIdentifier),
       arguments: arguments
-    )
+    ),
+    on: actor
   )
 
   #expect(reply.kind == .returnValue)
@@ -69,15 +67,16 @@ private func makeSystem() -> XPCDistributedActorSystem {
 @Test func DispatchInvocationExecutesVoidDistributedTarget() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleDispatchActor(actorSystem: system)
+  let actor = SampleDispatchActor(actorSystem: system)
 
   let reply = try await system.dispatchInvocation(
     XPCInvocationMessage(
       method: "ping()",
-      actorID: XPCActorID(id: 1),
+      actorID: actor.id,
       target: RemoteCallTarget(samplePingTargetIdentifier),
       arguments: XPCArray()
-    )
+    ),
+    on: actor
   )
 
   #expect(reply.kind == .returnVoid)
@@ -87,16 +86,17 @@ private func makeSystem() -> XPCDistributedActorSystem {
 @Test func DispatchInvocationFailsForUnknownTarget() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleDispatchActor(actorSystem: system)
+  let actor = SampleDispatchActor(actorSystem: system)
 
   do {
     _ = try await system.dispatchInvocation(
       XPCInvocationMessage(
         method: "missing",
-        actorID: XPCActorID(id: 1),
+        actorID: actor.id,
         target: RemoteCallTarget("missing"),
         arguments: XPCArray()
-      )
+      ),
+      on: actor
     )
     Issue.record("Expected missing target to throw")
   } catch let error as XPCDispatchError {
@@ -109,16 +109,17 @@ private func makeSystem() -> XPCDistributedActorSystem {
 @Test func DispatchInvocationRequiresTargetMetadata() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleActorWithoutMetadata(actorSystem: system)
+  let actor = SampleActorWithoutMetadata(actorSystem: system)
 
   do {
     _ = try await system.dispatchInvocation(
       XPCInvocationMessage(
         method: "ping()",
-        actorID: XPCActorID(id: 1),
+        actorID: actor.id,
         target: RemoteCallTarget(sampleActorWithoutMetadataPingTargetIdentifier),
         arguments: XPCArray()
-      )
+      ),
+      on: actor
     )
     Issue.record("Expected missing target metadata to throw")
   } catch let error as XPCDispatchError {
@@ -128,117 +129,66 @@ private func makeSystem() -> XPCDistributedActorSystem {
   }
 }
 
+@Test func DispatchInvocationRejectsMismatchedActorID() async throws {
+  guard #available(macOS 15, *) else { return }
+  let system = makeSystem()
+  let actor = SampleDispatchActor(actorSystem: system)
+
+  do {
+    _ = try await system.dispatchInvocation(
+      XPCInvocationMessage(
+        method: "greet(name:)",
+        actorID: XPCActorID(id: actor.id.id + 500),
+        target: RemoteCallTarget(sampleGreetTargetIdentifier),
+        arguments: XPCArray()
+      ),
+      on: actor
+    )
+    Issue.record("Expected mismatched actor ID to throw")
+  } catch let error as XPCDispatchError {
+    #expect(error == .unknownActor(XPCActorID(id: actor.id.id + 500)))
+  } catch {
+    Issue.record("Expected XPCDispatchError, got \(error)")
+  }
+}
+
 @Test func HandleIncomingMessageDispatchesInvocation() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleDispatchActor(actorSystem: system)
+  let actor = SampleDispatchActor(actorSystem: system)
 
   var arguments = XPCArray()
   arguments.append(try "inbox".marshal())
 
   let message = XPCInvocationMessage(
     method: "greet(name:)",
-    actorID: XPCActorID(id: 1),
+    actorID: actor.id,
     target: RemoteCallTarget(sampleGreetTargetIdentifier),
     arguments: arguments
   )
 
-  try await system.handleIncomingMessage(try message.marshal())
-}
-
-@Test func DispatchInvocationCreatesActorViaRegisteredFactory() async throws {
-  guard #available(macOS 15, *) else { return }
-  let system = makeSystem()
-  system.registerDefaultActor(SampleDispatchActor.self)
-
-  var arguments = XPCArray()
-  arguments.append(try "factory".marshal())
-
-  let reply = try await system.dispatchInvocation(
-    XPCInvocationMessage(
-      method: "greet(name:)",
-      actorID: XPCActorID(id: 42),
-      target: RemoteCallTarget(sampleGreetTargetIdentifier),
-      arguments: arguments
-    )
-  )
-
-  #expect(reply.kind == .returnValue)
-  #expect(try String.unmarshal(from: reply.payload!) == "Hello, factory!")
-}
-
-@Test func DispatchInvocationThrowsUnknownActorWithoutFactory() async throws {
-  guard #available(macOS 15, *) else { return }
-  let system = makeSystem()
-
-  do {
-    _ = try await system.dispatchInvocation(
-      XPCInvocationMessage(
-        method: "greet(name:)",
-        actorID: XPCActorID(id: 99),
-        target: RemoteCallTarget(sampleGreetTargetIdentifier),
-        arguments: XPCArray()
-      )
-    )
-    Issue.record("Expected unknown actor to throw")
-  } catch let error as XPCDispatchError {
-    #expect(error == .unknownActor(XPCActorID(id: 99)))
-  } catch {
-    Issue.record("Expected XPCDispatchError, got \(error)")
-  }
-}
-
-@Test func DispatchInvocationCreatesActorWithCorrectID() async throws {
-  guard #available(macOS 15, *) else { return }
-  let system = makeSystem()
-  system.registerDefaultActor(SampleDispatchActor.self)
-
-  let targetID = XPCActorID(id: 7)
-  var arguments = XPCArray()
-  arguments.append(try "idcheck".marshal())
-
-  let reply1 = try await system.dispatchInvocation(
-    XPCInvocationMessage(
-      method: "greet(name:)",
-      actorID: targetID,
-      target: RemoteCallTarget(sampleGreetTargetIdentifier),
-      arguments: arguments
-    )
-  )
-  #expect(try String.unmarshal(from: reply1.payload!) == "Hello, idcheck!")
-
-  var args2 = XPCArray()
-  args2.append(try "again".marshal())
-  let reply2 = try await system.dispatchInvocation(
-    XPCInvocationMessage(
-      method: "greet(name:)",
-      actorID: targetID,
-      target: RemoteCallTarget(sampleGreetTargetIdentifier),
-      arguments: args2
-    )
-  )
-  #expect(try String.unmarshal(from: reply2.payload!) == "Hello, again!")
+  try await system.handleIncomingMessage(try message.marshal(), on: actor)
 }
 
 @Test func HandleIncomingMessageEncodesDispatchErrors() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleDispatchActor(actorSystem: system)
+  let actor = SampleDispatchActor(actorSystem: system)
 
   let message = XPCInvocationMessage(
     method: "missing",
-    actorID: XPCActorID(id: 1),
+    actorID: actor.id,
     target: RemoteCallTarget("missing"),
     arguments: XPCArray()
   )
 
-  try await system.handleIncomingMessage(try message.marshal())
+  try await system.handleIncomingMessage(try message.marshal(), on: actor)
 }
 
 @Test func DispatchInvocationRejectsWrongArgumentType() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleDispatchActor(actorSystem: system)
+  let actor = SampleDispatchActor(actorSystem: system)
 
   var arguments = XPCArray()
   arguments.append(try Int(42).marshal())
@@ -246,10 +196,11 @@ private func makeSystem() -> XPCDistributedActorSystem {
   let reply = try await system.dispatchInvocation(
     XPCInvocationMessage(
       method: "greet(name:)",
-      actorID: XPCActorID(id: 1),
+      actorID: actor.id,
       target: RemoteCallTarget(sampleGreetTargetIdentifier),
       arguments: arguments
-    )
+    ),
+    on: actor
   )
 
   #expect(reply.kind == .throwError)
@@ -260,15 +211,16 @@ private func makeSystem() -> XPCDistributedActorSystem {
 @Test func DispatchInvocationRejectsMissingArguments() async throws {
   guard #available(macOS 15, *) else { return }
   let system = makeSystem()
-  _ = SampleDispatchActor(actorSystem: system)
+  let actor = SampleDispatchActor(actorSystem: system)
 
   let reply = try await system.dispatchInvocation(
     XPCInvocationMessage(
       method: "greet(name:)",
-      actorID: XPCActorID(id: 1),
+      actorID: actor.id,
       target: RemoteCallTarget(sampleGreetTargetIdentifier),
       arguments: XPCArray()
-    )
+    ),
+    on: actor
   )
 
   #expect(reply.kind == .throwError)

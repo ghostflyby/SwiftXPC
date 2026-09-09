@@ -7,7 +7,6 @@ import SwiftXPC
 import Synchronization
 import XPC
 
-
 /// The `DistributedActorSystem` implementation that carries distributed
 /// actor calls over XPC.
 ///
@@ -314,4 +313,3 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       envelope, for: Act.self, target: target, method: method, throwing: errorType)
   }
 }
-

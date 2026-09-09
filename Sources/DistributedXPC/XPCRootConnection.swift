@@ -159,7 +159,8 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   }
 
   private func emit(_ event: XPCRootConnectionEvent) {
-    let continuation = state.withLock { state -> AsyncStream<XPCRootConnectionEvent>.Continuation? in
+    let continuation = state.withLock {
+      state -> AsyncStream<XPCRootConnectionEvent>.Continuation? in
       if state.closed { return nil }
       return state.continuation
     }

@@ -10,5 +10,3 @@ public enum XPCRemoteCallError: Error, Sendable, Equatable {
   case missingPayload(XPCReplyKind)
   case unsupportedThrownErrorType(String)
 }
-
-

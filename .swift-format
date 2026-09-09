@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "exclude": [
+    ".build",
+    "Examples/DistributedXPCDemo/.build"
+  ],
+  "rules": {
+    "AlwaysUseLowerCamelCase": false
+  }
+}

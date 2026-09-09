@@ -233,8 +233,9 @@ private func makeRootChannel() throws -> RootChannelFixture {
     Issue.record("Expected unsupported actor-reference version to fail")
   } catch let error {
     #expect(
-      error.kind == .unsupportedProtocolVersion(
-        expected: XPCWireProtocol.currentVersion,
-        actual: XPCWireProtocol.currentVersion + 1))
+      error.kind
+        == .unsupportedProtocolVersion(
+          expected: XPCWireProtocol.currentVersion,
+          actual: XPCWireProtocol.currentVersion + 1))
   }
 }

@@ -10,4 +10,3 @@ public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
   internal let id: UInt64
   public init(id: UInt64) { self.id = id }
 }
-

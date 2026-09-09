@@ -37,5 +37,4 @@ public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandl
   }
 }
 
-
 typealias ErrorXPCMarshal = XPCMarshal & Error

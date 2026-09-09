@@ -133,4 +133,3 @@ extension RemoteCallTarget: XPCMarshal {
     .init(try .unmarshal(from: object))
   }
 }
-

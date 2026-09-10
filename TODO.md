@@ -459,9 +459,21 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
   interrupted。
 - [x] 调试描述：`XPCConnection`/`XPCObject` 的 `debugDescription`
   （`xpc_copy_description`）。
-- 内核级强制路径（macOS 12+）：accepted peer 在 activate 前设字符串
-  requirement（`setPeerCodeSigningRequirement`，已封装），违规连接由 XPC 直接丢弃，
-  失败信号经上述错误路由可观测。
+- [x] 内核级强制路径一等公民 API（2026-09-10）：`XPCRootActorServer(peerCodeSigningRequirement:)`
+  在 activate 前逐 peer 设字符串 requirement（`setPeerCodeSigningRequirement`），setup 失败
+  → 拒绝并报 `onPeerReject`（fail-closed，不降级）；`shouldAccept` 改 `throws`（throw = 拒绝），
+  与 pid/euid 审计同处激活前窗口，亦可逐 peer 设 entitlement requirement；`distributedXPCMain`
+  透传全部钩子。客户端对称能力：`connect(toService:/using:peerCodeSigningRequirement:)` 鉴别服务端。
+  `XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT` 会走 reply 路径，由新增
+  `ConnectionError.peerCodeSigningRequirement` 类型化；服务端 accept 时注册专用 handler
+  cancel 并驱动 invalidation 链（此前会被 bind 后的消息泵吞掉）。进程内探针证实：内核校验
+  对同进程 endpoint 派生 peer 同样生效。
+- 上游欠账（xpc_main 模型）：listener 由 `xpc_main` 内部自建、拿不到，listener 级
+  "设一次、全局内核强制"不可行；逐 peer 是该模型下的完全能力。
+- [ ] `XPCActorReference` 反向回调通道（模块内 listener）支持 requirement：鉴别回拨的服务。
+- [ ] reply 路径的 `peerCodeSigningRequirement` 映射目前 15 门控；14.4 的 entitlement
+  requirement 安装 API 也能触发同一错误常量，14.4 上该错误暂不类型化（按 payload 解码失败
+  浮出）。待整体评估本包对 requirement 家族的可用性门控后统一放宽。
 
 ### P2（现代 API 代际与能力补全）
 

@@ -112,14 +112,35 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   /// Connects to a launchd-managed XPC service by mach service name and
   /// resolves its root actor. This is the reconnection-capable path: after a
   /// service restart, calls on `root` transparently succeed again.
-  public static func connect(toService serviceName: String) throws -> Self {
-    try connect(using: XPCConnection(name: serviceName))
+  ///
+  /// - Parameters:
+  ///   - serviceName: the launchd mach service name of the service.
+  ///   - peerCodeSigningRequirement: kernel-enforced requirement the service
+  ///     must satisfy, installed on the connection before activation. A
+  ///     service failing it is dropped by XPC; a requirement that cannot be
+  ///     installed makes `connect` throw (fail-closed).
+  public static func connect(
+    toService serviceName: String,
+    peerCodeSigningRequirement: String? = nil
+  ) throws -> Self {
+    try connect(
+      using: XPCConnection(name: serviceName),
+      peerCodeSigningRequirement: peerCodeSigningRequirement)
   }
 
   /// Connects through an existing connection. Note: only connections to a
   /// *named* mach service re-establish after a service restart; endpoint-based
   /// connections die permanently with the peer.
-  public static func connect(using connection: XPCConnection) throws -> Self {
+  ///
+  /// `peerCodeSigningRequirement` authenticates the service and must be
+  /// installed on a *not-yet-activated* connection. On an already-activated
+  /// connection the install reports success but the channel then fails to
+  /// establish (hangs or interrupts) — pass a fresh connection.
+  public static func connect(
+    using connection: XPCConnection,
+    peerCodeSigningRequirement: String? = nil
+  ) throws -> Self {
+    try connection.applyPeerCodeSigningRequirement(peerCodeSigningRequirement)
     let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
     connection.activate()
     let root = try Root.resolve(id: .root, using: system)
@@ -139,6 +160,8 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
       do {
         return try await operation(root)
       } catch let error as XPCConnection.ConnectionError {
+        // Authentication failure is terminal, never a restart in progress.
+        if case .peerCodeSigningRequirement = error { throw error }
         if attempt >= policy.maxAttempts { throw error }
       }
       let delay = policy.delaySeconds(beforeAttempt: attempt + 1)

@@ -198,15 +198,37 @@ extension XPCConnection {
 extension XPCConnection {
   /// The reason an asynchronous send failed. A named service connection may
   /// recover from `.interrupted` on a later send (launchd relaunches the
-  /// service); `.invalid` is usually terminal, though retries may still cover
-  /// brief cold-start or registration gaps.
+  /// service); `.invalid` and `.peerCodeSigningRequirement` are terminal,
+  /// though retries may still cover brief cold-start or registration gaps.
   public enum ConnectionError: Error, Sendable {
     case invalid
     case interrupted
+    /// The peer failed this connection's code signing requirement
+    /// (`XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT`); XPC delivers the error
+    /// through the reply path as well, so sends surface it here.
+    case peerCodeSigningRequirement
   }
 
   public func sendAndForget(message: XPCDictionary) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
+  }
+
+  private static func connectionError(forReply raw: xpc_object_t) -> ConnectionError? {
+    if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
+      return .invalid
+    }
+    if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
+      return .interrupted
+    }
+    if #available(macOS 15.0, *),
+      xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT)
+    {
+      // Kept at 15 to match this package's existing gating of this signal
+      // (`route`); the 14.4 entitlement installers can also produce this
+      // error, which stays unmapped to a typed case on 14.4.
+      return .peerCodeSigningRequirement
+    }
+    return nil
   }
 
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
@@ -223,13 +245,10 @@ extension XPCConnection {
         }
       )
     }.xpc_object
-    if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
-      throw ConnectionError.invalid
-    } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
-      throw ConnectionError.interrupted
-    } else {
-      return XPCObject(xpc_object: r)
+    if let error = Self.connectionError(forReply: r) {
+      throw error
     }
+    return XPCObject(xpc_object: r)
   }
 
   @available(*, noasync)
@@ -238,13 +257,10 @@ extension XPCConnection {
     -> XPCObject
   {
     let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object)
-    if xpc_equal(r, XPC_ERROR_CONNECTION_INVALID) {
-      throw ConnectionError.invalid
-    } else if xpc_equal(r, XPC_ERROR_CONNECTION_INTERRUPTED) {
-      throw ConnectionError.interrupted
-    } else {
-      return XPCObject(xpc_object: r)
+    if let error = Self.connectionError(forReply: r) {
+      throw error
     }
+    return XPCObject(xpc_object: r)
   }
 
 }
@@ -308,8 +324,6 @@ extension XPCConnection {
 @available(macOS 14.4, *)
 extension XPCConnection {
   /// The reason a peer requirement could not be installed on this connection.
-  /// The reason a peer requirement could not be installed on this
-  /// connection.
   public struct PeerRequirementError: Error, Sendable {
     /// The raw status returned by XPC (errno-style, e.g. `ENOTSUP` on
     /// platforms without code signing requirement support).

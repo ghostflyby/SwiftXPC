@@ -27,7 +27,14 @@ public struct XPCServiceMacro: ExtensionMacro {
 
     let access = XPCMarshalMacro.accessLevelPrefix(for: declaration)
 
-    var entries: [String] = []
+    // Overloads share a metadata key (base name + labels only). Merge them:
+    // identical records collapse; records with different typed-throws error
+    // types are ambiguous, so the key degrades to no error metadata (the
+    // caller's own typed error is still used when it conforms to XPCMarshal).
+    var merged: [String: String] = [:]
+    var orderedKeys: [String] = []
+    var ambiguousKeys: Set<String> = []
+
     for funcDecl in distributedFuncs {
       let baseName = funcDecl.name.text
       let params = funcDecl.signature.parameterClause.parameters
@@ -47,6 +54,25 @@ public struct XPCServiceMacro: ExtensionMacro {
         thrownErrorEntry = "thrownErrorType: \(errorType.trimmed).self"
       }
 
+      if let existing = merged[methodKey] {
+        if existing != thrownErrorEntry {
+          merged[methodKey] = ""
+          if ambiguousKeys.insert(methodKey).inserted {
+            context.diagnose(
+              .init(
+                node: Syntax(funcDecl),
+                message: OverloadAmbiguousErrorType(methodKey: methodKey)))
+          }
+        }
+      } else {
+        merged[methodKey] = thrownErrorEntry
+        orderedKeys.append(methodKey)
+      }
+    }
+
+    var entries: [String] = []
+    for methodKey in orderedKeys {
+      let thrownErrorEntry = merged[methodKey] ?? ""
       if thrownErrorEntry.isEmpty {
         entries.append("      \"\(methodKey)\": .init()")
       } else {
@@ -69,6 +95,15 @@ public struct XPCServiceMacro: ExtensionMacro {
     guard let ext = extDecl.as(ExtensionDeclSyntax.self) else { return [] }
     return [ext]
   }
+}
+
+private struct OverloadAmbiguousErrorType: DiagnosticMessage {
+  let methodKey: String
+  var message: String {
+    "Overloads of '\(methodKey)' share this metadata key; typed-throws error metadata is omitted because it would be ambiguous. Thrown errors of these overloads must conform to XPCMarshal to be decodable by callers"
+  }
+  var diagnosticID: MessageID { .init(domain: "SwiftXPCMacros", id: "xpcServiceAmbiguousOverload") }
+  var severity: DiagnosticSeverity { .warning }
 }
 
 private struct XPCServiceNotActor: DiagnosticMessage {

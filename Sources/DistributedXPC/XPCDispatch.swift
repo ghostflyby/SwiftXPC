@@ -60,6 +60,15 @@ private func parseMethodSuffix(_ identifier: String, from start: String.Index) -
   let baseEnd = identifier.index(pos, offsetBy: baseLen)
   let baseName = String(identifier[pos..<baseEnd])
   pos = baseEnd
+  // Swift mangling spells an unnamed first parameter as a literal `_` at the
+  // start of the label sequence (e.g. `12selectSchema_3for` for
+  // `selectSchema(_ schemaID: String, for sessionID: RimeSessionID)`).
+  // `@XPCService` metadata keys omit unnamed labels, so skip it here as well;
+  // otherwise every method with an unnamed first parameter parses to
+  // `method()` and misses its whitelist entry.
+  if pos < identifier.endIndex, identifier[pos] == "_" {
+    pos = identifier.index(after: pos)
+  }
   var labels: [String] = []
   while pos < identifier.endIndex, identifier[pos].isNumber {
     digits = ""
@@ -80,6 +89,29 @@ private func parseMethodSuffix(_ identifier: String, from start: String.Index) -
   }
   if labels.isEmpty { return "\(baseName)()" }
   return "\(baseName)(\(labels.map { "\($0):" }.joined()))"
+}
+
+/// Looks up the metadata entry for a parsed method key, falling back to
+/// base-name prefix matching.
+///
+/// `parseTargetIdentifier` is a heuristic and cannot decode Swift's
+/// word-substitution compression: a label whose word already occurs in the
+/// identifier (e.g. the label `state` inside
+/// `stateLabel(for:state:abbreviated:in:)`, mangled `…3for0E011abbreviated2in…`)
+/// is spelled as a substitution marker and derails exact-key parsing. The base
+/// name itself is always spelled out, so a unique base match — or any match
+/// for overload families that agree on their typed-throws error — is safe;
+/// truly ambiguous families degrade to no error metadata (the caller's own
+/// typed error is used when it conforms to `XPCMarshal`).
+@available(macOS 15, *)
+func lookupMetadata(
+  forMethod method: String, in table: [String: XPCDistributedTargetMetadata]
+) -> XPCDistributedTargetMetadata? {
+  if let exact = table[method] { return exact }
+  let base = method.split(separator: "(", maxSplits: 1).first.map(String.init) ?? method
+  let matches = table.filter { $0.key.hasPrefix("\(base)(") }.map(\.value)
+  if matches.count == 1 { return matches[0] }
+  return matches.first(where: { $0.thrownErrorType != nil }) ?? matches.first
 }
 
 /// Marks an actor whose distributed methods are dispatchable over XPC.

@@ -190,7 +190,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     // unknown targets fail in executeDistributedTarget instead.
     let metadataTable = (type(of: actor) as? any XPCDistributedTargetMetadataProviding.Type)?
       .xpcDistributedTargetMetadata
-    if let metadataTable, !metadataTable.isEmpty, metadataTable[message.method] == nil {
+    if let metadataTable, !metadataTable.isEmpty,
+      lookupMetadata(forMethod: message.method, in: metadataTable) == nil
+    {
       throw XPCDispatchError.unknownTarget(message.method)
     }
     var decoder = XPCInvocationDecoder(array: message.arguments)
@@ -222,7 +224,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     if errorType is any ErrorXPCMarshal.Type { return nil }
     guard let metadataProvider = actorType as? any XPCDistributedTargetMetadataProviding.Type
     else { return nil }
-    return metadataProvider.xpcDistributedTargetMetadata[method]?.thrownErrorType
+    return lookupMetadata(forMethod: method, in: metadataProvider.xpcDistributedTargetMetadata)?
+      .thrownErrorType
   }
 
   func handleIncomingMessage<Act>(_ object: XPCObject, on actor: Act) async throws

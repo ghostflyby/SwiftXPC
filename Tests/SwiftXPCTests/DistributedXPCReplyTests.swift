@@ -5,6 +5,7 @@ import SwiftXPC
 import Testing
 
 @testable import DistributedXPC
+@testable import SwiftXPC
 
 @available(macOS 15, *)
 @XPCMarshal
@@ -202,4 +203,29 @@ distributed actor SampleReplyActorWithoutMetadata {
 
   #expect(decoded.kind == .returnValue)
   #expect(try String.unmarshal(from: decoded.payload!) == "payload")
+}
+
+@available(macOS 15, *)
+@Test func ReplyEnvelopeRoundTripsNullPayload() throws {
+  guard #available(macOS 15, *) else { return }
+  // Optional.none 返回值经 onReturn 编码为 xpc_null 载荷;线缆往返后必须仍是
+  // "有载荷且为 null",不得折叠成"无载荷"(否则客户端报 missingPayload)。
+  let envelope = XPCReplyEnvelope(
+    kind: .returnValue,
+    payload: XPCObject(xpc_object: SwiftXPC.xpcNullCreate()))
+
+  let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
+  #expect(decoded.kind == .returnValue)
+  #expect(decoded.payload != nil)
+  #expect(SwiftXPC.xpcGetType(decoded.payload!.xpc_object) == SwiftXPC.xpcTypeNull)
+}
+
+@available(macOS 15, *)
+@Test func ReplyEnvelopeRoundTripsAbsentPayload() throws {
+  guard #available(macOS 15, *) else { return }
+  let envelope = XPCReplyEnvelope(kind: .returnVoid)
+
+  let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
+  #expect(decoded.kind == .returnVoid)
+  #expect(decoded.payload == nil)
 }

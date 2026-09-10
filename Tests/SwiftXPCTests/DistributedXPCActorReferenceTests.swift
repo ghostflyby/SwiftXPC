@@ -1,13 +1,11 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
-import Dispatch
 import Distributed
 @testable import DistributedXPC
 import SwiftXPC
 import SwiftXPCMacros
 import Synchronization
 import Testing
-import XPC
 
 @available(macOS 15, *)
 private final class MessageStore: @unchecked Sendable {
@@ -67,48 +65,6 @@ distributed actor ChannelRoot: XPCRootActor {
   }
 }
 
-@available(macOS 15, *)
-private final class RootChannelFixture: @unchecked Sendable {
-  let listener: XPCConnection
-  let client: XPCConnection
-  let server: XPCRootActorServer<ChannelRoot>
-  let watchdog: DispatchWorkItem
-
-  init(listener: XPCConnection, client: XPCConnection, server: XPCRootActorServer<ChannelRoot>) {
-    self.listener = listener
-    self.client = client
-    self.server = server
-    watchdog = DispatchWorkItem {
-      client.cancel()
-      listener.cancel()
-      server.cancel()
-    }
-    DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
-  }
-
-  deinit {
-    watchdog.cancel()
-    client.cancel()
-    listener.cancel()
-    server.cancel()
-  }
-}
-
-@available(macOS 15, *)
-private func makeRootChannel() throws -> RootChannelFixture {
-  let listener = XPCConnection(name: nil)
-  let server = XPCRootActorServer(ChannelRoot.self)
-
-  listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    server.accept(XPCConnection(xpc_object: object.xpc_object))
-  }
-  listener.activate()
-
-  let client = try XPCConnection.unmarshal(from: listener.marshal())
-  return RootChannelFixture(listener: listener, client: client, server: server)
-}
-
 @Test func DirectLocalActorReferenceRoundTrip() async throws {
   guard #available(macOS 15, *) else { return }
   let system = XPCDistributedActorSystem(connection: makeIdleConnection())
@@ -122,18 +78,18 @@ private func makeRootChannel() throws -> RootChannelFixture {
 
 @Test func RootBootstrapReturnsRemoteRoot() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeRootChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ChannelRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ChannelRoot.self)
+  defer { channel.close() }
+  let root = try ChannelRoot.connect(using: channel.client)
 
   #expect(try await root.ping() == "root")
 }
 
 @Test func RootReturnsActorOnIndependentChannel() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeRootChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ChannelRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ChannelRoot.self)
+  defer { channel.close() }
+  let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
 
   #expect(try await worker.greet("World") == "Hello, World!")
@@ -141,9 +97,9 @@ private func makeRootChannel() throws -> RootChannelFixture {
 
 @Test func ActorParameterProvidesReverseCallbackChannel() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeRootChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ChannelRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ChannelRoot.self)
+  defer { channel.close() }
+  let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
   let messages = MessageStore()
   let callbackSystem = XPCDistributedActorSystem(connection: makeIdleConnection())
@@ -156,9 +112,9 @@ private func makeRootChannel() throws -> RootChannelFixture {
 
 @Test func RootProxyExportIsRejected() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeRootChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ChannelRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ChannelRoot.self)
+  defer { channel.close() }
+  let root = try ChannelRoot.connect(using: channel.client)
 
   do {
     // The root channel belongs to this client; it has no stored wire to
@@ -172,9 +128,9 @@ private func makeRootChannel() throws -> RootChannelFixture {
 
 @Test func InvalidatingChildChannelDoesNotInvalidateRoot() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeRootChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ChannelRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ChannelRoot.self)
+  defer { channel.close() }
+  let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
 
   worker.actorSystem.connection.cancel()
@@ -189,9 +145,9 @@ private func makeRootChannel() throws -> RootChannelFixture {
 
 @Test func InvalidatingRootCascadesToChildExports() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeRootChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ChannelRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ChannelRoot.self)
+  defer { channel.close() }
+  let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
 
   root.actorSystem.connection.cancel()

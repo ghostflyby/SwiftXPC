@@ -53,15 +53,19 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
 
   init(
     _ rootType: Root.Type,
-    shouldAccept: (@Sendable (XPCConnection) -> Bool)? = nil,
+    peerCodeSigningRequirement: String? = nil,
+    shouldAccept: (@Sendable (XPCConnection) throws -> Bool)? = nil,
     onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil
+    onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil,
+    onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil
   ) throws {
     let listener = XPCConnection(name: nil)
     let server = XPCRootActorServer<Root>(
-      shouldAccept: shouldAccept ?? { _ in true },
+      peerCodeSigningRequirement: peerCodeSigningRequirement,
+      shouldAccept: shouldAccept,
       onPeerAccept: onPeerAccept,
-      onPeerEnd: onPeerEnd
+      onPeerEnd: onPeerEnd,
+      onPeerReject: onPeerReject
     )
     let serverPeer = ServerPeerBox()
     listener.setEventHandler { object in

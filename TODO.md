@@ -471,6 +471,9 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
 - 上游欠账（xpc_main 模型）：listener 由 `xpc_main` 内部自建、拿不到，listener 级
   "设一次、全局内核强制"不可行；逐 peer 是该模型下的完全能力。
 - [ ] `XPCActorReference` 反向回调通道（模块内 listener）支持 requirement：鉴别回拨的服务。
+- [ ] reply 路径的 `peerCodeSigningRequirement` 映射目前 15 门控；14.4 的 entitlement
+  requirement 安装 API 也能触发同一错误常量，14.4 上该错误暂不类型化（按 payload 解码失败
+  浮出）。待整体评估本包对 requirement 家族的可用性门控后统一放宽。
 
 ### P2（现代 API 代际与能力补全）
 

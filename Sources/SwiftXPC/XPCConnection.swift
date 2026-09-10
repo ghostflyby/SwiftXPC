@@ -223,9 +223,9 @@ extension XPCConnection {
     if #available(macOS 15.0, *),
       xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT)
     {
-      // Gated at 15 to match the installer (`setPeerCodeSigningRequirement`):
-      // requirements can only be installed on macOS 15+, so earlier replies
-      // can never carry this error.
+      // Kept at 15 to match this package's existing gating of this signal
+      // (`route`); the 14.4 entitlement installers can also produce this
+      // error, which stays unmapped to a typed case on 14.4.
       return .peerCodeSigningRequirement
     }
     return nil

@@ -240,3 +240,14 @@ private func makeSystem() -> XPCDistributedActorSystem {
   // be swallowed as a parameter label.
   #expect(parseTargetIdentifier("$s4demo8GreeterC5greet4name4NoteYT") == "greet(name:)")
 }
+
+@Test func ParseTargetIdentifierUnnamedFirstParameter() {
+  guard #available(macOS 15, *) else { return }
+  // An unnamed first parameter is spelled `_` in the mangled label sequence
+  // (`12selectSchema_3for`); it must be skipped, not parsed as the whole
+  // label list — otherwise the key becomes "selectSchema()" and misses the
+  // `@XPCService` metadata entry "selectSchema(for:)".
+  let identifier =
+    "$s7RimeKit0A11ServiceRootC12selectSchema_3forSbSS_AA0A9SessionIDVtYaAA0A5ErrorOYKF"
+  #expect(parseTargetIdentifier(identifier) == "selectSchema(for:)")
+}

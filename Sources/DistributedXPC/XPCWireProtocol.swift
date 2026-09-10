@@ -41,7 +41,6 @@ public enum XPCReplyKind: Sendable, Hashable, Equatable {
 }
 
 @available(macOS 13.0, *)
-@XPCMarshal
 struct XPCReplyEnvelope: Sendable {
   public let version: UInt64
   public let kind: XPCReplyKind
@@ -58,12 +57,56 @@ struct XPCReplyEnvelope: Sendable {
   }
 }
 
+// 手写线缆编解码而非 `@XPCMarshal`:`payload: XPCObject?` 必须区分三态——
+// 无载荷(`.returnVoid`)、载荷为 null(返回值为 `Optional.none`)与普通载荷;
+// 宏生成的可选属性解码把"present-but-null"折叠成 nil,使任何 nil Optional
+// 返回值在客户端表现为 `missingPayload(.returnValue)`。
 @available(macOS 13.0, *)
-extension XPCReplyEnvelope {
+extension XPCReplyEnvelope: XPCMarshal {
   func write(to dictionary: inout XPCDictionary) throws(XPCMarshalError) {
     dictionary["version"] = try version.marshal()
     dictionary["kind"] = try kind.marshal()
-    dictionary["payload"] = payload
+    dictionary["hasPayload"] = try (payload != nil).marshal()
+    if let payload {
+      dictionary["payload"] = payload
+    } else {
+      dictionary.removeValue(forKey: "payload")
+    }
+  }
+
+  func marshal() throws(XPCMarshalError) -> XPCObject {
+    var dictionary = XPCDictionary()
+    try write(to: &dictionary)
+    return XPCObject(xpc_object: dictionary.xpc_object)
+  }
+
+  static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCReplyEnvelope {
+    let kindType = SwiftXPC.xpcGetType(object.xpc_object)
+    guard kindType == SwiftXPC.xpcTypeDictionary else {
+      throw XPCMarshalError.typeMismatch(
+        expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeDictionary)),
+        actual: String(cString: SwiftXPC.xpcTypeGetName(kindType))
+      )
+    }
+    let dictionary = XPCDictionary(xpc_object: object.xpc_object)
+    guard let versionObject = dictionary["version"] else {
+      throw XPCMarshalError.missingKey("version")
+    }
+    let version = try UInt64.unmarshal(from: versionObject)
+    guard let kindObject = dictionary["kind"] else {
+      throw XPCMarshalError.missingKey("kind")
+    }
+    let kind = try XPCReplyKind.unmarshal(from: kindObject)
+
+    let hasPayload: Bool
+    if let hasPayloadObject = dictionary["hasPayload"] {
+      hasPayload = try Bool.unmarshal(from: hasPayloadObject)
+    } else {
+      // 旧格式(无 hasPayload 标记):payload 键存在与否即载荷有无。
+      hasPayload = dictionary["payload"] != nil
+    }
+    let payload = hasPayload ? dictionary["payload"] : nil
+    return XPCReplyEnvelope(version: version, kind: kind, payload: payload)
   }
 }
 

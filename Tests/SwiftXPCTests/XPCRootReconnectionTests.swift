@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
-import Dispatch
 import Distributed
 @testable import DistributedXPC
 import Synchronization
 import SwiftXPC
+import SwiftXPCMacros
 import Testing
-import XPC
 
 @available(macOS 15, *)
 private final class AttemptCounter: @unchecked Sendable {
@@ -30,11 +29,12 @@ private final class AttemptCounter: @unchecked Sendable {
 
 @Test func RetryingSucceedsAfterTransientConnectionErrors() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try ReconnectFixture()
-  defer { fixture.close() }
+  let channel = try RootChannel(ReconnectRoot.self)
+  let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
+  defer { handle.close(); channel.close() }
 
   let counter = AttemptCounter()
-  let result = try await fixture.handle.retrying(.resilient) { _ -> String in
+  let result = try await handle.retrying(.resilient) { _ -> String in
     try await counter.failing(2) { attempt in "attempt-\(attempt)" }
   }
   #expect(result == "attempt-3")
@@ -42,13 +42,14 @@ private final class AttemptCounter: @unchecked Sendable {
 
 @Test func RetryingDoesNotRetryBusinessErrors() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try ReconnectFixture()
-  defer { fixture.close() }
+  let channel = try RootChannel(ReconnectRoot.self)
+  let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
+  defer { handle.close(); channel.close() }
 
   struct BusinessError: Error {}
   let attempts = Mutex<Int>(0)
   do {
-    _ = try await fixture.handle.retrying(.resilient) { _ -> Int in
+    _ = try await handle.retrying(.resilient) { _ -> Int in
       attempts.withLock { $0 += 1 }
       throw BusinessError()
     }
@@ -60,14 +61,15 @@ private final class AttemptCounter: @unchecked Sendable {
 
 @Test func RetryingExhaustsAttemptsAndThrowsLastError() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try ReconnectFixture()
-  defer { fixture.close() }
+  let channel = try RootChannel(ReconnectRoot.self)
+  let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
+  defer { handle.close(); channel.close() }
 
   let policy = XPCRetryPolicy(
     maxAttempts: 3, initialBackoff: .milliseconds(1), multiplier: 1, maxBackoff: .milliseconds(1))
   let attempts = Mutex<Int>(0)
   do {
-    _ = try await fixture.handle.retrying(policy) { _ -> Never in
+    _ = try await handle.retrying(policy) { _ -> Never in
       attempts.withLock { $0 += 1 }
       throw XPCConnection.ConnectionError.invalid
     }
@@ -81,19 +83,20 @@ private final class AttemptCounter: @unchecked Sendable {
 
 @Test func DisconnectEventFiresWhenServicePeerDies() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try ReconnectFixture()
-  defer { fixture.close() }
+  let channel = try RootChannel(ReconnectRoot.self)
+  let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
+  defer { handle.close(); channel.close() }
 
   // Root call works through the handle.
-  let pong = try await fixture.handle.retrying { _ in
-    try await fixture.handle.root.ping()
+  let pong = try await handle.retrying { _ in
+    try await handle.root.ping()
   }
   #expect(pong == "root")
 
   // Kill the server-side root channel; the client observes disconnection.
-  fixture.killServerPeer()
+  channel.killServerPeer()
 
-  let event = await nextEvent(from: fixture.handle.events, expecting: .disconnected)
+  let event = await nextEvent(from: handle.events, expecting: .disconnected)
   #expect(event == .disconnected)
 }
 
@@ -102,25 +105,13 @@ private final class AttemptCounter: @unchecked Sendable {
   let accepted = Mutex<Int>(0)
   let ended = Mutex<Int>(0)
 
-  let listener = XPCConnection(name: nil)
-  let server = XPCRootActorServer(
+  let channel = try RootChannel(
     ReconnectRoot.self,
-    shouldAccept: { _ in true },
     onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
     onPeerEnd: { _ in ended.withLock { $0 += 1 } }
   )
-  listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    server.accept(XPCConnection(xpc_object: object.xpc_object))
-  }
-  listener.activate()
-
-  let client = try XPCConnection.unmarshal(from: listener.marshal())
-  let handle = try XPCRootConnection<ReconnectRoot>.connect(using: client)
-  defer {
-    handle.close()
-    listener.cancel()
-  }
+  let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
+  defer { handle.close(); channel.close() }
 
   _ = try await handle.root.ping()
   let deadline = ContinuousClock.now + .seconds(2)
@@ -129,7 +120,7 @@ private final class AttemptCounter: @unchecked Sendable {
   }
   #expect(accepted.withLock { $0 } >= 1)
 
-  client.cancel()
+  channel.client.cancel()
   deadlineMillis: for _ in 0..<100 {
     if ended.withLock({ $0 }) >= 1 { break deadlineMillis }
     try await Task.sleep(for: .milliseconds(20))
@@ -137,49 +128,7 @@ private final class AttemptCounter: @unchecked Sendable {
   #expect(ended.withLock { $0 } >= 1)
 }
 
-// MARK: - Fixture
-
-private final class PeerBox: @unchecked Sendable {
-  var peer: XPCConnection?
-}
-
-@available(macOS 15, *)
-private final class ReconnectFixture: @unchecked Sendable {
-  let handle: XPCRootConnection<ReconnectRoot>
-  let listener: XPCConnection
-  let server: XPCRootActorServer<ReconnectRoot>
-  private let peerBox: PeerBox
-
-  init() throws {
-    let listener = XPCConnection(name: nil)
-    let serverBox = Mutex<XPCRootActorServer<ReconnectRoot>?>(nil)
-    let peerBox = PeerBox()
-    listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      let peer = XPCConnection(xpc_object: object.xpc_object)
-      peerBox.peer = peer
-      serverBox.withLock { $0?.accept(peer) }
-    }
-    let created = XPCRootActorServer(ReconnectRoot.self)
-    serverBox.withLock { $0 = created }
-    self.server = created
-    self.listener = listener
-    listener.activate()
-
-    let client = try XPCConnection.unmarshal(from: listener.marshal())
-    self.handle = try XPCRootConnection<ReconnectRoot>.connect(using: client)
-    self.peerBox = peerBox
-  }
-
-  func killServerPeer() {
-    peerBox.peer?.cancel()
-  }
-
-  func close() {
-    handle.close()
-    listener.cancel()
-  }
-}
+// MARK: - Root channel
 
 @available(macOS 15, *)
 @XPCService

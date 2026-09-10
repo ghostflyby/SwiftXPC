@@ -4,9 +4,7 @@ import Distributed
 @testable import DistributedXPC
 import SwiftXPC
 import SwiftXPCMacros
-import Synchronization
 import Testing
-import XPC
 
 @available(macOS 15, *)
 @XPCService
@@ -32,53 +30,11 @@ distributed actor ForwardRoot: XPCRootActor {
   }
 }
 
-@available(macOS 15, *)
-private final class ForwardChannelFixture: @unchecked Sendable {
-  let listener: XPCConnection
-  let client: XPCConnection
-  let server: XPCRootActorServer<ForwardRoot>
-  let watchdog: DispatchWorkItem
-
-  init(listener: XPCConnection, client: XPCConnection, server: XPCRootActorServer<ForwardRoot>) {
-    self.listener = listener
-    self.client = client
-    self.server = server
-    watchdog = DispatchWorkItem {
-      client.cancel()
-      listener.cancel()
-      server.cancel()
-    }
-    DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
-  }
-
-  deinit {
-    watchdog.cancel()
-    client.cancel()
-    listener.cancel()
-    server.cancel()
-  }
-}
-
-@available(macOS 15, *)
-private func makeForwardChannel() throws -> ForwardChannelFixture {
-  let listener = XPCConnection(name: nil)
-  let server = XPCRootActorServer(ForwardRoot.self)
-
-  listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    server.accept(XPCConnection(xpc_object: object.xpc_object))
-  }
-  listener.activate()
-
-  let client = try XPCConnection.unmarshal(from: listener.marshal())
-  return ForwardChannelFixture(listener: listener, client: client, server: server)
-}
-
 @Test func ForwardedProxyRoundTripsThroughOwnerEndpoint() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeForwardChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ForwardRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ForwardRoot.self)
+  defer { channel.close() }
+  let root = try ForwardRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
 
   // The client-side proxy is sent back to the server and returned; each hop
@@ -91,9 +47,9 @@ private func makeForwardChannel() throws -> ForwardChannelFixture {
 
 @Test func SameProxyForwardedTwiceServesParallelPeers() async throws {
   guard #available(macOS 15, *) else { return }
-  let fixture = try makeForwardChannel()
-  defer { withExtendedLifetime(fixture) {} }
-  let root = try ForwardRoot.connect(using: fixture.client)
+  let channel = try RootChannel(ForwardRoot.self)
+  defer { channel.close() }
+  let root = try ForwardRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
 
   let first = try await root.forward(worker: worker)
@@ -113,21 +69,13 @@ private func makeForwardChannel() throws -> ForwardChannelFixture {
 
 @Test func RootServerRejectsPeerBeforeActivation() async throws {
   guard #available(macOS 15, *) else { return }
-  let listener = XPCConnection(name: nil)
-  let server = XPCRootActorServer(ForwardRoot.self, shouldAccept: { _ in false })
-  listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    server.accept(XPCConnection(xpc_object: object.xpc_object))
-  }
-  listener.activate()
-
-  let client = try XPCConnection.unmarshal(from: listener.marshal())
-  client.setEventHandler { _ in }
-  client.activate()
-  defer { client.cancel(); listener.cancel() }
+  let channel = try RootChannel(ForwardRoot.self, shouldAccept: { _ in false })
+  channel.client.setEventHandler { _ in }
+  channel.client.activate()
+  defer { channel.close() }
 
   do {
-    _ = try await client.send(message: XPCDictionary())
+    _ = try await channel.client.send(message: XPCDictionary())
     Issue.record("Expected rejected peer send to fail")
   } catch XPCConnection.ConnectionError.interrupted {
     // expected: the server cancels rejected peers, which the client observes

@@ -104,6 +104,13 @@ private func makeOverloadSystem() -> XPCDistributedActorSystem {
 
   #expect(try await proxy.call(42) == "int:42")
   #expect(try await proxy.call("s") == "string:s")
+
+  // The ambiguous `save(_:)` pair shares a degraded `.init()` entry; the
+  // whitelist passes both and each typed error decodes via the caller's own
+  // conformance.
+  #expect(try await proxy.call(value: 7) == "labeled:7")
+  try await proxy.save(1)
+  try await proxy.save("s")
 }
 
 // MARK: - Distinct keys must not be affected

@@ -223,6 +223,9 @@ extension XPCConnection {
     if #available(macOS 15.0, *),
       xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT)
     {
+      // Gated at 15 to match the installer (`setPeerCodeSigningRequirement`):
+      // requirements can only be installed on macOS 15+, so earlier replies
+      // can never carry this error.
       return .peerCodeSigningRequirement
     }
     return nil
@@ -253,7 +256,7 @@ extension XPCConnection {
     throws(ConnectionError)
     -> XPCObject
   {
-    let r = xpc_connection_send_message_with_reply_sync(message.xpc_object, message.xpc_object)
+    let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object)
     if let error = Self.connectionError(forReply: r) {
       throw error
     }
@@ -321,8 +324,6 @@ extension XPCConnection {
 @available(macOS 14.4, *)
 extension XPCConnection {
   /// The reason a peer requirement could not be installed on this connection.
-  /// The reason a peer requirement could not be installed on this
-  /// connection.
   public struct PeerRequirementError: Error, Sendable {
     /// The raw status returned by XPC (errno-style, e.g. `ENOTSUP` on
     /// platforms without code signing requirement support).

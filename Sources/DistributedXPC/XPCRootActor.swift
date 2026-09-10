@@ -51,10 +51,13 @@ where Root: XPCRootActor {
   ///     `onPeerReject`: enforcement never silently degrades to none.
   ///   - shouldAccept: invoked with each incoming peer connection after the
   ///     requirement is installed, still *before activation* — this is the
-  ///     audit window for `connection.pid`/`connection.euid` checks and for
-  ///     per-peer calls to the `setPeer*Requirement` family. Returning
-  ///     `false` rejects the peer; throwing rejects the peer and reports the
-  ///     error to `onPeerReject`.
+  ///     audit window for `connection.pid`/`connection.euid` checks. It may
+  ///     install a requirement via the `setPeer*Requirement` family, but a
+  ///     connection accepts at most one member of that family (libxpc traps
+  ///     on a second install), so when `peerCodeSigningRequirement` is set
+  ///     the hook must not install another. Returning `false` rejects the
+  ///     peer; throwing rejects the peer and reports the error to
+  ///     `onPeerReject`.
   ///   - onPeerAccept: invoked once a peer is bound to a fresh root session
   ///     (before activation). Useful for audit logging via `connection.pid`.
   ///   - onPeerEnd: invoked when an accepted peer disconnects — including
@@ -207,8 +210,9 @@ extension XPCRootActor {
   /// connections die permanently with the peer.
   ///
   /// `peerCodeSigningRequirement` authenticates the service and must be
-  /// installed before activation: if `connection` was already activated,
-  /// installing it fails and `connect` throws.
+  /// installed on a *not-yet-activated* connection. On an already-activated
+  /// connection the install reports success but the channel then fails to
+  /// establish (hangs or interrupts) — pass a fresh connection.
   public static func connect(
     using connection: XPCConnection,
     peerCodeSigningRequirement: String? = nil

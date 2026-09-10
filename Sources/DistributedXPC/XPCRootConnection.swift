@@ -133,8 +133,9 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   /// connections die permanently with the peer.
   ///
   /// `peerCodeSigningRequirement` authenticates the service and must be
-  /// installed before activation: if `connection` was already activated,
-  /// installing it fails and `connect` throws.
+  /// installed on a *not-yet-activated* connection. On an already-activated
+  /// connection the install reports success but the channel then fails to
+  /// establish (hangs or interrupts) — pass a fresh connection.
   public static func connect(
     using connection: XPCConnection,
     peerCodeSigningRequirement: String? = nil
@@ -159,6 +160,8 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
       do {
         return try await operation(root)
       } catch let error as XPCConnection.ConnectionError {
+        // Authentication failure is terminal, never a restart in progress.
+        if case .peerCodeSigningRequirement = error { throw error }
         if attempt >= policy.maxAttempts { throw error }
       }
       let delay = policy.delaySeconds(beforeAttempt: attempt + 1)

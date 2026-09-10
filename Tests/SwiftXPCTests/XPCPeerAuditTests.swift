@@ -166,6 +166,20 @@ private func waitUntil(
   #expect(recorded == nil)
 }
 
+/// Regression: the sync `send` must pass the connection itself to
+/// `xpc_connection_send_message_with_reply_sync`; passing the message twice
+/// is a libxpc programming error that traps the process.
+@Test func SyncSendSurfacesInterruptionFromRejectedPeer() throws {
+  guard #available(macOS 15, *) else { return }
+  let channel = try RootChannel(AuditRoot.self, shouldAccept: { _ in false })
+  channel.client.setEventHandler { _ in }
+  channel.client.activate()
+
+  #expect(throws: XPCConnection.ConnectionError.interrupted) {
+    _ = try channel.client.send(message: XPCDictionary())
+  }
+}
+
 // MARK: - Client-side service authentication
 
 @Test func MatchingClientRequirementAllowsRootCalls() async throws {

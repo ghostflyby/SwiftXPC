@@ -265,10 +265,17 @@ where Root: XPCRootActor {
 /// Wraps a delegate so a hosted cooperative shutdown ends the process:
 /// after the wrapped `serviceWillShutdown` returns, `exit(0)` retires the
 /// service. This is what makes the shutdown a *process* shutdown — without
-/// it a `-> Never` host would keep running forever.
+/// it a `-> Never` host would keep running forever. Internal so tests can
+/// verify the forwarding and hook-then-exit ordering with an injected exit.
 @available(macOS 15, *)
-private struct ExitOnShutdown<Base: XPCServiceDelegate>: XPCServiceDelegate {
+struct ExitOnShutdown<Base: XPCServiceDelegate>: XPCServiceDelegate {
   let base: Base
+  let exitProcess: @Sendable () -> Void
+
+  init(base: Base, exitProcess: @escaping @Sendable () -> Void = { exit(0) }) {
+    self.base = base
+    self.exitProcess = exitProcess
+  }
 
   var peerCodeSigningRequirement: String? { base.peerCodeSigningRequirement }
 
@@ -294,7 +301,7 @@ private struct ExitOnShutdown<Base: XPCServiceDelegate>: XPCServiceDelegate {
 
   func serviceWillShutdown() {
     base.serviceWillShutdown()
-    exit(0)
+    exitProcess()
   }
 
   func makeRoot(for system: XPCDistributedActorSystem) -> Base.Root {

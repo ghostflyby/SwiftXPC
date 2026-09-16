@@ -35,6 +35,10 @@ public protocol XPCServiceDelegate<Root>: Sendable {
   /// (malformed string, unsupported platform) rejects the peer and reports
   /// the error to `didRejectPeer(_:error:)`: enforcement never silently
   /// degrades to none.
+  ///
+  /// Read once per accepted peer: a class-type conformer may therefore vary
+  /// the requirement between peers, while value-type conformers (such as
+  /// `XPCServiceConfiguration`) snapshot it at configuration time.
   var peerCodeSigningRequirement: String? { get }
 
   /// Audit window for each incoming peer connection, invoked after the
@@ -68,8 +72,8 @@ public protocol XPCServiceDelegate<Root>: Sendable {
   /// Invoked by the hosted `xpcMain(_:exitOnShutdown:)` entry point once the
   /// server exists, before the event loop starts — retain `server` here to
   /// reach `requestShutdown()` from outside the actor graph (e.g. a signal
-  /// handler). Standalone `XPCRootActorServer` instances never fire it; the
-  /// owner already holds the reference.
+  /// handler). Runs on the main thread. Standalone `XPCRootActorServer`
+  /// instances never fire it; the owner already holds the reference.
   func serviceWillStart(server: XPCRootActorServer<Root>)
 
   /// Invoked exactly once after a cooperative shutdown finished tearing
@@ -84,7 +88,9 @@ public protocol XPCServiceDelegate<Root>: Sendable {
   /// Creates the per-session root actor served on an accepted peer.
   /// Only used for roots that are *not* `XPCServiceExit`: singleton roots
   /// are created by the root type itself (its `shared` property), so a
-  /// customized `makeRoot` never runs there.
+  /// customized `makeRoot` never runs there — a raw conformer overriding it
+  /// for a singleton root gets a silent no-op, while the bundled
+  /// `XPCServiceConfiguration` traps at initialization.
   func makeRoot(for system: XPCDistributedActorSystem) -> Root
 }
 
@@ -123,28 +129,42 @@ extension XPCServiceDelegate {
 @available(macOS 15, *)
 public struct XPCServiceConfiguration<Root: XPCRootActor>: XPCServiceDelegate {
   /// See `XPCServiceDelegate.peerCodeSigningRequirement`.
-  public var peerCodeSigningRequirement: String?
+  public let peerCodeSigningRequirement: String?
 
   /// See `XPCServiceDelegate.shouldAcceptPeer(_:)`.
-  public var shouldAccept: (@Sendable (XPCConnection) throws -> Bool)?
+  public let shouldAccept: (@Sendable (XPCConnection) throws -> Bool)?
 
   /// See `XPCServiceDelegate.didAcceptPeer(_:)`.
-  public var onPeerAccept: (@Sendable (XPCConnection) -> Void)?
+  public let onPeerAccept: (@Sendable (XPCConnection) -> Void)?
 
   /// See `XPCServiceDelegate.peerDidEnd(_:)`.
-  public var onPeerEnd: (@Sendable (XPCConnection) -> Void)?
+  public let onPeerEnd: (@Sendable (XPCConnection) -> Void)?
 
   /// See `XPCServiceDelegate.didRejectPeer(_:error:)`.
-  public var onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)?
+  public let onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)?
 
   /// See `XPCServiceDelegate.serviceWillStart(server:)`.
-  public var onStart: (@Sendable (XPCRootActorServer<Root>) -> Void)?
+  public let onStart: (@Sendable (XPCRootActorServer<Root>) -> Void)?
 
   /// See `XPCServiceDelegate.serviceWillShutdown()`.
-  public var onShutdown: (@Sendable () -> Void)?
+  public let onShutdown: (@Sendable () -> Void)?
 
   /// See `XPCServiceDelegate.makeRoot(for:)`.
-  public var rootFactory: (@Sendable (XPCDistributedActorSystem) -> Root)?
+  public let rootFactory: (@Sendable (XPCDistributedActorSystem) -> Root)?
+
+  /// The programming-error message for `makeRoot` on an `XPCServiceExit`
+  /// root, or `nil` when the combination is valid. Internal seam so tests
+  /// can pin the rule without trapping the test process.
+  static func makeRootConflict(
+    rootType: Root.Type,
+    makeRoot: (@Sendable (XPCDistributedActorSystem) -> Root)?
+  ) -> String? {
+    guard makeRoot != nil, Root.self is any XPCServiceExit.Type else { return nil }
+    return
+      "XPCServiceConfiguration.makeRoot is unsupported for XPCServiceExit roots:"
+      + " the singleton is created by the root type's shared property,"
+      + " per-peer construction never runs."
+  }
 
   /// - Parameters:
   ///   - peerCodeSigningRequirement: `nil` installs nothing.
@@ -162,11 +182,8 @@ public struct XPCServiceConfiguration<Root: XPCRootActor>: XPCServiceDelegate {
     onShutdown: (@Sendable () -> Void)? = nil,
     makeRoot: (@Sendable (XPCDistributedActorSystem) -> Root)? = nil
   ) {
-    if makeRoot != nil, Root.self is any XPCServiceExit.Type {
-      preconditionFailure(
-        "XPCServiceConfiguration.makeRoot is unsupported for XPCServiceExit roots:"
-          + " the singleton is created by the root type's shared property,"
-          + " per-peer construction never runs.")
+    if let message = Self.makeRootConflict(rootType: Root.self, makeRoot: makeRoot) {
+      preconditionFailure(message)
     }
     self.peerCodeSigningRequirement = peerCodeSigningRequirement
     self.shouldAccept = shouldAccept

@@ -44,8 +44,16 @@ public final class XPCRootTestChannel<Root: XPCRootActor>: @unchecked Sendable {
   private final class RootBox: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Root?
-    func get() -> Root? { lock.withLock { value } }
-    func setIfEmpty(_ newValue: Root) { lock.withLock { if value == nil { value = newValue } } }
+    /// Resolves through `make` while holding the lock, so concurrent first
+    /// calls produce exactly one proxy; later calls return the cached one.
+    func getOrCreate(_ make: () throws -> Root) throws -> Root {
+      lock.lock()
+      defer { lock.unlock() }
+      if let value { return value }
+      let newValue = try make()
+      value = newValue
+      return newValue
+    }
   }
   private let rootBox = RootBox()
 
@@ -72,14 +80,11 @@ public final class XPCRootTestChannel<Root: XPCRootActor>: @unchecked Sendable {
   }
 
   /// Resolves the root actor over the channel, activating the client
-  /// connection. Idempotent: later calls return the same proxy. Throws when
-  /// the connection or resolution fails — e.g. after `close()` or a
-  /// `dropServerPeer()`.
+  /// connection. Idempotent — later calls, including concurrent ones, return
+  /// the same proxy. Throws when the connection or resolution fails — e.g.
+  /// after `close()` or a `dropServerPeer()`.
   public func root() throws -> Root {
-    if let cached = rootBox.get() { return cached }
-    let root = try Root.connect(using: client)
-    rootBox.setIfEmpty(root)
-    return root
+    try rootBox.getOrCreate { try Root.connect(using: client) }
   }
 
   /// Dials a fresh, inactive client connection to the same listener, for
@@ -91,9 +96,9 @@ public final class XPCRootTestChannel<Root: XPCRootActor>: @unchecked Sendable {
 
   /// Cancels the latest accepted server-side peer, as if the service had
   /// dropped this client; the client then observes its channel going down.
-  /// A no-op while no peer has been accepted. Named-service client
-  /// connections re-establish on their next call, which is what makes this
-  /// useful for exercising restart behavior.
+  /// The channel is endpoint-based, so proxies over it die permanently with
+  /// the peer — re-resolving through `root()` cannot revive them. A no-op
+  /// while no peer has been accepted.
   public func dropServerPeer() {
     serverPeer.peer.withLock { $0 }?.cancel()
   }

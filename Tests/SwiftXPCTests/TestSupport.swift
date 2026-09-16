@@ -27,6 +27,21 @@ func makeIdleConnection() -> XPCConnection {
   return connection
 }
 
+/// Polls `condition` until it holds or the deadline passes, returning the
+/// final value. For events that race with async XPC teardown.
+func pollUntil(
+  seconds: Double = 2,
+  intervalMilliseconds: Int = 20,
+  _ condition: @Sendable () async -> Bool
+) async -> Bool {
+  let deadline = ContinuousClock.now + .seconds(seconds)
+  while ContinuousClock.now < deadline {
+    if await condition() { return true }
+    try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
+  }
+  return await condition()
+}
+
 /// An in-process XPC channel carrying real mach traffic between a server side
 /// hosted on an anonymous listener and a client side dialed from its endpoint,
 /// so root-actor tests need no launchd-managed service. It cannot exercise
@@ -57,7 +72,8 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
     shouldAccept: (@Sendable (XPCConnection) throws -> Bool)? = nil,
     onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
     onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil
+    onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil,
+    onShutdown: (@Sendable () -> Void)? = nil
   ) throws {
     let listener = XPCConnection(name: nil)
     let server = XPCRootActorServer<Root>(
@@ -65,7 +81,8 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
       shouldAccept: shouldAccept,
       onPeerAccept: onPeerAccept,
       onPeerEnd: onPeerEnd,
-      onPeerReject: onPeerReject
+      onPeerReject: onPeerReject,
+      onShutdown: onShutdown
     )
     let serverPeer = ServerPeerBox()
     listener.setEventHandler { object in

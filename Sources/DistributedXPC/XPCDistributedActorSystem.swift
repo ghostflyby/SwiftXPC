@@ -33,6 +33,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   let exportSessionsLock = Mutex<[UUID: XPCActorExportSession]>([:])
   let importedReferencesLock = Mutex<[XPCActorID: StoredActorReference]>([:])
   let invalidated = Mutex(false)
+  private let serviceShutdownHandler = Mutex<(@Sendable () -> Void)?>(nil)
   private let ownsConnection: Bool
   public let connection: XPCConnection
 
@@ -145,6 +146,26 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   }
 
   public func makeInvocationEncoder() -> InvocationEncoder { .init() }
+
+  /// Routes `requestServiceShutdown()` to the `XPCRootActorServer` that
+  /// accepted this session. Installed by the server during `accept`; never
+  /// set on client-side systems.
+  func setServiceShutdownHandler(_ handler: @escaping @Sendable () -> Void) {
+    serviceShutdownHandler.withLock { $0 = handler }
+  }
+
+  /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the
+  /// session this system belongs to; see
+  /// `XPCRootActorServer.requestShutdown()`. This is the entry point for
+  /// service-initiated retirement, e.g. from a root actor's
+  /// `distributed func shutdown()` called by a trusted client.
+  ///
+  /// A no-op on systems that host no server session — client-side systems
+  /// (root connections, imported actor references) can never shut their
+  /// service down through this path.
+  public func requestServiceShutdown() {
+    serviceShutdownHandler.withLock { $0 }?()
+  }
 
   /// Installs the connection's event plumbing. Unbound systems only ever see
   /// lifecycle error objects here (there is no actor to dispatch messages to);

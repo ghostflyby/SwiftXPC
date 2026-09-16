@@ -10,6 +10,6 @@ enum DemoService {
     guard #available(macOS 15, *) else {
       fatalError("DistributedXPCDemo service requires macOS 15 or newer.")
     }
-    distributedXPCMain(DemoRoot.self)
+    xpcMain(DemoRoot.self)
   }
 }

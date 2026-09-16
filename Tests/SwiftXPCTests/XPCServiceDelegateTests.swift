@@ -105,16 +105,13 @@ struct XPCServiceDelegateTests {
     // Plain roots may customize makeRoot.
     #expect(
       XPCServiceConfiguration<DelegateRoot>.makeRootConflict(
-        rootType: DelegateRoot.self,
         makeRoot: { system in DelegateRoot(actorSystem: system) }
       ) == nil)
     // Exit roots without a factory are fine; with one they conflict.
     #expect(
-      XPCServiceConfiguration<ExitSingletonRoot>.makeRootConflict(
-        rootType: ExitSingletonRoot.self, makeRoot: nil) == nil)
+      XPCServiceConfiguration<ExitSingletonRoot>.makeRootConflict(makeRoot: nil) == nil)
     #expect(
       XPCServiceConfiguration<ExitSingletonRoot>.makeRootConflict(
-        rootType: ExitSingletonRoot.self,
         makeRoot: { _ in ExitSingletonRoot.shared }
       ) != nil)
   }

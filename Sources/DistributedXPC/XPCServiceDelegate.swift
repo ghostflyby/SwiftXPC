@@ -156,7 +156,6 @@ public struct XPCServiceConfiguration<Root: XPCRootActor>: XPCServiceDelegate {
   /// root, or `nil` when the combination is valid. Internal seam so tests
   /// can pin the rule without trapping the test process.
   static func makeRootConflict(
-    rootType: Root.Type,
     makeRoot: (@Sendable (XPCDistributedActorSystem) -> Root)?
   ) -> String? {
     guard makeRoot != nil, Root.self is any XPCServiceExit.Type else { return nil }
@@ -182,7 +181,7 @@ public struct XPCServiceConfiguration<Root: XPCRootActor>: XPCServiceDelegate {
     onShutdown: (@Sendable () -> Void)? = nil,
     makeRoot: (@Sendable (XPCDistributedActorSystem) -> Root)? = nil
   ) {
-    if let message = Self.makeRootConflict(rootType: Root.self, makeRoot: makeRoot) {
+    if let message = Self.makeRootConflict(makeRoot: makeRoot) {
       preconditionFailure(message)
     }
     self.peerCodeSigningRequirement = peerCodeSigningRequirement

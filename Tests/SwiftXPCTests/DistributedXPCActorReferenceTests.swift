@@ -159,15 +159,21 @@ distributed actor ChannelRoot: XPCRootActor {
   }
   // The child channel dies via the server-side cascade
   // (root INVALID -> invalidate() -> session.cancel() -> peer.cancel()),
-  // which races with in-flight calls; poll instead of asserting once.
+  // which races with in-flight calls; poll instead of asserting once. The
+  // failing reply surfaces as .invalid (peer port destroyed) or .interrupted
+  // (peer cancelled gracefully, racing the reply) depending on load — both
+  // mean the channel is down, matching XPCRootConnection's documented
+  // semantics.
   let deadline = ContinuousClock.now + .seconds(2)
   while ContinuousClock.now < deadline {
     do {
       _ = try await worker.greet("closed")
     } catch XPCConnection.ConnectionError.invalid {
       return
+    } catch XPCConnection.ConnectionError.interrupted {
+      return
     } catch {
-      Issue.record("Expected .invalid, got \(error)")
+      Issue.record("Expected .invalid or .interrupted, got \(error)")
       return
     }
     try? await Task.sleep(for: .milliseconds(20))

@@ -195,7 +195,23 @@ extension XPCDistributedActorSystem {
       )
       return try reference.marshal()
     }
-    throw .remoteActorExportUnsupported(String(describing: Act.self))
+    // Child reclamation may have released the registry entry of a local
+    // actor that is still alive (the singleton kept a reference). Re-adopt
+    // it; a remote proxy without a stored wire is genuinely unexportable.
+    // `__isLocalActor` is the runtime's public locality probe.
+    guard __isLocalActor(actor) else {
+      throw .remoteActorExportUnsupported(String(describing: Act.self))
+    }
+    let previous = invalidated.withLock { invalidated -> (any DistributedActor)? in
+      guard !invalidated else { return nil }
+      return activeActorsLock.withLock { actors in
+        actors.updateValue(actor, forKey: actor.id)
+      }
+    }
+    // Release any displaced occupant outside the lock: its deinit calls
+    // back into `resignID`, which re-enters `activeActorsLock`.
+    withExtendedLifetime(previous) {}
+    return try mintExportSession(for: actor)
   }
 
   private func mintExportSession<Act>(for actor: Act) throws(XPCMarshalError) -> XPCObject

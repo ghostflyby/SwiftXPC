@@ -45,10 +45,15 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let connection = XPCConnection(name: nil)
     connection.setEventHandler { _ in }
     connection.activate()
-    return XPCDistributedActorSystem(
+    let system = XPCDistributedActorSystem(
       connection: connection,
       ownsConnection: true,
       allowsChildReclamation: true)
+    // The singleton root is the first actor on the host: reserving `.root`
+    // at creation makes its identity independent of when `shared` is first
+    // materialized relative to the first accepted connection.
+    system.reserveRootID()
+    return system
   }()
 
   /// The process-owned long-lived system hosting `XPCServiceExit` singleton
@@ -121,14 +126,16 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// reservation (root bootstrap) is pending.
   public func assignID<Act>(_ actorType: Act.Type) -> ActorID
   where Act: DistributedActor {
-    if let reserved = reservedIDLock.withLock({
-      let r = $0
-      $0 = nil
-      return r
-    }) {
-      _ = assignedIDsLock.withLock { $0.insert(reserved) }
-      return reserved
+    // Consume the reservation and record the assignment inside the
+    // reservation critical section, so a concurrent `reserveRootID` cannot
+    // re-reserve an identity that is about to be assigned.
+    let reserved = reservedIDLock.withLock { reserved -> ActorID? in
+      guard let pending = reserved else { return nil }
+      reserved = nil
+      assignedIDsLock.withLock { $0.insert(pending) }
+      return pending
     }
+    if let reserved { return reserved }
     let id = XPCActorID(id: ids.wrappingAdd(1, ordering: .relaxed).newValue)
     _ = assignedIDsLock.withLock { $0.insert(id) }
     return id
@@ -195,8 +202,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   }
 
   var hasLiveExportPeers: Bool {
+    // Same criterion as child reclamation: a session that was handed out but
+    // never dialed is an in-flight wire, not an idle one.
     exportSessionsLock.withLock { sessions in
-      sessions.values.contains { $0.peerCount > 0 }
+      sessions.values.contains { !$0.fullyDrained }
     }
   }
 
@@ -206,7 +215,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// them an un-dialed in-flight wire) — an actor nobody references anymore,
   /// locally or remotely. The drain handler is notified either way.
   func exportSessionDrained(_ id: ActorID) {
-    if allowsChildReclamation {
+    // The singleton root is permanent: never evict its registry entry.
+    if allowsChildReclamation && id != .root {
       let removed = activeActorsLock.withLock { actors -> (any DistributedActor)? in
         guard actors[id] != nil else { return nil }
         let reclaimable = exportSessionsLock.withLock { sessions in

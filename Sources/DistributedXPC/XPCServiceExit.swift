@@ -22,16 +22,27 @@ import Distributed
 /// Child actors the singleton creates are hosted on the same system. When
 /// every export session minted for a child has drained (zero live peers, and
 /// none of them an un-dialed in-flight wire), the registry stops pinning it:
-/// an unreferenced child is released, while children the root itself still
-/// references stay alive. Note that a fully drained child loses its registry
-/// entry, so it can no longer be re-exported — keep the registry entry by
-/// holding the child only while it should stay reachable.
+/// an unreferenced child is released, while children the singleton itself
+/// still references stay alive and are re-adopted on their next export. The
+/// singleton's own registry entry is never reclaimed. A wire that is handed
+/// out but never dialed keeps the service (and the child) alive
+/// indefinitely — a receiver that drops a reference without dialing is
+/// indistinguishable from a slow one.
 @available(macOS 15, *)
 public protocol XPCServiceExit: XPCRootActor {
-  /// The process-wide singleton root. Create it against the library-owned
-  /// host system:
+  /// The process-wide singleton root. Declare `shared` as a computed
+  /// property over a file-scoped constant — a `static let` stored on the
+  /// actor itself cannot call the isolated `init(actorSystem:)` under Swift
+  /// 6 strict concurrency:
   ///
-  ///     static let shared = MyRoot(actorSystem: .serviceHost)
+  ///     private let sharedRoot = MyRoot(actorSystem: .serviceHost)
+  ///     extension MyRoot: XPCServiceExit {
+  ///       static var shared: MyRoot { sharedRoot }
+  ///     }
+  ///
+  /// Materializing `shared` before the first connection is safe: the host
+  /// system reserves `.root` at creation, so the singleton keeps that
+  /// identity regardless of creation order.
   ///
   /// Every accepted peer connection is bound to this instance; its methods
   /// run serialized on its executor regardless of which client called them.

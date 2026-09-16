@@ -15,6 +15,8 @@ distributed actor ExitSingletonRoot: XPCRootActor, XPCServiceExit {
   // The witness reads the file-scoped singleton; creation itself lives at
   // file scope because the witness requirement's isolation inference breaks
   // when the type creates itself in its own static scope (Swift 6.4).
+  // NOTE: placed first in the file on purpose — as a P0 detector this test
+  // only works when it runs before any accept materializes the singleton.
   static var shared: ExitSingletonRoot { singletonInstance }
 
   private let bumps = Mutex(0)
@@ -28,6 +30,10 @@ distributed actor ExitSingletonRoot: XPCRootActor, XPCServiceExit {
 
   distributed func makeWorker() -> ExitWorker {
     ExitWorker(actorSystem: actorSystem)
+  }
+
+  distributed func me() -> ExitSingletonRoot {
+    self
   }
 
   /// Returns the same child instance on every call after the first: proves
@@ -68,6 +74,25 @@ distributed actor ExitWorker {
 @Suite(.serialized)
 struct XPCServiceExitTests {
   @available(macOS 15, *)
+  @Test func EagerlyMaterializedSingletonKeepsRootIdentity() async throws {
+    // P0 repro: materializing `shared` before the first connection used to
+    // consume a regular identity (ID 1); clients dialing `.root` then failed
+    // with an opaque error and the reservation was consumed by the next child.
+    _ = ExitSingletonRoot.shared
+    #expect(hostRegistryContains(.root))
+
+    let channel = try RootChannel(ExitSingletonRoot.self)
+    defer { channel.close() }
+    let root = try ExitSingletonRoot.connect(using: channel.client)
+    let after = try await root.bump()
+    #expect(try await root.bump() == after + 1)
+
+    let worker = try await root.makeWorker()
+    #expect(worker.id != .root)
+    _ = try await worker.greet()
+  }
+
+  @available(macOS 15, *)
   private func hostRegistryContains(_ id: XPCActorID) -> Bool {
     XPCDistributedActorSystem.serviceHost.activeActorsLock.withLock { $0[id] != nil }
   }
@@ -78,13 +103,16 @@ struct XPCServiceExitTests {
     defer { channel.close() }
 
     let first = try ExitSingletonRoot.connect(using: channel.client)
-    #expect(try await first.bump() == 1)
+    // The singleton is process-global: assert the bump advanced by one
+    // rather than pinning the absolute value.
+    let after = try await first.bump()
+    #expect(try await first.bump() == after + 1)
 
     let secondClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
     let second = try ExitSingletonRoot.connect(using: secondClient)
     // A second call landing on the same singleton instance continues the
-    // counter; per-session roots would have started from 1 again.
-    #expect(try await second.bump() == 2)
+    // counter; per-session roots would have started over.
+    #expect(try await second.bump() == after + 2)
   }
 
   @available(macOS 15, *)
@@ -177,25 +205,68 @@ struct XPCServiceExitTests {
   }
 
   @available(macOS 15, *)
-  @Test func FullyDrainedChildIsNotReexportable() async throws {
+  @Test func ReadoptedChildIsReexportable() async throws {
     let channel = try RootChannel(ExitSingletonRoot.self)
     defer { channel.close() }
     let root = try ExitSingletonRoot.connect(using: channel.client)
+    let host = XPCDistributedActorSystem.serviceHost
 
     var worker: ExitWorker? = try await root.makeOrReuseWorker()
     #expect(try await worker?.bump() == 1)
     worker = nil
-    #expect(await pollUntil { !XPCDistributedActorSystem.serviceHost.hasLiveExportPeers })
+    #expect(await pollUntil { !host.hasLiveExportPeers })
 
-    // Documented edge: the drained child's registry entry was released, so
-    // re-exporting it fails even though the singleton still references the
-    // object. Services that re-hand-out children must keep the first export
-    // channel alive instead.
-    // makeOrReuseWorker is non-throwing, so the server-side export failure
-    // surfaces as an opaque error.
-    await #expect(throws: (any Error).self) {
-      _ = try await root.makeOrReuseWorker()
-    }
-    #expect(try await root.hasCachedWorker())
+    // The drained child's registry pin was released, but the singleton still
+    // references it: re-handing it out must re-adopt the registry entry and
+    // serve the same living instance.
+    let reacquired = try await root.makeOrReuseWorker()
+    #expect(try await reacquired.bump() == 2)
+    #expect(await pollUntil { hostRegistryContains(reacquired.id) })
+  }
+
+  @available(macOS 15, *)
+  @Test func RootRegistryEntrySurvivesSelfHandout() async throws {
+    let channel = try RootChannel(ExitSingletonRoot.self)
+    defer { channel.close() }
+    let root = try ExitSingletonRoot.connect(using: channel.client)
+    let host = XPCDistributedActorSystem.serviceHost
+
+    var handedOut: ExitSingletonRoot? = try await root.me()
+    _ = try await handedOut?.bump()
+    #expect(await pollUntil { host.hasLiveExportPeers })
+
+    handedOut = nil
+    #expect(await pollUntil { !host.hasLiveExportPeers })
+
+    // The `.root` registry entry is never reclaimed...
+    #expect(hostRegistryContains(.root))
+    // ...and a fresh connection still reaches the singleton.
+    let freshClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+    let fresh = try ExitSingletonRoot.connect(using: freshClient)
+    _ = try await fresh.bump()
+  }
+
+  @available(macOS 15, *)
+  @Test func UndialedWireBlocksIdleExit() async throws {
+    let shutdowns = Mutex(0)
+    let channel = try RootChannel(
+      ExitSingletonRoot.self,
+      onShutdown: { shutdowns.withLock { $0 += 1 } }
+    )
+    defer { channel.close() }
+    let root = try ExitSingletonRoot.connect(using: channel.client)
+
+    // A handed-out-but-never-dialed export wire is an in-flight reference:
+    // losing the root session must not retire the service out from under it.
+    let worker = try await root.makeWorker()
+    channel.client.cancel()
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(shutdowns.withLock { $0 } == 0)
+
+    // The wire survived; dialing it now works, and only its own drain
+    // completes the idle exit.
+    #expect(try await worker.greet() == "worker")
+    worker.actorSystem.connection.cancel()
+    #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
   }
 }

@@ -65,6 +65,40 @@ distributed actor ShutdownRoot: XPCRootActor {
   #expect(await pollUntil { rejections.withLock { $0 } == 1 })
 }
 
+@Test func ShutdownRejectsBeforeAuditWindow() async throws {
+  guard #available(macOS 15, *) else { return }
+  let audits = Mutex<Int>(0)
+  let rejections = Mutex<Int>(0)
+  let channel = try RootChannel(
+    ShutdownRoot.self,
+    shouldAccept: { _ in
+      audits.withLock { $0 += 1 }
+      return true
+    },
+    onPeerReject: { _, error in
+      if error == nil {
+        rejections.withLock { $0 += 1 }
+      }
+    }
+  )
+  defer { channel.close() }
+  let root = try ShutdownRoot.connect(using: channel.client)
+  #expect(try await root.ping() == "root")
+  #expect(audits.withLock { $0 } == 1)
+
+  channel.server.requestShutdown()
+
+  let lateClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+  let lateRoot = try ShutdownRoot.connect(using: lateClient)
+  await #expect(throws: XPCConnection.ConnectionError.interrupted) {
+    _ = try await lateRoot.ping()
+  }
+  // The post-shutdown rejection happens before the audit window: the late
+  // peer never reached `shouldAccept`.
+  #expect(await pollUntil { rejections.withLock { $0 } == 1 })
+  #expect(audits.withLock { $0 } == 1)
+}
+
 @Test func ShutdownFiresOnShutdownExactlyOnce() async throws {
   guard #available(macOS 15, *) else { return }
   let shutdowns = Mutex<Int>(0)

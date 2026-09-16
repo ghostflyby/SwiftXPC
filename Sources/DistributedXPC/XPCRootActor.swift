@@ -236,6 +236,17 @@ where Root: XPCRootActor {
     host.reserveRootID()
     host.setServiceShutdownHandler { [weak self] in self?.requestShutdown() }
     host.setExportDrainHandler { [weak self] in self?.maybeIdleExit() }
+    // Programming-error guard: if anything else on the service host consumed
+    // the `.root` identity before the singleton was created, refuse the peer
+    // instead of silently misrouting every call addressed to `.root`.
+    let root = exitType.shared
+    guard root.id == .root else {
+      connection.setEventHandler { _ in }
+      connection.activate()
+      connection.cancel()
+      onPeerReject(connection, XPCDispatchError.unknownActor(.root))
+      return
+    }
 
     let key = UUID()
     let session = Session(peerConnection: connection, system: nil, root: nil)
@@ -263,7 +274,7 @@ where Root: XPCRootActor {
       state.sessions[key] = session
       return true
     }
-    host.bind(connection, to: exitType.shared)
+    host.bind(connection, to: root)
     connection.activate()
     if !accepted {
       connection.cancel()
@@ -275,10 +286,11 @@ where Root: XPCRootActor {
   /// mean zero remote references — run the cooperative shutdown pipeline
   /// (`onShutdown`, and the process exit under a hosted `distributedXPCMain`).
   ///
-  /// The export-peer check races with in-flight dials by design; an idle exit
-  /// that lands between a wire being handed out and its first dial is the
-  /// same window launchd's own reaping has. Idempotent, and never fires on an
-  /// explicitly cancelled server.
+  /// Handed-out-but-never-dialed export sessions count as live (they are
+  /// in-flight references), so they block the exit; the only residual race is
+  /// the session-registration micro-window inside `mintExportSession`, where
+  /// an in-flight export fails cleanly via the registration guard.
+  /// Idempotent, and never fires on an explicitly cancelled server.
   private func maybeIdleExit() {
     guard Root.self is any XPCServiceExit.Type else { return }
     guard !XPCDistributedActorSystem.serviceHost.hasLiveExportPeers else { return }

@@ -107,8 +107,10 @@ private final class AttemptCounter: @unchecked Sendable {
 
   let channel = try RootChannel(
     ReconnectRoot.self,
-    onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
-    onPeerEnd: { _ in ended.withLock { $0 += 1 } }
+    XPCServiceConfiguration(
+      onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
+      onPeerEnd: { _ in ended.withLock { $0 += 1 } }
+    )
   )
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }

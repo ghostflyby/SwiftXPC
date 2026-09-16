@@ -120,7 +120,7 @@ struct XPCServiceExitTests {
     let shutdowns = Mutex(0)
     let channel = try RootChannel(
       ExitSingletonRoot.self,
-      onShutdown: { shutdowns.withLock { $0 += 1 } }
+      XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } })
     )
     defer { channel.close() }
     let root = try ExitSingletonRoot.connect(using: channel.client)
@@ -166,7 +166,7 @@ struct XPCServiceExitTests {
     let shutdowns = Mutex(0)
     let channel = try RootChannel(
       ExitSingletonRoot.self,
-      onShutdown: { shutdowns.withLock { $0 += 1 } }
+      XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } })
     )
     defer { channel.close() }
     let root = try ExitSingletonRoot.connect(using: channel.client)
@@ -251,7 +251,7 @@ struct XPCServiceExitTests {
     let shutdowns = Mutex(0)
     let channel = try RootChannel(
       ExitSingletonRoot.self,
-      onShutdown: { shutdowns.withLock { $0 += 1 } }
+      XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } })
     )
     defer { channel.close() }
     let root = try ExitSingletonRoot.connect(using: channel.client)

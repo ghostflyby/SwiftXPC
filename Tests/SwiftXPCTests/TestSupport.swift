@@ -68,22 +68,10 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
 
   init(
     _ rootType: Root.Type,
-    peerCodeSigningRequirement: String? = nil,
-    shouldAccept: (@Sendable (XPCConnection) throws -> Bool)? = nil,
-    onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil,
-    onShutdown: (@Sendable () -> Void)? = nil
+    _ delegate: any XPCServiceDelegate<Root> = XPCServiceConfiguration<Root>()
   ) throws {
     let listener = XPCConnection(name: nil)
-    let server = XPCRootActorServer<Root>(
-      peerCodeSigningRequirement: peerCodeSigningRequirement,
-      shouldAccept: shouldAccept,
-      onPeerAccept: onPeerAccept,
-      onPeerEnd: onPeerEnd,
-      onPeerReject: onPeerReject,
-      onShutdown: onShutdown
-    )
+    let server = XPCRootActorServer<Root>(rootType, delegate)
     let serverPeer = ServerPeerBox()
     listener.setEventHandler { object in
       guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }

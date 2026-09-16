@@ -9,7 +9,7 @@ Two products ship from this package:
 | Product | Contents |
 |---|---|
 | `SwiftXPC` | Swift wrapper vocabulary for the XPC C API: `XPCObject`/`XPCArray`/`XPCDictionary`, the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the `xpcMain` service entry point |
-| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor`, `XPCRootActorServer`, `distributedXPCMain`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
+| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor`, `XPCRootActorServer`, `XPCServiceDelegate` + `xpcMain`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
 
 ## Requirements
 
@@ -47,9 +47,20 @@ Serve it from the XPC service process:
 @main
 enum Service {
   @MainActor static func main() {
-    distributedXPCMain(ServiceRoot.self)
+    xpcMain(ServiceRoot.self)
   }
 }
+```
+
+Customize how peers are audited and accepted, or how the root actor is
+constructed, by passing an `XPCServiceConfiguration` (or your own
+`XPCServiceDelegate` conformer); every hook defaults to the protocol
+behavior, so you only state what you customize:
+
+```swift
+xpcMain(ServiceRoot.self, XPCServiceConfiguration(
+  peerCodeSigningRequirement: "identifier \"com.example.agent\"",
+  shouldAccept: { $0.euid == 501 }))
 ```
 
 Connect from the client process and call across the boundary:

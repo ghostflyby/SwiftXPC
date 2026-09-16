@@ -56,14 +56,15 @@ private func waitUntil(
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
     AuditRoot.self,
-    peerCodeSigningRequirement: "not a code signing requirement !!",
-    shouldAccept: { _ in
-      auditCalls.withLock { $0 += 1 }
-      return true
-    },
-    onPeerReject: { _, error in
-      rejections.withLock { $0.append(error) }
-    })
+    XPCServiceConfiguration(
+      peerCodeSigningRequirement: "not a code signing requirement !!",
+      shouldAccept: { _ in
+        auditCalls.withLock { $0 += 1 }
+        return true
+      },
+      onPeerReject: { _, error in
+        rejections.withLock { $0.append(error) }
+      }))
   let root = try AuditRoot.connect(using: channel.client)
 
   await #expect(throws: XPCConnection.ConnectionError.self) {
@@ -85,12 +86,13 @@ private func waitUntil(
   let ends = Mutex<Int>(0)
   let channel = try RootChannel(
     AuditRoot.self,
-    peerCodeSigningRequirement: "identifier \"com.example.definitely.not.us\"",
-    onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
-    onPeerEnd: { _ in ends.withLock { $0 += 1 } },
-    onPeerReject: { _, error in
-      rejections.withLock { $0.append(error) }
-    })
+    XPCServiceConfiguration(
+      peerCodeSigningRequirement: "identifier \"com.example.definitely.not.us\"",
+      onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
+      onPeerEnd: { _ in ends.withLock { $0 += 1 } },
+      onPeerReject: { _, error in
+        rejections.withLock { $0.append(error) }
+      }))
   let root = try AuditRoot.connect(using: channel.client)
 
   // The requirement installs cleanly; the kernel drops the peer when the
@@ -111,7 +113,8 @@ private func waitUntil(
   }
   let channel = try RootChannel(
     AuditRoot.self,
-    peerCodeSigningRequirement: "identifier \"\(identifier)\"")
+    XPCServiceConfiguration(
+      peerCodeSigningRequirement: "identifier \"\(identifier)\""))
   let root = try AuditRoot.connect(using: channel.client)
 
   #expect(try await root.ping() == "root")
@@ -125,10 +128,11 @@ private func waitUntil(
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
     AuditRoot.self,
-    shouldAccept: { _ in throw AuditHookFailure() },
-    onPeerReject: { _, error in
-      rejections.withLock { $0.append(error) }
-    })
+    XPCServiceConfiguration(
+      shouldAccept: { _ in throw AuditHookFailure() },
+      onPeerReject: { _, error in
+        rejections.withLock { $0.append(error) }
+      }))
   let root = try AuditRoot.connect(using: channel.client)
 
   await #expect(throws: XPCConnection.ConnectionError.self) {
@@ -145,10 +149,11 @@ private func waitUntil(
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
     AuditRoot.self,
-    shouldAccept: { _ in false },
-    onPeerReject: { _, error in
-      rejections.withLock { $0.append(error) }
-    })
+    XPCServiceConfiguration(
+      shouldAccept: { _ in false },
+      onPeerReject: { _, error in
+        rejections.withLock { $0.append(error) }
+      }))
   let root = try AuditRoot.connect(using: channel.client)
 
   await #expect(throws: XPCConnection.ConnectionError.self) {
@@ -171,7 +176,8 @@ private func waitUntil(
 /// is a libxpc programming error that traps the process.
 @Test func SyncSendSurfacesInterruptionFromRejectedPeer() throws {
   guard #available(macOS 15, *) else { return }
-  let channel = try RootChannel(AuditRoot.self, shouldAccept: { _ in false })
+  let channel = try RootChannel(
+    AuditRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
   channel.client.setEventHandler { _ in }
   channel.client.activate()
 

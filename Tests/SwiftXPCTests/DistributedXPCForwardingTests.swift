@@ -69,7 +69,8 @@ distributed actor ForwardRoot: XPCRootActor {
 
 @Test func RootServerRejectsPeerBeforeActivation() async throws {
   guard #available(macOS 15, *) else { return }
-  let channel = try RootChannel(ForwardRoot.self, shouldAccept: { _ in false })
+  let channel = try RootChannel(
+    ForwardRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
   channel.client.setEventHandler { _ in }
   channel.client.activate()
   defer { channel.close() }

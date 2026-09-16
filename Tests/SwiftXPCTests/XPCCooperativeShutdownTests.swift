@@ -46,12 +46,14 @@ distributed actor ShutdownRoot: XPCRootActor {
   let rejections = Mutex<Int>(0)
   let channel = try RootChannel(
     ShutdownRoot.self,
-    onPeerReject: { _, error in
-      // Shutdown-window rejections carry no error, like shouldAccept=false.
-      if error == nil {
-        rejections.withLock { $0 += 1 }
+    XPCServiceConfiguration(
+      onPeerReject: { _, error in
+        // Shutdown-window rejections carry no error, like shouldAccept=false.
+        if error == nil {
+          rejections.withLock { $0 += 1 }
+        }
       }
-    }
+    )
   )
   defer { channel.close() }
 
@@ -71,15 +73,17 @@ distributed actor ShutdownRoot: XPCRootActor {
   let rejections = Mutex<Int>(0)
   let channel = try RootChannel(
     ShutdownRoot.self,
-    shouldAccept: { _ in
-      audits.withLock { $0 += 1 }
-      return true
-    },
-    onPeerReject: { _, error in
-      if error == nil {
-        rejections.withLock { $0 += 1 }
+    XPCServiceConfiguration(
+      shouldAccept: { _ in
+        audits.withLock { $0 += 1 }
+        return true
+      },
+      onPeerReject: { _, error in
+        if error == nil {
+          rejections.withLock { $0 += 1 }
+        }
       }
-    }
+    )
   )
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
@@ -104,7 +108,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   let shutdowns = Mutex<Int>(0)
   let channel = try RootChannel(
     ShutdownRoot.self,
-    onShutdown: { shutdowns.withLock { $0 += 1 } }
+    XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } })
   )
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
@@ -123,7 +127,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   let shutdowns = Mutex<Int>(0)
   let channel = try RootChannel(
     ShutdownRoot.self,
-    onShutdown: { shutdowns.withLock { $0 += 1 } }
+    XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } })
   )
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)

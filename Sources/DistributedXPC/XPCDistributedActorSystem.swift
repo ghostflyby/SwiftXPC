@@ -233,11 +233,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the
   /// session this system belongs to; see
   /// `XPCRootActorServer.requestShutdown()`. This is the entry point for
-  /// service-initiated retirement: under hosted `xpcMain` (default
-  /// `exitOnShutdown: true`), one call from a root actor's
-  /// `distributed func shutdown()` ends the process cooperatively — peers
-  /// observe clean disconnects, `serviceWillShutdown` runs, then the
-  /// process exits.
+  /// service-initiated retirement: under hosted `xpcMain`, one call from a
+  /// root actor's `distributed func shutdown()` ends the process
+  /// cooperatively — peers observe clean disconnects, `serviceWillShutdown`
+  /// runs, then the process exits.
   ///
   /// A no-op on systems that host no server session — client-side systems
   /// (root connections, imported actor references) can never shut their

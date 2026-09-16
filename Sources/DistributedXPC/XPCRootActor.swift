@@ -73,8 +73,8 @@ where Root: XPCRootActor {
   /// the process. Idempotent: later calls return without re-cancelling or
   /// re-firing `delegate.serviceWillShutdown()`.
   ///
-  /// Under the hosted `xpcMain(_:exitOnShutdown:)` entry point (default
-  /// `exitOnShutdown: true`), this is the cooperative *process* shutdown
+  /// Under the hosted `xpcMain` entry point, this is the cooperative
+  /// *process* shutdown
   /// path: `serviceWillShutdown()` runs and the process exits. A standalone
   /// server only tears its sessions down; the caller owns the process.
   ///
@@ -239,7 +239,7 @@ where Root: XPCRootActor {
   /// the check, zero accepted sessions and zero live exported child channels
   /// mean zero remote references — run the cooperative shutdown pipeline
   /// (`serviceWillShutdown`, and the process exit under a hosted
-  /// `xpcMain` with `exitOnShutdown: true`).
+  /// `xpcMain`).
   ///
   /// Handed-out-but-never-dialed export sessions count as live (they are
   /// in-flight references), so they block the exit; the only residual race is
@@ -313,40 +313,43 @@ struct ExitOnShutdown<Base: XPCServiceDelegate>: XPCServiceDelegate {
 /// `rootType` on every accepted peer connection. Never returns. Must run on
 /// the main thread.
 ///
-/// Equivalent to `xpcMain(rootType, XPCServiceConfiguration(), ...)`: peers
-/// are accepted unconditionally unless gated by a
-/// `peerCodeSigningRequirement`, and each session constructs
-/// `Root(actorSystem:)`. Customize via the delegate overload.
+/// Equivalent to `xpcMain(rootType, XPCServiceConfiguration())`: peers are
+/// accepted unconditionally unless gated by a `peerCodeSigningRequirement`,
+/// and each session constructs `Root(actorSystem:)`. Customize via the
+/// delegate overload.
 ///
-/// - Parameter exitOnShutdown: ends the process with `exit(0)` after a
-///   cooperative shutdown (`XPCRootActorServer.requestShutdown()`, or
-///   `XPCDistributedActorSystem.requestServiceShutdown()` from actor code).
-///   This is what makes the shutdown a *process* shutdown — without it a
-///   `-> Never` host would keep running forever. Pass `false` for in-process
-///   hosts and tests, where exiting the process is not acceptable and the
-///   caller owns the process lifetime.
+/// The hosted entry point only ever runs as a launchd-managed standalone
+/// service process (`xpc_main` aborts anywhere else), so a cooperative
+/// shutdown unconditionally ends the process: see the delegate overload for
+/// the shutdown pipeline. For in-process hosting — tests and embedders —
+/// use `xpcTest(_:_:)` or a standalone `XPCRootActorServer`, neither of
+/// which ever exits the process.
 @available(macOS 15, *)
 @MainActor
 public func xpcMain<Root>(
-  _ rootType: Root.Type,
-  exitOnShutdown: Bool = true
+  _ rootType: Root.Type
 ) -> Never where Root: XPCRootActor {
-  xpcMain(rootType, XPCServiceConfiguration<Root>(), exitOnShutdown: exitOnShutdown)
+  xpcMain(rootType, XPCServiceConfiguration<Root>())
 }
 
 /// Runs the XPC service event loop, serving the delegate's `Root` actor on
 /// every accepted peer connection. Never returns. Must run on the main
 /// thread.
 ///
-/// A cooperative shutdown (`XPCRootActorServer.requestShutdown()`, or
+/// The hosted entry point only ever runs as a launchd-managed standalone
+/// service process (`xpc_main` aborts anywhere else), so the service *is*
+/// the process: a cooperative shutdown
+/// (`XPCRootActorServer.requestShutdown()`, or
 /// `XPCDistributedActorSystem.requestServiceShutdown()` from actor code)
-/// tears every session down, runs `delegate.serviceWillShutdown()`, and —
-/// under the default `exitOnShutdown: true` — exits the process: peers
-/// observe clean disconnects, and together with every client channel going
-/// down that is exactly the state launchd's on-demand reaping and any
-/// supervisor expect of a retired service. Retain the server from
-/// `delegate.serviceWillStart(server:)` to reach `requestShutdown()` from
-/// outside the actor graph.
+/// tears every session down, runs `delegate.serviceWillShutdown()`, and
+/// then unconditionally exits the process. Peers observe clean disconnects,
+/// and together with every client channel going down that is exactly the
+/// state launchd's on-demand reaping and any supervisor expect of a retired
+/// service. Retain the server from `delegate.serviceWillStart(server:)` to
+/// reach `requestShutdown()` from outside the actor graph.
+///
+/// In-process hosts never exit — build a standalone `XPCRootActorServer` or
+/// spawn the `xpcTest(_:_:)` harness instead.
 ///
 /// - Parameters:
 ///   - rootType: the concrete root actor type served on every accepted peer;
@@ -354,20 +357,13 @@ public func xpcMain<Root>(
 ///   - delegate: the service customization, typically an
 ///     `XPCServiceConfiguration` stating only the customized hooks; see
 ///     `XPCServiceDelegate` for the per-hook semantics.
-///   - exitOnShutdown: ends the process with `exit(0)` after a cooperative
-///     shutdown. Pass `false` for in-process hosts and tests, where exiting
-///     the process is not acceptable and the caller owns the process
-///     lifetime.
 @available(macOS 15, *)
 @MainActor
 public func xpcMain<D: XPCServiceDelegate>(
   _ rootType: D.Root.Type,
-  _ delegate: D,
-  exitOnShutdown: Bool = true
+  _ delegate: D
 ) -> Never {
-  let wrapped: any XPCServiceDelegate<D.Root> =
-    exitOnShutdown ? ExitOnShutdown(base: delegate) : delegate
-  let server = XPCRootActorServer(rootType, wrapped)
+  let server = XPCRootActorServer(rootType, ExitOnShutdown(base: delegate))
   delegate.serviceWillStart(server: server)
   return SwiftXPC.xpcMain { connection in server.accept(connection) }
 }

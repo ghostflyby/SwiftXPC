@@ -13,8 +13,8 @@ import Distributed
 ///
 /// When the last accepted session disconnects and no exported child channel
 /// has live peers, the server runs the cooperative shutdown pipeline
-/// (`serviceWillShutdown`, then `exit(0)` under hosted `xpcMain`'s default
-/// `exitOnShutdown: true`). The check arms with the first connection, so a
+/// (`serviceWillShutdown`, then `exit(0)` under hosted `xpcMain`). The
+/// check arms with the first connection, so a
 /// service that has never seen a client never exits — launchd on-demand cold
 /// starts are safe. Clients observe the shutdown as their channels going
 /// down; a named-service root transparently relaunches on its next call.

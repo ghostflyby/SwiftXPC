@@ -12,9 +12,9 @@ private func handleIncomingConnection(_ connection: xpc_connection_t) {
 /// Runs the XPC service event loop, invoking `handler` for every accepted
 /// peer connection. Never returns. Must run on the main thread.
 ///
-/// For distributed actor services prefer the `xpcMain(_:exitOnShutdown:)`
-/// overloads in `DistributedXPC`, which layer root-actor bootstrapping on
-/// top of this entry point.
+/// For distributed actor services prefer the `xpcMain` overloads in
+/// `DistributedXPC`, which layer root-actor bootstrapping on top of this
+/// entry point.
 @MainActor
 public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection) -> Void) -> Never {
   mainHandler = handler

@@ -69,7 +69,7 @@ public protocol XPCServiceDelegate<Root>: Sendable {
   /// identity inspection is meaningful.
   func didRejectPeer(_ connection: XPCConnection, error: (any Error)?)
 
-  /// Invoked by the hosted `xpcMain(_:exitOnShutdown:)` entry point once the
+  /// Invoked by the hosted `xpcMain` entry point once the
   /// server exists, before the event loop starts — retain `server` here to
   /// reach `requestShutdown()` from outside the actor graph (e.g. a signal
   /// handler). Runs on the main thread. Standalone `XPCRootActorServer`
@@ -81,8 +81,7 @@ public protocol XPCServiceDelegate<Root>: Sendable {
   /// on-demand reaping, closing the last client connection is what retires
   /// the process, so `.xpc` services need nothing here; a long-lived agent
   /// that must exit explicitly can do so from this hook. Under hosted
-  /// `xpcMain(_:exitOnShutdown:)` with the default `exitOnShutdown: true`,
-  /// the process exits right after this hook returns.
+  /// `xpcMain`, the process exits right after this hook returns.
   func serviceWillShutdown()
 
   /// Creates the per-session root actor served on an accepted peer.

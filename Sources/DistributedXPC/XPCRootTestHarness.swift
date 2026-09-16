@@ -18,9 +18,10 @@ import Synchronization
 /// The client side is a full production `XPCRootConnection` over the
 /// harness's endpoint — `root`, `events`, and `retrying` behave exactly as
 /// against a launchd service, with one documented difference: the harness's
-/// channel is endpoint-based, so it dies permanently with the peer instead
-/// of re-establishing through a mach service name. `dropServerPeer()`
-/// surfaces as `.disconnected` on `channel.events`.
+/// channel dials the harness's own listener endpoint, so it survives peer
+/// drops (transparent re-dial) but dies permanently when the harness closes
+/// — only a named-service connection also survives a full service restart.
+/// `dropServerPeer()` surfaces as `.disconnected` on `channel.events`.
 ///
 /// The test-only operations live here, not on the channel: `server` exposes
 /// the hosting `XPCRootActorServer` (cooperative `requestShutdown()` plus

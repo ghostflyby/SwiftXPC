@@ -72,6 +72,9 @@ distributed actor ForwardRoot: XPCRootActor {
   let channel = try RootChannel(
     ForwardRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
   channel.client.setEventHandler { _ in }
+  // The client side is the harness's already-active production channel;
+  // the pre-activation contract under test is server-side (reject before
+  // the peer is activated), so re-driving the client here is equivalent.
   channel.client.activate()
   defer { channel.close() }
 

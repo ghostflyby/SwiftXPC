@@ -106,6 +106,11 @@ where Root: XPCRootActor {
   /// the process. Idempotent: later calls return without re-cancelling or
   /// re-firing `onShutdown`.
   ///
+  /// Hosted by `distributedXPCMain` (default `exitOnShutdown: true`), this is
+  /// the cooperative *process* shutdown path: `onShutdown` runs and the
+  /// process exits. A standalone server only tears its sessions down; the
+  /// caller owns the process.
+  ///
   /// For a drain-with-grace variant, gate the call on your own in-flight
   /// accounting before invoking this.
   public func requestShutdown() {
@@ -202,9 +207,23 @@ where Root: XPCRootActor {
 /// Runs the XPC service event loop, serving `rootType` on every accepted
 /// peer connection. Never returns. Must run on the main thread.
 ///
+/// A cooperative shutdown (`XPCRootActorServer.requestShutdown()`, or
+/// `XPCDistributedActorSystem.requestServiceShutdown()` from actor code) ends
+/// the process: peers observe clean disconnects, `onShutdown` runs, and the
+/// process exits. Together with every client channel going down, that is
+/// exactly the state launchd's on-demand reaping and any supervisor expect of
+/// a retired service.
+///
 /// The hook parameters mirror `XPCRootActorServer`'s initializer; see there
 /// for the pre-activation audit window and the fail-closed semantics of
 /// `peerCodeSigningRequirement`.
+///
+/// - Parameters:
+///   - exitOnShutdown: ends the process with `exit(0)` after a cooperative
+///     shutdown. This is what makes the shutdown a *process* shutdown —
+///     without it a `-> Never` `xpcMain` host would keep running forever.
+///     Pass `false` for in-process hosts and tests, where exiting the
+///     process is not acceptable and the caller owns the process lifetime.
 @available(macOS 15, *)
 @MainActor
 public func distributedXPCMain<Root>(
@@ -214,7 +233,8 @@ public func distributedXPCMain<Root>(
   onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
   onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil,
   onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil,
-  onShutdown: (@Sendable () -> Void)? = nil
+  onShutdown: (@Sendable () -> Void)? = nil,
+  exitOnShutdown: Bool = true
 ) -> Never where Root: XPCRootActor {
   let server = XPCRootActorServer(
     rootType,
@@ -223,7 +243,10 @@ public func distributedXPCMain<Root>(
     onPeerAccept: onPeerAccept,
     onPeerEnd: onPeerEnd,
     onPeerReject: onPeerReject,
-    onShutdown: onShutdown)
+    onShutdown: {
+      onShutdown?()
+      if exitOnShutdown { exit(0) }
+    })
   return xpcMain { connection in server.accept(connection) }
 }
 

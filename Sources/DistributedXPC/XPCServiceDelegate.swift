@@ -223,3 +223,41 @@ public struct XPCServiceConfiguration<Root: XPCRootActor>: XPCServiceDelegate {
     return rootFactory(system)
   }
 }
+
+/// Marks a delegate type as a standalone XPC service entry point, so the
+/// type itself can carry `@main` — the delegate-pattern counterpart of an
+/// application delegate's generated main:
+///
+///     @main
+///     struct AgentService: XPCServiceMain {
+///       typealias Root = ServiceRoot
+///
+///       var peerCodeSigningRequirement: String? { "identifier \"com.example.agent\"" }
+///       func shouldAcceptPeer(_ connection: XPCConnection) throws -> Bool {
+///         connection.euid == 501
+///       }
+///     }
+///
+/// The type must be constructible with no arguments: the library-provided
+/// `main()` hosts a fresh instance through `xpcMain(Self.Root.self, Self())`,
+/// so all customization lives in the conformer's own requirement
+/// implementations, exactly as in `xpcMain`. The hosted shutdown pipeline is
+/// identical: a cooperative shutdown runs `serviceWillShutdown()` and then
+/// exits the process.
+@available(macOS 15, *)
+public protocol XPCServiceMain: XPCServiceDelegate {
+  /// Creates the delegate for hosting.
+  @MainActor init()
+
+  /// Runs the XPC service event loop with `Self` as the delegate. Never
+  /// returns. Provided by the library; this is the `@main` entry point.
+  @MainActor static func main()
+}
+
+@available(macOS 15, *)
+extension XPCServiceMain {
+  @MainActor
+  public static func main() {
+    xpcMain(Self.Root.self, Self())
+  }
+}

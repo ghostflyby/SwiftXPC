@@ -59,7 +59,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   channel.server.requestShutdown()
 
-  let lateClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+  let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
   await #expect(throws: XPCConnection.ConnectionError.interrupted) {
     _ = try await lateRoot.ping()
@@ -92,7 +92,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   channel.server.requestShutdown()
 
-  let lateClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+  let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
   await #expect(throws: XPCConnection.ConnectionError.interrupted) {
     _ = try await lateRoot.ping()

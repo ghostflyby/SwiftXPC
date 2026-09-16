@@ -63,6 +63,17 @@ xpcMain(ServiceRoot.self, XPCServiceConfiguration(
   shouldAccept: { $0.euid == 501 }))
 ```
 
+For in-process tests, spawn the same service over an anonymous channel with
+`xpcTest` — identical delegate semantics, but nothing exits the process, and
+the handle exposes the client connection and the hosting server:
+
+```swift
+let channel = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
+  onPeerAccept: { connection in /* hooks fire here too */ }))
+defer { channel.close() }
+let root = try channel.root()
+```
+
 Connect from the client process and call across the boundary:
 
 ```swift

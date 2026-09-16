@@ -108,7 +108,7 @@ struct XPCServiceExitTests {
     let after = try await first.bump()
     #expect(try await first.bump() == after + 1)
 
-    let secondClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+    let secondClient = try channel.makeClient()
     let second = try ExitSingletonRoot.connect(using: secondClient)
     // A second call landing on the same singleton instance continues the
     // counter; per-session roots would have started over.
@@ -133,7 +133,7 @@ struct XPCServiceExitTests {
 
     #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
     // The retired service refuses new peers.
-    let lateClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+    let lateClient = try channel.makeClient()
     let lateRoot = try ExitSingletonRoot.connect(using: lateClient)
     await #expect(throws: XPCConnection.ConnectionError.interrupted) {
       _ = try await lateRoot.bump()
@@ -151,7 +151,7 @@ struct XPCServiceExitTests {
 
     // A second accept arms a root-ID reservation on the host system; a child
     // created afterwards must not be hijacked onto `.root`.
-    let secondClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+    let secondClient = try channel.makeClient()
     let second = try ExitSingletonRoot.connect(using: secondClient)
     let secondAfter = try await second.bump()
     #expect(try await second.bump() == secondAfter + 1)
@@ -241,7 +241,7 @@ struct XPCServiceExitTests {
     // The `.root` registry entry is never reclaimed...
     #expect(hostRegistryContains(.root))
     // ...and a fresh connection still reaches the singleton.
-    let freshClient = try XPCConnection.unmarshal(from: channel.listener.marshal())
+    let freshClient = try channel.makeClient()
     let fresh = try ExitSingletonRoot.connect(using: freshClient)
     _ = try await fresh.bump()
   }

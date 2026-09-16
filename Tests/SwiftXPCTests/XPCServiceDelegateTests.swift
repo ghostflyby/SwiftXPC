@@ -100,6 +100,39 @@ struct XPCServiceDelegateTests {
     #expect(recorder.events.withLock { $0 } == ["shouldAccept", "shutdown", "exit"])
   }
 
+  @Test func XPCRootTestChannelResolvesRootAndReportsShutdown() async throws {
+    guard #available(macOS 15, *) else { return }
+    let shutdowns = Mutex<Int>(0)
+    let channel = try xpcTest(
+      DelegateRoot.self,
+      XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } }))
+    defer { channel.close() }
+
+    let root = try channel.root()
+    #expect(try await root.ping() == "delegate")
+    // Idempotent resolution: the same proxy, one client connection.
+    #expect(try channel.root() === root)
+
+    // A cooperative shutdown on the exposed server never exits the process;
+    // it only tears the sessions down and fires the hook exactly once.
+    channel.server.requestShutdown()
+    #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
+    #expect(shutdowns.withLock { $0 } == 1)
+  }
+
+  @Test func XPCRootTestChannelDropServerPeerDropsCalls() async throws {
+    guard #available(macOS 15, *) else { return }
+    let channel = try xpcTest(DelegateRoot.self)
+    defer { channel.close() }
+    let root = try channel.root()
+    #expect(try await root.ping() == "delegate")
+
+    channel.dropServerPeer()
+    await #expect(throws: XPCConnection.ConnectionError.self) {
+      _ = try await root.ping()
+    }
+  }
+
   @Test func MakeRootConflictAppliesOnlyToExitRootsWithFactory() {
     guard #available(macOS 15, *) else { return }
     // Plain roots may customize makeRoot.

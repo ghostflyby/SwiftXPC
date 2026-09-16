@@ -72,6 +72,13 @@ final class StoredActorReference: @unchecked Sendable {
   var endpoint: XPCObject { XPCObject(xpc_object: endpointObject) }
 }
 
+/// One exported-actor endpoint: a fresh anonymous listener plus the peers
+/// that dialed it. The listener lives as long as the owning session — until
+/// the exported actor is destroyed or the system is invalidated. It is
+/// deliberately *not* torn down when the peer list drains: the endpoint may
+/// already have been handed to a receiver that has not dialed yet, and an
+/// anonymous listener occupies no launchd client connection, so it cannot
+/// block on-demand reaping.
 @available(macOS 15, *)
 final class XPCActorExportSession: @unchecked Sendable {
   let id: UUID
@@ -89,6 +96,11 @@ final class XPCActorExportSession: @unchecked Sendable {
     self.listener = listener
   }
 
+  /// Number of live peer channels, for lifecycle introspection.
+  var peerCount: Int {
+    state.withLock { $0.peers.count }
+  }
+
   func accept(_ peer: PeerBox) -> Bool {
     state.withLock {
       guard !$0.cancelled else { return false }
@@ -98,7 +110,15 @@ final class XPCActorExportSession: @unchecked Sendable {
   }
 
   func drop(peerID: UUID) {
-    state.withLock { $0.peers.removeAll { $0.id == peerID } }
+    // Remove under the lock, release outside: PeerBox deinit cancels the
+    // peer, and teardown must never run while `state` is held.
+    let removed = state.withLock { state -> PeerBox? in
+      guard let index = state.peers.firstIndex(where: { $0.id == peerID }) else {
+        return nil
+      }
+      return state.peers.remove(at: index)
+    }
+    _ = removed
   }
 
   func cancel() {
@@ -115,6 +135,10 @@ final class XPCActorExportSession: @unchecked Sendable {
 
 /// Identity wrapper so an accepted peer connection can be removed from the
 /// session when it dies (XPCConnection is a struct without stable identity).
+/// Dropping the box also cancels this side of the channel: when a client
+/// releases its imported proxy, its owned system tears the connection down,
+/// and this end must close symmetrically instead of lingering half-open.
+/// Cancelling an already-dead connection is a no-op.
 @available(macOS 15, *)
 final class PeerBox: @unchecked Sendable {
   let id = UUID()
@@ -123,6 +147,8 @@ final class PeerBox: @unchecked Sendable {
   init(_ connection: XPCConnection) {
     self.connection = connection
   }
+
+  deinit { connection.cancel() }
 }
 
 @available(macOS 15, *)

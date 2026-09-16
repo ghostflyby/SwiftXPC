@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Dispatch
 import Distributed
 import Foundation
 import SwiftXPC
@@ -35,6 +36,12 @@ where Root: XPCRootActor {
     var shutdownRequested = false
   }
   private let state = Mutex(State())
+  /// Balances each accepted session (entered at accept) against its
+  /// connection's invalidation (left at the end of the handler chain), so the
+  /// awaitable shutdown variants can wait for the teardown that runs
+  /// asynchronously on the sessions' XPC queues. XPC delivers disconnects
+  /// per connection; this is the aggregate "all sessions dismantled" signal.
+  private let teardown = DispatchGroup()
   private let peerCodeSigningRequirement: String?
   private let shouldAccept: @Sendable (XPCConnection) throws -> Bool
   private let onPeerAccept: @Sendable (XPCConnection) -> Void
@@ -106,6 +113,15 @@ where Root: XPCRootActor {
   /// the process. Idempotent: later calls return without re-cancelling or
   /// re-firing `onShutdown`.
   ///
+  /// This initiates the teardown but does not wait for it: each session is
+  /// dismantled asynchronously on its own XPC queue. Use `shutdown()` or
+  /// `shutdownAndWait()` when the caller must observe completion.
+  ///
+  /// Because sessions are cancelled synchronously, the reply to the very
+  /// invocation that triggered the shutdown (e.g. a distributed `shutdown()`
+  /// method calling `requestServiceShutdown()`) is typically not delivered;
+  /// clients should treat disconnection as the completion signal.
+  ///
   /// For a drain-with-grace variant, gate the call on your own in-flight
   /// accounting before invoking this.
   public func requestShutdown() {
@@ -117,6 +133,38 @@ where Root: XPCRootActor {
     guard first else { return }
     cancel()
     onShutdown()
+  }
+
+  /// `requestShutdown()` plus suspension until the teardown has finished:
+  /// every accepted session's connection invalidation handlers have run and
+  /// the root actors have been released. Returns at once when no session is
+  /// left to tear down.
+  ///
+  /// Never await this from a distributed method served by this server —
+  /// including on any session: the method's own session cannot finish
+  /// tearing down until the method returns, so the call deadlocks. From
+  /// inside a distributed method use `requestServiceShutdown()`, which
+  /// initiates the shutdown without waiting.
+  public func shutdown() async {
+    requestShutdown()
+    await withCheckedContinuation { continuation in
+      // [self] keeps the group (and this notification) alive until it fires,
+      // even if the caller drops the server while awaiting.
+      teardown.notify(queue: DispatchQueue.global()) { [self] in
+        continuation.resume()
+      }
+    }
+  }
+
+  /// Blocking variant of `shutdown()`: returns only after every session's
+  /// teardown has finished, or at once when there is nothing to tear down.
+  /// Blocks the calling thread — never call it from an XPC handler, a task
+  /// on the cooperative thread pool, any queue a connection targets, or
+  /// inside a distributed method (same deadlock as `shutdown()`); use
+  /// `shutdown()` from an outside context instead.
+  public func shutdownAndWait() {
+    requestShutdown()
+    teardown.wait()
   }
 
   public func cancel() {
@@ -190,6 +238,14 @@ where Root: XPCRootActor {
       guard !state.cancelled else { return false }
       state.sessions[key] = session
       return true
+    }
+    if accepted {
+      // Balance this session against its connection invalidation so the
+      // awaitable shutdown variants can observe full teardown. Registered
+      // last in the chain: runs after the peer-end handler above, and after
+      // activation so the group can never go negative.
+      teardown.enter()
+      connection.addInvalidationHandler { [weak self] in self?.teardown.leave() }
     }
     connection.activate()
     if !accepted {

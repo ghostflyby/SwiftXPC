@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
 @testable import DistributedXPC
+import Foundation
 import Synchronization
 import SwiftXPC
 import SwiftXPCMacros
@@ -111,4 +112,64 @@ distributed actor ShutdownRoot: XPCRootActor {
   let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   // Client-side systems host no server session: this must not route anywhere.
   system.requestServiceShutdown()
+}
+
+@Test func AwaitableShutdownWaitsForSessionTeardown() async throws {
+  guard #available(macOS 15, *) else { return }
+  let ended = Mutex(false)
+  let finished = Mutex(false)
+  let channel = try RootChannel(
+    ShutdownRoot.self,
+    onPeerEnd: { _ in
+      ended.withLock { $0 = true }
+      // Hold the invalidation chain open: leave() cannot run until this
+      // returns, so a correct shutdown() must still be suspended.
+      Thread.sleep(forTimeInterval: 0.2)
+    }
+  )
+  defer { channel.close() }
+  let root = try ShutdownRoot.connect(using: channel.client)
+  #expect(try await root.ping() == "root")
+
+  let task = Task {
+    await channel.server.shutdown()
+    finished.withLock { $0 = true }
+  }
+  #expect(await pollUntil { ended.withLock { $0 } })
+  // Still inside the held handler: the teardown has not completed yet.
+  #expect(!finished.withLock { $0 })
+  #expect(await pollUntil { finished.withLock { $0 } })
+  _ = task
+}
+
+@Test func ShutdownAndWaitBlocksUntilTeardownCompletes() async throws {
+  guard #available(macOS 15, *) else { return }
+  let ended = Mutex(false)
+  let channel = try RootChannel(
+    ShutdownRoot.self,
+    onPeerEnd: { _ in ended.withLock { $0 = true } }
+  )
+  defer { channel.close() }
+  let root = try ShutdownRoot.connect(using: channel.client)
+  #expect(try await root.ping() == "root")
+
+  // Detached to honor the blocking API's thread contract.
+  try await Task.detached { channel.server.shutdownAndWait() }.value
+
+  #expect(ended.withLock { $0 })
+  // After a full teardown, a fresh awaitable call completes immediately.
+  await channel.server.shutdown()
+}
+
+@Test func AwaitableShutdownWithoutSessionsReturnsImmediately() async throws {
+  guard #available(macOS 15, *) else { return }
+  let shutdowns = Mutex<Int>(0)
+  let server = XPCRootActorServer<ShutdownRoot>(
+    onShutdown: { shutdowns.withLock { $0 += 1 } }
+  )
+
+  await server.shutdown()
+  #expect(shutdowns.withLock { $0 } == 1)
+  server.shutdownAndWait()
+  #expect(shutdowns.withLock { $0 } == 1)
 }

@@ -36,20 +36,26 @@ struct XPCServiceDelegateTests {
   }
 
   @available(macOS 15, *)
-  private final class RecordingDelegate: XPCServiceDelegate {
-    typealias Root = DelegateRoot
+  @Test func HostedShutdownCompletionRunsAfterServiceWillShutdown() async throws {
+    guard #available(macOS 15, *) else { return }
     let events = Mutex<[String]>([])
+    let service = try xpcTest(
+      DelegateRoot.self,
+      XPCServiceConfiguration(onShutdown: { events.withLock { $0.append("shutdown") } }))
+    defer { service.close() }
 
-    var peerCodeSigningRequirement: String? { "req" }
+    // The completion is the hosting layer's process exit: installed by
+    // xpcMain, it must run after the delegate hook, exactly once, on the
+    // shutdown-driving thread.
+    service.server.setShutdownCompletion { events.withLock { $0.append("exit") } }
+    service.server.requestShutdown()
+    service.server.requestShutdown()
 
-    func shouldAcceptPeer(_ connection: XPCConnection) throws -> Bool {
-      events.withLock { $0.append("shouldAccept") }
-      return true
-    }
-
-    func serviceWillShutdown() {
-      events.withLock { $0.append("shutdown") }
-    }
+    #expect(
+      await pollUntil {
+        events.withLock { $0 } == ["shutdown", "exit"]
+      })
+    #expect(events.withLock { $0 } == ["shutdown", "exit"])
   }
 
   @Test func CustomMakeRootConstructsPerSessionRoot() async throws {
@@ -85,19 +91,6 @@ struct XPCServiceDelegateTests {
     #expect(try await root.ping() == "delegate")
     #expect(delegate.audits.withLock { $0 } == 1)
     #expect(delegate.accepted.withLock { $0 } == 1)
-  }
-
-  @Test func ExitOnShutdownForwardsAndExitsAfterHook() throws {
-    guard #available(macOS 15, *) else { return }
-    let recorder = RecordingDelegate()
-    let wrapper = ExitOnShutdown(
-      base: recorder,
-      exitProcess: { recorder.events.withLock { $0.append("exit") } })
-    #expect(wrapper.peerCodeSigningRequirement == "req")
-    #expect(try wrapper.shouldAcceptPeer(makeIdleConnection()))
-    wrapper.serviceWillShutdown()
-    // The injected exit must run after the wrapped hook, never before.
-    #expect(recorder.events.withLock { $0 } == ["shouldAccept", "shutdown", "exit"])
   }
 
   @Test func XPCRootTestHarnessResolvesRootAndReportsShutdown() async throws {

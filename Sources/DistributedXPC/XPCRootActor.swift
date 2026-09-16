@@ -49,6 +49,10 @@ where Root: XPCRootActor {
   }
   private let state = Mutex(State())
   private let delegate: any XPCServiceDelegate<Root>
+  /// Installed by the hosted `xpcMain` entry point; runs after
+  /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
+  /// Empty for standalone servers, which never own a process lifetime.
+  private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
 
   /// - Parameters:
   ///   - rootType: the concrete root actor type served on every accepted peer.
@@ -88,7 +92,19 @@ where Root: XPCRootActor {
     }
     guard first else { return }
     cancel()
+    finishShutdown()
+  }
+
+  /// Installs the hosting layer's post-shutdown step — under `xpcMain`,
+  /// `exit(0)`. Internal: process lifetime is hosting's business, not part
+  /// of the delegate or server API.
+  func setShutdownCompletion(_ completion: @escaping @Sendable () -> Void) {
+    shutdownCompletion.withLock { $0 = completion }
+  }
+
+  private func finishShutdown() {
     delegate.serviceWillShutdown()
+    shutdownCompletion.withLock { $0 }()
   }
 
   public func cancel() {
@@ -258,54 +274,7 @@ where Root: XPCRootActor {
     }
     guard reserved else { return }
     cancel()
-    delegate.serviceWillShutdown()
-  }
-}
-
-/// Wraps a delegate so a hosted cooperative shutdown ends the process:
-/// after the wrapped `serviceWillShutdown` returns, `exit(0)` retires the
-/// service. This is what makes the shutdown a *process* shutdown — without
-/// it a `-> Never` host would keep running forever. Internal so tests can
-/// verify the forwarding and hook-then-exit ordering with an injected exit.
-@available(macOS 15, *)
-struct ExitOnShutdown<Base: XPCServiceDelegate>: XPCServiceDelegate {
-  let base: Base
-  let exitProcess: @Sendable () -> Void
-
-  init(base: Base, exitProcess: @escaping @Sendable () -> Void = { exit(0) }) {
-    self.base = base
-    self.exitProcess = exitProcess
-  }
-
-  var peerCodeSigningRequirement: String? { base.peerCodeSigningRequirement }
-
-  func shouldAcceptPeer(_ connection: XPCConnection) throws -> Bool {
-    try base.shouldAcceptPeer(connection)
-  }
-
-  func didAcceptPeer(_ connection: XPCConnection) {
-    base.didAcceptPeer(connection)
-  }
-
-  func peerDidEnd(_ connection: XPCConnection) {
-    base.peerDidEnd(connection)
-  }
-
-  func didRejectPeer(_ connection: XPCConnection, error: (any Error)?) {
-    base.didRejectPeer(connection, error: error)
-  }
-
-  func serviceWillStart(server: XPCRootActorServer<Base.Root>) {
-    base.serviceWillStart(server: server)
-  }
-
-  func serviceWillShutdown() {
-    base.serviceWillShutdown()
-    exitProcess()
-  }
-
-  func makeRoot(for system: XPCDistributedActorSystem) -> Base.Root {
-    base.makeRoot(for: system)
+    finishShutdown()
   }
 }
 
@@ -363,7 +332,10 @@ public func xpcMain<D: XPCServiceDelegate>(
   _ rootType: D.Root.Type,
   _ delegate: D
 ) -> Never {
-  let server = XPCRootActorServer(rootType, ExitOnShutdown(base: delegate))
+  let server = XPCRootActorServer(rootType, delegate)
+  // The hosted service *is* the process: retire it right after the
+  // delegate's shutdown hook has run.
+  server.setShutdownCompletion { exit(0) }
   delegate.serviceWillStart(server: server)
   return SwiftXPC.xpcMain { connection in server.accept(connection) }
 }

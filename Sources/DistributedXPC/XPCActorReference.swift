@@ -72,33 +72,76 @@ final class StoredActorReference: @unchecked Sendable {
   var endpoint: XPCObject { XPCObject(xpc_object: endpointObject) }
 }
 
+/// One exported-actor endpoint: a fresh anonymous listener plus the peers
+/// that dialed it. The listener lives as long as the owning session — until
+/// the exported actor is destroyed or the system is invalidated. It is
+/// deliberately *not* torn down when the peer list drains: the endpoint may
+/// already have been handed to a receiver that has not dialed yet, and an
+/// anonymous listener occupies no launchd client connection, so it cannot
+/// block on-demand reaping.
 @available(macOS 15, *)
 final class XPCActorExportSession: @unchecked Sendable {
   let id: UUID
   let actorID: XPCActorID
   let listener: XPCConnection
+  /// Invoked when the session transitions to zero live peers. Never invoked
+  /// from `cancel()`.
+  let onDrained: @Sendable () -> Void
   private struct State {
     var peers: [PeerBox] = []
     var cancelled = false
+    var everAcceptedPeer = false
   }
   private let state = Mutex(State())
 
-  init(id: UUID, actorID: XPCActorID, listener: XPCConnection) {
+  init(
+    id: UUID,
+    actorID: XPCActorID,
+    listener: XPCConnection,
+    onDrained: @escaping @Sendable () -> Void
+  ) {
     self.id = id
     self.actorID = actorID
     self.listener = listener
+    self.onDrained = onDrained
+  }
+
+  /// Number of live peer channels, for lifecycle introspection.
+  var peerCount: Int {
+    state.withLock { $0.peers.count }
+  }
+
+  /// Zero live peers after having accepted at least one: every remote
+  /// reference routed through this session is gone. A session that was
+  /// handed out but never dialed is an in-flight wire and never reports
+  /// drained.
+  var fullyDrained: Bool {
+    state.withLock { state in
+      state.everAcceptedPeer && state.peers.isEmpty
+    }
   }
 
   func accept(_ peer: PeerBox) -> Bool {
     state.withLock {
       guard !$0.cancelled else { return false }
+      $0.everAcceptedPeer = true
       $0.peers.append(peer)
       return true
     }
   }
 
   func drop(peerID: UUID) {
-    state.withLock { $0.peers.removeAll { $0.id == peerID } }
+    // Remove under the lock, release outside: PeerBox deinit cancels the
+    // peer, and teardown must never run while `state` is held.
+    let (removed, drained) = state.withLock { state -> (PeerBox?, Bool) in
+      guard let index = state.peers.firstIndex(where: { $0.id == peerID }) else {
+        return (nil, false)
+      }
+      let removed = state.peers.remove(at: index)
+      return (removed, state.peers.isEmpty && !state.cancelled)
+    }
+    _ = removed
+    if drained { onDrained() }
   }
 
   func cancel() {
@@ -115,6 +158,10 @@ final class XPCActorExportSession: @unchecked Sendable {
 
 /// Identity wrapper so an accepted peer connection can be removed from the
 /// session when it dies (XPCConnection is a struct without stable identity).
+/// Dropping the box also cancels this side of the channel: when a client
+/// releases its imported proxy, its owned system tears the connection down,
+/// and this end must close symmetrically instead of lingering half-open.
+/// Cancelling an already-dead connection is a no-op.
 @available(macOS 15, *)
 final class PeerBox: @unchecked Sendable {
   let id = UUID()
@@ -123,6 +170,8 @@ final class PeerBox: @unchecked Sendable {
   init(_ connection: XPCConnection) {
     self.connection = connection
   }
+
+  deinit { connection.cancel() }
 }
 
 @available(macOS 15, *)
@@ -146,14 +195,36 @@ extension XPCDistributedActorSystem {
       )
       return try reference.marshal()
     }
-    throw .remoteActorExportUnsupported(String(describing: Act.self))
+    // Child reclamation may have released the registry entry of a local
+    // actor that is still alive (the singleton kept a reference). Re-adopt
+    // it; a remote proxy without a stored wire is genuinely unexportable.
+    // `__isLocalActor` is the runtime's public locality probe.
+    guard __isLocalActor(actor) else {
+      throw .remoteActorExportUnsupported(String(describing: Act.self))
+    }
+    let previous = invalidated.withLock { invalidated -> (any DistributedActor)? in
+      guard !invalidated else { return nil }
+      return activeActorsLock.withLock { actors in
+        actors.updateValue(actor, forKey: actor.id)
+      }
+    }
+    // Release any displaced occupant outside the lock: its deinit calls
+    // back into `resignID`, which re-enters `activeActorsLock`.
+    withExtendedLifetime(previous) {}
+    return try mintExportSession(for: actor)
   }
 
   private func mintExportSession<Act>(for actor: Act) throws(XPCMarshalError) -> XPCObject
   where Act: XPCExportableActor {
     let listener = XPCConnection(name: nil)
     let sessionID = UUID()
-    let session = XPCActorExportSession(id: sessionID, actorID: actor.id, listener: listener)
+    let actorID = actor.id
+    let session = XPCActorExportSession(
+      id: sessionID,
+      actorID: actorID,
+      listener: listener,
+      onDrained: { [weak self] in self?.exportSessionDrained(actorID) }
+    )
     listener.setEventHandler { [weak self, weak actor, weak session] object in
       guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
       let peer = XPCConnection(xpc_object: object.xpc_object)

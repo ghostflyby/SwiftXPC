@@ -33,16 +33,44 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   let exportSessionsLock = Mutex<[UUID: XPCActorExportSession]>([:])
   let importedReferencesLock = Mutex<[XPCActorID: StoredActorReference]>([:])
   let invalidated = Mutex(false)
+  private let serviceShutdownHandler = Mutex<(@Sendable () -> Void)?>(nil)
   private let ownsConnection: Bool
+  /// Whether fully drained export sessions release their child's registry
+  /// pin. Enabled only on the service host system; per-session systems
+  /// reclaim through their own invalidation cascade instead.
+  private let allowsChildReclamation: Bool
   public let connection: XPCConnection
+
+  private static let _serviceHost: XPCDistributedActorSystem = {
+    let connection = XPCConnection(name: nil)
+    connection.setEventHandler { _ in }
+    connection.activate()
+    let system = XPCDistributedActorSystem(
+      connection: connection,
+      ownsConnection: true,
+      allowsChildReclamation: true)
+    // The singleton root is the first actor on the host: reserving `.root`
+    // at creation makes its identity independent of when `shared` is first
+    // materialized relative to the first accepted connection.
+    system.reserveRootID()
+    return system
+  }()
+
+  /// The process-owned long-lived system hosting `XPCServiceExit` singleton
+  /// roots. Its connection is a process-lifetime idle channel kept activated
+  /// so the system — and the actors registered in it — never loses its
+  /// transport; real traffic rides each bound peer connection and each
+  /// exported or imported actor's own channel.
+  public static var serviceHost: XPCDistributedActorSystem { _serviceHost }
 
   public convenience init(connection: XPCConnection) {
     self.init(connection: connection, ownsConnection: false)
   }
 
-  init(connection: XPCConnection, ownsConnection: Bool) {
+  init(connection: XPCConnection, ownsConnection: Bool, allowsChildReclamation: Bool = false) {
     self.connection = connection
     self.ownsConnection = ownsConnection
+    self.allowsChildReclamation = allowsChildReclamation
     self.connection.addInvalidationHandler { [weak self] in
       self?.invalidate()
     }
@@ -98,14 +126,16 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// reservation (root bootstrap) is pending.
   public func assignID<Act>(_ actorType: Act.Type) -> ActorID
   where Act: DistributedActor {
-    if let reserved = reservedIDLock.withLock({
-      let r = $0
-      $0 = nil
-      return r
-    }) {
-      _ = assignedIDsLock.withLock { $0.insert(reserved) }
-      return reserved
+    // Consume the reservation and record the assignment inside the
+    // reservation critical section, so a concurrent `reserveRootID` cannot
+    // re-reserve an identity that is about to be assigned.
+    let reserved = reservedIDLock.withLock { reserved -> ActorID? in
+      guard let pending = reserved else { return nil }
+      reserved = nil
+      assignedIDsLock.withLock { $0.insert(pending) }
+      return pending
     }
+    if let reserved { return reserved }
     let id = XPCActorID(id: ids.wrappingAdd(1, ordering: .relaxed).newValue)
     _ = assignedIDsLock.withLock { $0.insert(id) }
     return id
@@ -113,9 +143,19 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   /// Reserves `.root` for the next actor created on this system. Only call
   /// on a freshly created system before any concurrent `assignID` (the
-  /// framework does this inside `XPCRootActorServer.accept`).
+  /// framework does this inside `XPCRootActorServer.accept`). A no-op when
+  /// `.root` is already assigned: the long-lived service host system
+  /// re-reserves on every accept, but only the first accept — the one that
+  /// materializes the singleton — may consume a reservation; a dangling
+  /// reservation would hand `.root` to the next child actor created on the
+  /// host.
   func reserveRootID() {
-    reservedIDLock.withLock { $0 = .root }
+    reservedIDLock.withLock { reserved -> Bool in
+      let taken = assignedIDsLock.withLock { $0.contains(.root) }
+      guard !taken else { return false }
+      reserved = .root
+      return true
+    }
   }
 
   /// Registers a freshly created local actor under its assigned ID.
@@ -145,6 +185,65 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   }
 
   public func makeInvocationEncoder() -> InvocationEncoder { .init() }
+
+  /// Routes `requestServiceShutdown()` to the `XPCRootActorServer` that
+  /// accepted this session. Installed by the server during `accept`; never
+  /// set on client-side systems.
+  func setServiceShutdownHandler(_ handler: @escaping @Sendable () -> Void) {
+    serviceShutdownHandler.withLock { $0 = handler }
+  }
+
+  private let exportDrainHandler = Mutex<(@Sendable () -> Void)?>(nil)
+
+  /// Invoked when one of this system's export sessions drains to zero live
+  /// peers; the hosting server uses it for idle-exit accounting.
+  func setExportDrainHandler(_ handler: (@Sendable () -> Void)?) {
+    exportDrainHandler.withLock { $0 = handler }
+  }
+
+  var hasLiveExportPeers: Bool {
+    // Same criterion as child reclamation: a session that was handed out but
+    // never dialed is an in-flight wire, not an idle one.
+    exportSessionsLock.withLock { sessions in
+      sessions.values.contains { !$0.fullyDrained }
+    }
+  }
+
+  /// Called when an export session for `id` drains to zero live peers.
+  /// With child reclamation enabled, releases the registry pin of `id` when
+  /// every session minted for it is fully drained (zero live peers, none of
+  /// them an un-dialed in-flight wire) — an actor nobody references anymore,
+  /// locally or remotely. The drain handler is notified either way.
+  func exportSessionDrained(_ id: ActorID) {
+    // The singleton root is permanent: never evict its registry entry.
+    if allowsChildReclamation && id != .root {
+      let removed = activeActorsLock.withLock { actors -> (any DistributedActor)? in
+        guard actors[id] != nil else { return nil }
+        let reclaimable = exportSessionsLock.withLock { sessions in
+          let mine = sessions.values.filter { $0.actorID == id }
+          return !mine.isEmpty && mine.allSatisfy(\.fullyDrained)
+        }
+        return reclaimable ? actors.removeValue(forKey: id) : nil
+      }
+      withExtendedLifetime(removed) {}
+    }
+    exportDrainHandler.withLock { $0 }?()
+  }
+
+  /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the
+  /// session this system belongs to; see
+  /// `XPCRootActorServer.requestShutdown()`. This is the entry point for
+  /// service-initiated retirement: hosted by `distributedXPCMain` (default
+  /// `exitOnShutdown: true`), one call from a root actor's
+  /// `distributed func shutdown()` ends the process cooperatively — peers
+  /// observe clean disconnects, `onShutdown` runs, then the process exits.
+  ///
+  /// A no-op on systems that host no server session — client-side systems
+  /// (root connections, imported actor references) can never shut their
+  /// service down through this path.
+  public func requestServiceShutdown() {
+    serviceShutdownHandler.withLock { $0 }?()
+  }
 
   /// Installs the connection's event plumbing. Unbound systems only ever see
   /// lifecycle error objects here (there is no actor to dispatch messages to);

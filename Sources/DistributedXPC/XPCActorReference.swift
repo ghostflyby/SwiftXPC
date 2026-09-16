@@ -84,16 +84,26 @@ final class XPCActorExportSession: @unchecked Sendable {
   let id: UUID
   let actorID: XPCActorID
   let listener: XPCConnection
+  /// Invoked when the session transitions to zero live peers. Never invoked
+  /// from `cancel()`.
+  let onDrained: @Sendable () -> Void
   private struct State {
     var peers: [PeerBox] = []
     var cancelled = false
+    var everAcceptedPeer = false
   }
   private let state = Mutex(State())
 
-  init(id: UUID, actorID: XPCActorID, listener: XPCConnection) {
+  init(
+    id: UUID,
+    actorID: XPCActorID,
+    listener: XPCConnection,
+    onDrained: @escaping @Sendable () -> Void
+  ) {
     self.id = id
     self.actorID = actorID
     self.listener = listener
+    self.onDrained = onDrained
   }
 
   /// Number of live peer channels, for lifecycle introspection.
@@ -101,9 +111,20 @@ final class XPCActorExportSession: @unchecked Sendable {
     state.withLock { $0.peers.count }
   }
 
+  /// Zero live peers after having accepted at least one: every remote
+  /// reference routed through this session is gone. A session that was
+  /// handed out but never dialed is an in-flight wire and never reports
+  /// drained.
+  var fullyDrained: Bool {
+    state.withLock { state in
+      state.everAcceptedPeer && state.peers.isEmpty
+    }
+  }
+
   func accept(_ peer: PeerBox) -> Bool {
     state.withLock {
       guard !$0.cancelled else { return false }
+      $0.everAcceptedPeer = true
       $0.peers.append(peer)
       return true
     }
@@ -112,13 +133,15 @@ final class XPCActorExportSession: @unchecked Sendable {
   func drop(peerID: UUID) {
     // Remove under the lock, release outside: PeerBox deinit cancels the
     // peer, and teardown must never run while `state` is held.
-    let removed = state.withLock { state -> PeerBox? in
+    let (removed, drained) = state.withLock { state -> (PeerBox?, Bool) in
       guard let index = state.peers.firstIndex(where: { $0.id == peerID }) else {
-        return nil
+        return (nil, false)
       }
-      return state.peers.remove(at: index)
+      let removed = state.peers.remove(at: index)
+      return (removed, state.peers.isEmpty && !state.cancelled)
     }
     _ = removed
+    if drained { onDrained() }
   }
 
   func cancel() {
@@ -179,7 +202,13 @@ extension XPCDistributedActorSystem {
   where Act: XPCExportableActor {
     let listener = XPCConnection(name: nil)
     let sessionID = UUID()
-    let session = XPCActorExportSession(id: sessionID, actorID: actor.id, listener: listener)
+    let actorID = actor.id
+    let session = XPCActorExportSession(
+      id: sessionID,
+      actorID: actorID,
+      listener: listener,
+      onDrained: { [weak self] in self?.exportSessionDrained(actorID) }
+    )
     listener.setEventHandler { [weak self, weak actor, weak session] object in
       guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
       let peer = XPCConnection(xpc_object: object.xpc_object)

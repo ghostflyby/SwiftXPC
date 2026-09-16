@@ -20,10 +20,20 @@ public protocol XPCRootActor: XPCExportableActor,
 public final class XPCRootActorServer<Root>: Sendable
 where Root: XPCRootActor {
   private final class Session: @unchecked Sendable {
-    let system: XPCDistributedActorSystem
-    let root: Root
+    /// Per-session systems exist only for plain (non-`XPCServiceExit`)
+    /// roots; singleton sessions carry no system of their own.
+    let system: XPCDistributedActorSystem?
+    /// Keeps the per-session root alive for the session's lifetime; its
+    /// release drives the system's actor-reclamation cascade.
+    let root: Root?
+    let peerConnection: XPCConnection
 
-    init(system: XPCDistributedActorSystem, root: Root) {
+    init(
+      peerConnection: XPCConnection,
+      system: XPCDistributedActorSystem?,
+      root: Root?
+    ) {
+      self.peerConnection = peerConnection
       self.system = system
       self.root = root
     }
@@ -33,6 +43,9 @@ where Root: XPCRootActor {
     var sessions: [UUID: Session] = [:]
     var cancelled = false
     var shutdownRequested = false
+    /// Arms the `XPCServiceExit` idle-exit check: a service that never
+    /// accepted a session never exits.
+    var everAccepted = false
   }
   private let state = Mutex(State())
   private let peerCodeSigningRequirement: String?
@@ -132,8 +145,11 @@ where Root: XPCRootActor {
       return sessions
     }
     for session in sessions.values {
-      session.system.connection.cancel()
-      session.system.invalidate()
+      session.peerConnection.cancel()
+      if let system = session.system {
+        system.connection.cancel()
+        system.invalidate()
+      }
     }
   }
 
@@ -167,6 +183,9 @@ where Root: XPCRootActor {
     } catch {
       return reject(error)
     }
+    if let exitType = Root.self as? any XPCServiceExit.Type {
+      return acceptExitSession(connection, exitType: exitType)
+    }
     let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
     // Actors of this session reach the cooperative shutdown path through
     // their own system; a weak reference avoids a server <-> system cycle.
@@ -176,7 +195,7 @@ where Root: XPCRootActor {
     system.bind(connection, to: root)
 
     let key = UUID()
-    let session = Session(system: system, root: root)
+    let session = Session(peerConnection: connection, system: system, root: root)
     self.onPeerAccept(connection)
     connection.addInvalidationHandler { [weak self] in
       self?.onPeerEnd(connection)
@@ -201,6 +220,78 @@ where Root: XPCRootActor {
       connection.cancel()
       system.invalidate()
     }
+  }
+
+  /// Bootstraps a peer for `XPCServiceExit` roots: every peer binds to the
+  /// process-wide singleton hosted on the long-lived service host system;
+  /// there is no per-session system.
+  private func acceptExitSession<E: XPCServiceExit>(
+    _ connection: XPCConnection,
+    exitType: E.Type
+  ) {
+    let host = XPCDistributedActorSystem.serviceHost
+    // The singleton rides `.root`: reserve it before the first `shared`
+    // access so its lazy creation assigns the reserved identity (one
+    // `XPCServiceExit` root type per process).
+    host.reserveRootID()
+    host.setServiceShutdownHandler { [weak self] in self?.requestShutdown() }
+    host.setExportDrainHandler { [weak self] in self?.maybeIdleExit() }
+
+    let key = UUID()
+    let session = Session(peerConnection: connection, system: nil, root: nil)
+    self.onPeerAccept(connection)
+    connection.addInvalidationHandler { [weak self] in
+      self?.onPeerEnd(connection)
+      let idleCandidate =
+        self?.state.withLock { state -> Bool in
+          state.sessions.removeValue(forKey: key)
+          return state.everAccepted && state.sessions.isEmpty && !state.shutdownRequested
+        } ?? false
+      if idleCandidate {
+        self?.maybeIdleExit()
+      }
+    }
+    // A peer that activates but then fails the kernel-level requirement
+    // delivers XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT; cancel drives the
+    // invalidation chain above.
+    connection.addPeerCodeSigningErrorHandler {
+      connection.cancel()
+    }
+    let accepted = state.withLock { state in
+      guard !state.cancelled else { return false }
+      state.everAccepted = true
+      state.sessions[key] = session
+      return true
+    }
+    host.bind(connection, to: exitType.shared)
+    connection.activate()
+    if !accepted {
+      connection.cancel()
+    }
+  }
+
+  /// Idle exit for `XPCServiceExit` roots: once the first connection armed
+  /// the check, zero accepted sessions and zero live exported child channels
+  /// mean zero remote references — run the cooperative shutdown pipeline
+  /// (`onShutdown`, and the process exit under a hosted `distributedXPCMain`).
+  ///
+  /// The export-peer check races with in-flight dials by design; an idle exit
+  /// that lands between a wire being handed out and its first dial is the
+  /// same window launchd's own reaping has. Idempotent, and never fires on an
+  /// explicitly cancelled server.
+  private func maybeIdleExit() {
+    guard Root.self is any XPCServiceExit.Type else { return }
+    guard !XPCDistributedActorSystem.serviceHost.hasLiveExportPeers else { return }
+    let reserved = state.withLock { state -> Bool in
+      guard state.everAccepted, state.sessions.isEmpty,
+        !state.shutdownRequested, !state.cancelled
+      else { return false }
+      state.shutdownRequested = true
+      return true
+    }
+    guard reserved else { return }
+    cancel()
+    onShutdown()
   }
 }
 

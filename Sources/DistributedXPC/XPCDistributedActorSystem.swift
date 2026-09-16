@@ -35,15 +35,37 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   let invalidated = Mutex(false)
   private let serviceShutdownHandler = Mutex<(@Sendable () -> Void)?>(nil)
   private let ownsConnection: Bool
+  /// Whether fully drained export sessions release their child's registry
+  /// pin. Enabled only on the service host system; per-session systems
+  /// reclaim through their own invalidation cascade instead.
+  private let allowsChildReclamation: Bool
   public let connection: XPCConnection
+
+  private static let _serviceHost: XPCDistributedActorSystem = {
+    let connection = XPCConnection(name: nil)
+    connection.setEventHandler { _ in }
+    connection.activate()
+    return XPCDistributedActorSystem(
+      connection: connection,
+      ownsConnection: true,
+      allowsChildReclamation: true)
+  }()
+
+  /// The process-owned long-lived system hosting `XPCServiceExit` singleton
+  /// roots. Its connection is a process-lifetime idle channel kept activated
+  /// so the system — and the actors registered in it — never loses its
+  /// transport; real traffic rides each bound peer connection and each
+  /// exported or imported actor's own channel.
+  public static var serviceHost: XPCDistributedActorSystem { _serviceHost }
 
   public convenience init(connection: XPCConnection) {
     self.init(connection: connection, ownsConnection: false)
   }
 
-  init(connection: XPCConnection, ownsConnection: Bool) {
+  init(connection: XPCConnection, ownsConnection: Bool, allowsChildReclamation: Bool = false) {
     self.connection = connection
     self.ownsConnection = ownsConnection
+    self.allowsChildReclamation = allowsChildReclamation
     self.connection.addInvalidationHandler { [weak self] in
       self?.invalidate()
     }
@@ -114,9 +136,19 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   /// Reserves `.root` for the next actor created on this system. Only call
   /// on a freshly created system before any concurrent `assignID` (the
-  /// framework does this inside `XPCRootActorServer.accept`).
+  /// framework does this inside `XPCRootActorServer.accept`). A no-op when
+  /// `.root` is already assigned: the long-lived service host system
+  /// re-reserves on every accept, but only the first accept — the one that
+  /// materializes the singleton — may consume a reservation; a dangling
+  /// reservation would hand `.root` to the next child actor created on the
+  /// host.
   func reserveRootID() {
-    reservedIDLock.withLock { $0 = .root }
+    reservedIDLock.withLock { reserved -> Bool in
+      let taken = assignedIDsLock.withLock { $0.contains(.root) }
+      guard !taken else { return false }
+      reserved = .root
+      return true
+    }
   }
 
   /// Registers a freshly created local actor under its assigned ID.
@@ -152,6 +184,40 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// set on client-side systems.
   func setServiceShutdownHandler(_ handler: @escaping @Sendable () -> Void) {
     serviceShutdownHandler.withLock { $0 = handler }
+  }
+
+  private let exportDrainHandler = Mutex<(@Sendable () -> Void)?>(nil)
+
+  /// Invoked when one of this system's export sessions drains to zero live
+  /// peers; the hosting server uses it for idle-exit accounting.
+  func setExportDrainHandler(_ handler: (@Sendable () -> Void)?) {
+    exportDrainHandler.withLock { $0 = handler }
+  }
+
+  var hasLiveExportPeers: Bool {
+    exportSessionsLock.withLock { sessions in
+      sessions.values.contains { $0.peerCount > 0 }
+    }
+  }
+
+  /// Called when an export session for `id` drains to zero live peers.
+  /// With child reclamation enabled, releases the registry pin of `id` when
+  /// every session minted for it is fully drained (zero live peers, none of
+  /// them an un-dialed in-flight wire) — an actor nobody references anymore,
+  /// locally or remotely. The drain handler is notified either way.
+  func exportSessionDrained(_ id: ActorID) {
+    if allowsChildReclamation {
+      let removed = activeActorsLock.withLock { actors -> (any DistributedActor)? in
+        guard actors[id] != nil else { return nil }
+        let reclaimable = exportSessionsLock.withLock { sessions in
+          let mine = sessions.values.filter { $0.actorID == id }
+          return !mine.isEmpty && mine.allSatisfy(\.fullyDrained)
+        }
+        return reclaimable ? actors.removeValue(forKey: id) : nil
+      }
+      withExtendedLifetime(removed) {}
+    }
+    exportDrainHandler.withLock { $0 }?()
   }
 
   /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the

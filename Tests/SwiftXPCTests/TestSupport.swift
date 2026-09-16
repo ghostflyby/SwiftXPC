@@ -56,35 +56,35 @@ func pollUntil(
 /// watchdog.
 @available(macOS 15, *)
 final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
-  let channel: XPCRootTestChannel<Root>
-  var server: XPCRootActorServer<Root> { channel.server }
-  var client: XPCConnection { channel.client }
+  let harness: XPCRootTestHarness<Root>
+  var server: XPCRootActorServer<Root> { harness.server }
+  var client: XPCConnection { harness.channel.connection }
   private let watchdog: DispatchWorkItem
 
   init(
     _ rootType: Root.Type,
     _ delegate: any XPCServiceDelegate<Root> = XPCServiceConfiguration<Root>()
   ) throws {
-    let channel = try xpcTest(rootType, delegate)
-    self.channel = channel
-    watchdog = DispatchWorkItem { channel.close() }
+    let harness = try xpcTest(rootType, delegate)
+    self.harness = harness
+    watchdog = DispatchWorkItem { harness.close() }
     DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
   }
 
   /// Dials a fresh, inactive client connection to the same listener.
   func makeClient() throws -> XPCConnection {
-    try channel.makeClient()
+    try harness.makeClient()
   }
 
   /// Cancels the server-side peer connection as if the service dropped this
   /// client; the client observes its channel going down.
   func killServerPeer() {
-    channel.dropServerPeer()
+    harness.dropServerPeer()
   }
 
   func close() {
     watchdog.cancel()
-    channel.close()
+    harness.close()
   }
 
   deinit { close() }

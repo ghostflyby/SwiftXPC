@@ -64,14 +64,17 @@ xpcMain(ServiceRoot.self, XPCServiceConfiguration(
 ```
 
 For in-process tests, spawn the same service over an anonymous channel with
-`xpcTest` — identical delegate semantics, but nothing exits the process, and
-the handle exposes the client connection and the hosting server:
+`xpcTest` — identical delegate semantics, but nothing exits the process. The
+harness pairs the hosting server with a full production `XPCRootConnection`
+client, so `events` and `retrying` behave exactly as against a launchd
+service:
 
 ```swift
-let channel = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
+let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
   onPeerAccept: { connection in /* hooks fire here too */ }))
-defer { channel.close() }
-let root = try channel.root()
+defer { service.close() }
+let root = service.channel.root
+// service.server.requestShutdown(), service.dropServerPeer(), ...
 ```
 
 Connect from the client process and call across the boundary:

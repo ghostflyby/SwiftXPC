@@ -100,37 +100,84 @@ struct XPCServiceDelegateTests {
     #expect(recorder.events.withLock { $0 } == ["shouldAccept", "shutdown", "exit"])
   }
 
-  @Test func XPCRootTestChannelResolvesRootAndReportsShutdown() async throws {
+  @Test func XPCRootTestHarnessResolvesRootAndReportsShutdown() async throws {
     guard #available(macOS 15, *) else { return }
     let shutdowns = Mutex<Int>(0)
-    let channel = try xpcTest(
+    let service = try xpcTest(
       DelegateRoot.self,
       XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } }))
-    defer { channel.close() }
+    defer { service.close() }
 
-    let root = try channel.root()
-    #expect(try await root.ping() == "delegate")
-    // Idempotent resolution: the same proxy, one client connection.
-    #expect(try channel.root() === root)
+    // The client side is a production channel: root resolved at construction.
+    #expect(try await service.channel.root.ping() == "delegate")
 
     // A cooperative shutdown on the exposed server never exits the process;
     // it only tears the sessions down and fires the hook exactly once.
-    channel.server.requestShutdown()
+    service.server.requestShutdown()
     #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
     #expect(shutdowns.withLock { $0 } == 1)
   }
 
-  @Test func XPCRootTestChannelDropServerPeerDropsCalls() async throws {
+  @Test func XPCRootTestHarnessDropServerPeerEmitsDisconnectAndReestablishes() async throws {
     guard #available(macOS 15, *) else { return }
-    let channel = try xpcTest(DelegateRoot.self)
-    defer { channel.close() }
-    let root = try channel.root()
-    #expect(try await root.ping() == "delegate")
+    let service = try xpcTest(DelegateRoot.self)
+    defer { service.close() }
+    #expect(try await service.channel.root.ping() == "delegate")
 
-    channel.dropServerPeer()
-    await #expect(throws: XPCConnection.ConnectionError.self) {
-      _ = try await root.ping()
+    // Drop surfaces on the production event stream...
+    let disconnected = Mutex(false)
+    let collector = Task {
+      for await event in service.channel.events {
+        if case .disconnected = event {
+          disconnected.withLock { $0 = true }
+          break
+        }
+      }
     }
+    service.dropServerPeer()
+    #expect(await pollUntil { disconnected.withLock { $0 } })
+
+    // ...and because the channel dials the harness's listener endpoint,
+    // libxpc re-dials it and the server accepts a fresh session, so the
+    // same root proxy keeps working.
+    #expect(await pollUntil { (try? await service.channel.root.ping()) == "delegate" })
+    collector.cancel()
+  }
+
+  @Test func XPCRootTestHarnessRetryingRidesOutServerPeerDrop() async throws {
+    guard #available(macOS 15, *) else { return }
+    let service = try xpcTest(DelegateRoot.self)
+    defer { service.close() }
+    #expect(
+      try await service.channel.retrying(XPCRetryPolicy.once) { _ in
+        try await service.channel.root.ping()
+      } == "delegate")
+
+    let disconnected = Mutex(false)
+    let collector = Task {
+      for await event in service.channel.events {
+        if case .disconnected = event {
+          disconnected.withLock { $0 = true }
+          break
+        }
+      }
+    }
+    service.dropServerPeer()
+    // The drop propagates asynchronously; wait until the channel is down.
+    #expect(await pollUntil { disconnected.withLock { $0 } })
+
+    // `retrying` is client-side logic, so it runs unchanged in-process: the
+    // interrupted call is retried, the channel re-dials the anonymous
+    // listener, and the fresh session answers the same call.
+    #expect(
+      try await service.channel.retrying(
+        XPCRetryPolicy(
+          maxAttempts: 3, initialBackoff: .milliseconds(10), multiplier: 1,
+          maxBackoff: .milliseconds(50))
+      ) { _ in
+        try await service.channel.root.ping()
+      } == "delegate")
+    collector.cancel()
   }
 
   @Test func MakeRootConflictAppliesOnlyToExitRootsWithFactory() {

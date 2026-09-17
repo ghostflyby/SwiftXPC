@@ -349,8 +349,9 @@ open class XPCServiceHost: @unchecked Sendable {
   ) {
     shutdownLock.lock()
     defer { shutdownLock.unlock() }
-    if shutdownNotified {
-      continuation.resume(returning: true)
+    let cancelled = state.withLock { $0.cancelled }
+    if shutdownNotified || cancelled {
+      continuation.resume(returning: shutdownNotified)
       return
     }
     shutdownWaiters.append((id, continuation))
@@ -363,6 +364,16 @@ open class XPCServiceHost: @unchecked Sendable {
       DispatchQueue.global().asyncAfter(deadline: deadline) {
         host.cancelShutdownWaiter(id: id)
       }
+    }
+  }
+
+  private func cancelShutdownWaiters(resuming value: Bool) {
+    shutdownLock.lock()
+    let waiters = shutdownWaiters
+    shutdownWaiters.removeAll()
+    shutdownLock.unlock()
+    for waiter in waiters {
+      waiter.continuation.resume(returning: value)
     }
   }
 
@@ -389,7 +400,9 @@ open class XPCServiceHost: @unchecked Sendable {
   }
 
   /// Silently cancels every accepted peer and closes the host to new ones
-  /// without running the shutdown pipeline. Also runs from `deinit`.
+  /// without running the shutdown pipeline. Also runs from `deinit`. Any
+  /// pending `expectShutdown` waiter is released with `false`: a cancelled
+  /// host never runs the pipeline.
   public func cancel() {
     let sessions = state.withLock { state -> [UUID: Session] in
       state.cancelled = true
@@ -400,6 +413,7 @@ open class XPCServiceHost: @unchecked Sendable {
     for session in sessions.values {
       session.peerConnection.cancel()
     }
+    cancelShutdownWaiters(resuming: false)
   }
 }
 

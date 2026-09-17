@@ -17,8 +17,8 @@ import Synchronization
 ///     let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
 ///       onPeerAccept: { connection in /* audit hook fires here too */ }))
 ///     defer { service.close() }
-///     let root = try await service.channel.retrying { _ in
-///       try await service.channel.root.ping()
+///     let root = try await service.client.retrying { _ in
+///       try await service.client.root.ping()
 ///     }
 ///
 /// Coordinators are fully isolated from one another — parallel-safe, no
@@ -33,7 +33,7 @@ import Synchronization
 /// listener endpoint, so it survives peer drops (transparent re-dial) but
 /// dies permanently when the coordinator closes. Only a named-service
 /// connection also survives a full service restart. `dropServerPeer()`
-/// surfaces as `.disconnected` on `channel.events`.
+/// surfaces as `.disconnected` on `client.events`.
 ///
 /// The test-only operations live here, not on the channel: `host` exposes
 /// the service host (cooperative `requestShutdown()` plus the shutdown
@@ -128,9 +128,8 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// Deterministically waits until the delegate hook for `kind` has been
   /// invoked `occurrence` times and returns that occurrence's event
   /// (`occurrence: 2` waits for the second). Returns immediately when
-  /// already recorded; returns `nil` when `timeout` elapses first. Never
-  /// polls. Requires the coordinator to have been spawned with an
-  /// `eventLog`.
+  /// already recorded; returns `nil` when `timeout` elapses first or when
+  /// the coordinator was spawned without an `eventLog`. Never polls.
   public func expectEvent(
     _ kind: XPCServiceEvent.Kind,
     occurrence: Int = 1,
@@ -146,9 +145,9 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   }
 
   /// Deterministically waits until a cooperative shutdown has run
-  /// (\`requestShutdown()\`, or \`XPCDistributedActorSystem
-  /// .requestServiceShutdown()\` from actor code), returning \`true\`;
-  /// \`false\` when \`timeout\` elapses first. Never polls.
+  /// (`requestShutdown()`, or `XPCDistributedActorSystem
+  /// .requestServiceShutdown()` from actor code), returning `true`;
+  /// `false` when `timeout` elapses first. Never polls.
   public func waitForShutdown(timeout: Duration? = nil) async -> Bool {
     await host.expectShutdown(timeout: timeout)
   }

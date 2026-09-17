@@ -38,7 +38,7 @@ public struct XPCServiceEvent: Equatable, Sendable {
 ///
 ///     let log = XPCServiceEventLog()
 ///     let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(), eventLog: log)
-///     _ = try await service.channel.root.ping()
+///     _ = try await service.client.root.ping()
 ///     service.host.requestShutdown()
 ///     #expect(await log.expectEvent(.serviceWillShutdown) != nil)
 ///     #expect(log.events.map(\.kind) == [
@@ -81,9 +81,15 @@ public final class XPCServiceEventLog: @unchecked Sendable {
       errorDescription: error.map(String.init(describing:)))
     lock.lock()
     recordedEvents.append(event)
-    let waiter = waiters.firstIndex(where: { $0.kind == kind }).map { waiters.remove(at: $0) }
+    var released: [CheckedContinuation<Bool, Never>] = []
+    while let index = waiters.firstIndex(where: {
+      $0.kind == event.kind
+        && recordedEvents.filter { $0.kind == event.kind }.count >= $0.atLeast
+    }) {
+      released.append(waiters.remove(at: index).continuation)
+    }
     lock.unlock()
-    waiter?.continuation.resume(returning: true)
+    released.forEach { $0.resume(returning: true) }
   }
 
   /// Deterministically waits until an event of `kind` has been recorded and

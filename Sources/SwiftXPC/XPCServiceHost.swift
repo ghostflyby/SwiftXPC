@@ -45,9 +45,10 @@ public protocol XPCServiceDelegate: Sendable {
 
   /// Invoked when a peer is rejected before ever being accepted:
   /// `shouldAcceptPeer(_:)` returned `false` (error is `nil`), it threw, the
-  /// code signing requirement could not be installed, or the host already
-  /// shut down (error is `nil`). The connection is already cancelled; only
-  /// identity inspection is meaningful.
+  /// peer handler threw, the code signing requirement could not be
+  /// installed, or the host already shut down (error is `nil`). The
+  /// connection is already cancelled; only identity inspection is
+  /// meaningful.
   func didRejectPeer(_ connection: XPCConnection, error: (any Error)?)
 
   /// Invoked by a hosted entry point once the host exists, before the event
@@ -189,7 +190,7 @@ open class XPCServiceHost: @unchecked Sendable {
 
   private let state = Mutex(State())
   private let delegate: any XPCServiceDelegate
-  private let peerHandler = Mutex<@Sendable (XPCConnection) -> Void>({ _ in })
+  private let peerHandler = Mutex<@Sendable (XPCConnection) throws -> Void>({ _ in })
   /// Installed by a hosting entry point; runs after
   /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
   private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
@@ -202,12 +203,15 @@ open class XPCServiceHost: @unchecked Sendable {
   deinit { cancel() }
 
   /// Installs the message-routing step for accepted peers — invoked for
-  /// each audited, accepted peer *before activation* and before
-  /// `didAcceptPeer`. Wire event handlers or bind service state here; the
-  /// host activates the connection. Must be installed before the host
-  /// starts accepting; defaults to a no-op for delegates that manage peers
-  /// purely through the hooks.
-  public func setPeerHandler(_ handler: @escaping @Sendable (XPCConnection) -> Void) {
+  /// each audited peer *before activation* and before `didAcceptPeer`.
+  /// Wire event handlers or bind service state here; the host activates
+  /// the connection. Throwing rejects the peer: it is reported to
+  /// `didRejectPeer(_:error:)` on an already-cancelled connection. Must be
+  /// installed before the host starts accepting; defaults to a no-op for
+  /// delegates that manage peers purely through the hooks.
+  public func setPeerHandler(
+    _ handler: @escaping @Sendable (XPCConnection) throws -> Void
+  ) {
     peerHandler.withLock { $0 = handler }
   }
 
@@ -219,10 +223,10 @@ open class XPCServiceHost: @unchecked Sendable {
     shutdownCompletion.withLock { $0 = completion }
   }
 
-  /// Audits, accepts, and bookkeeps one incoming peer connection. Feed this
-  /// from the service's listener event handler (or `xpcMain`). Connections
-  /// that are not peer connection objects (listener error events) are
-  /// ignored.
+  /// Audits, accepts, and bookkeeps one incoming peer connection. The
+  /// hosted entry point (`xpcMain`) feeds this for each incoming peer;
+  /// connections that are not peer connection objects (listener error
+  /// events) are ignored.
   public func accept(_ connection: XPCConnection) {
     // Listener event handlers forward every event, including error objects
     // for the listener itself; only real peers bootstrap a session.
@@ -253,7 +257,11 @@ open class XPCServiceHost: @unchecked Sendable {
     } catch {
       return reject(error)
     }
-    peerHandler.withLock { $0 }(connection)
+    do {
+      try peerHandler.withLock { $0 }(connection)
+    } catch {
+      return reject(error)
+    }
     delegate.didAcceptPeer(connection)
 
     let key = UUID()

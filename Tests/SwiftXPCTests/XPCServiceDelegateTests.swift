@@ -21,7 +21,6 @@ distributed actor DelegateRoot: XPCRootActor {
 struct XPCServiceDelegateTests {
   @available(macOS 15, *)
   private final class CountingDelegate: XPCServiceDelegate {
-    typealias Root = DelegateRoot
     let audits = Mutex<Int>(0)
     let accepted = Mutex<Int>(0)
 
@@ -77,7 +76,7 @@ struct XPCServiceDelegateTests {
     #expect(delegate.accepted.withLock { $0 } == 1)
   }
 
-  @Test func XPCRootTestHarnessResolvesRootAndReportsShutdown() async throws {
+  @Test func XPCRootTestCoordinatorResolvesRootAndReportsShutdown() async throws {
     guard #available(macOS 15, *) else { return }
     let shutdowns = Mutex<Int>(0)
     let service = try xpcTest(
@@ -95,7 +94,7 @@ struct XPCServiceDelegateTests {
     #expect(shutdowns.withLock { $0 } == 1)
   }
 
-  @Test func XPCRootTestHarnessDropServerPeerEmitsDisconnectAndReestablishes() async throws {
+  @Test func XPCRootTestCoordinatorDropServerPeerEmitsDisconnectAndReestablishes() async throws {
     guard #available(macOS 15, *) else { return }
     let service = try xpcTest(DelegateRoot.self)
     defer { service.close() }
@@ -121,7 +120,7 @@ struct XPCServiceDelegateTests {
     collector.cancel()
   }
 
-  @Test func XPCRootTestHarnessRetryingRidesOutServerPeerDrop() async throws {
+  @Test func XPCRootTestCoordinatorRetryingRidesOutServerPeerDrop() async throws {
     guard #available(macOS 15, *) else { return }
     let service = try xpcTest(DelegateRoot.self)
     defer { service.close() }

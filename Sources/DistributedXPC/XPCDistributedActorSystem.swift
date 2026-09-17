@@ -56,7 +56,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     return system
   }()
 
-  /// The process-owned long-lived system hosting `XPCServiceExit` singleton
+  /// The process-owned long-lived system hosting `XPCRootActor` singleton
   /// roots. Its connection is a process-lifetime idle channel kept activated
   /// so the system — and the actors registered in it — never loses its
   /// transport; real traffic rides each bound peer connection and each
@@ -193,14 +193,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     serviceShutdownHandler.withLock { $0 = handler }
   }
 
-  private let exportDrainHandler = Mutex<(@Sendable () -> Void)?>(nil)
-
-  /// Invoked when one of this system's export sessions drains to zero live
-  /// peers; the hosting server uses it for idle-exit accounting.
-  func setExportDrainHandler(_ handler: (@Sendable () -> Void)?) {
-    exportDrainHandler.withLock { $0 = handler }
-  }
-
   var hasLiveExportPeers: Bool {
     // Same criterion as child reclamation: a session that was handed out but
     // never dialed is an in-flight wire, not an idle one.
@@ -213,7 +205,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// With child reclamation enabled, releases the registry pin of `id` when
   /// every session minted for it is fully drained (zero live peers, none of
   /// them an un-dialed in-flight wire) — an actor nobody references anymore,
-  /// locally or remotely. The drain handler is notified either way.
+  /// locally or remotely.
   func exportSessionDrained(_ id: ActorID) {
     // The singleton root is permanent: never evict its registry entry.
     if allowsChildReclamation && id != .root {
@@ -227,7 +219,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       }
       withExtendedLifetime(removed) {}
     }
-    exportDrainHandler.withLock { $0 }?()
   }
 
   /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the

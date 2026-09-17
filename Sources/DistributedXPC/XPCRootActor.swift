@@ -96,8 +96,6 @@ extension XPCRootActor {
 /// channel is what its on-demand reaping needs.
 @available(macOS 15, *)
 public final class XPCRootActorServer<Root: XPCRootActor>: XPCServiceHost, @unchecked Sendable {
-  private let delegate: any XPCServiceDelegate
-
   /// - Parameters:
   ///   - rootType: the concrete root actor type served on every accepted
   ///     peer; only its `shared` singleton is ever constructed.
@@ -108,7 +106,6 @@ public final class XPCRootActorServer<Root: XPCRootActor>: XPCServiceHost, @unch
     _ rootType: Root.Type = Root.self,
     _ delegate: some XPCServiceDelegate = XPCServiceConfiguration()
   ) {
-    self.delegate = delegate
     super.init(delegate)
     setPeerHandler { [weak self] connection in
       let serviceHost = XPCDistributedActorSystem.serviceHost
@@ -122,13 +119,10 @@ public final class XPCRootActorServer<Root: XPCRootActor>: XPCServiceHost, @unch
       // Programming-error guard: if anything else on the service host
       // consumed the `.root` identity before the singleton was created,
       // refuse the peer instead of silently misrouting every call
-      // addressed to `.root`.
+      // addressed to `.root`. Throwing rejects the peer through the host's
+      // standard rejection path.
       guard root.id == .root else {
-        connection.setEventHandler { _ in }
-        connection.activate()
-        connection.cancel()
-        delegate.didRejectPeer(connection, error: XPCDispatchError.unknownActor(.root))
-        return
+        throw XPCDispatchError.unknownActor(.root)
       }
       serviceHost.bind(connection, to: root)
     }
@@ -170,13 +164,7 @@ public protocol XPCApp: XPCServiceDelegate {
 extension XPCApp {
   @MainActor
   public static func main() {
-    let delegate = Self()
-    let server = XPCRootActorServer(Self.Root.self, delegate)
-    // The hosted service *is* the process: retire it right after the
-    // delegate's shutdown hook has run.
-    server.setShutdownCompletion { exit(0) }
-    delegate.serviceWillStart(host: server)
-    xpcMain(Self.Root.self, delegate)
+    xpcMain(Self.Root.self, Self())
   }
 }
 

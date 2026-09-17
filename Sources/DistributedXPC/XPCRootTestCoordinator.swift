@@ -115,11 +115,11 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     self.watchdog = nil
     guard let watchdog else { return }
     let item = DispatchWorkItem { [weak self] in self?.close() }
+    self.watchdog = item
     let seconds =
       Double(watchdog.components.seconds)
       + Double(watchdog.components.attoseconds) * 1e-18
     DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
-    self.watchdog = item
   }
 
   /// Dials a fresh, inactive client connection to the same listener, for
@@ -191,6 +191,21 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
 ///   - delegate: the service customization; typically an
 ///     `XPCServiceConfiguration` whose closures record side effects for
 ///     assertions.
+///   - eventLog: when non-nil, every delegate-hook invocation is recorded
+///     into it for hook-order and count assertions.
+///   - watchdog: when non-nil, the coordinator force-closes itself after
+///     this duration so a hung test fails fast (pending calls observe the
+///     channel going down) instead of blocking the suite.
+@available(macOS 15, *)
+public func xpcTest<Root: XPCRootActor>(
+  _ rootType: Root.Type,
+  _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
+  eventLog: XPCServiceEventLog? = nil,
+  watchdog: Duration? = nil
+) throws -> XPCRootTestCoordinator<Root> {
+  try XPCRootTestCoordinator(rootType, delegate, eventLog: eventLog, watchdog: watchdog)
+}
+
 /// Polls `condition` until it holds or the deadline passes, returning the
 /// final evaluation. XPC teardown and hook delivery race with in-flight
 /// calls; poll instead of asserting once. The wait is cooperative —
@@ -207,14 +222,4 @@ public func xpcPollUntil(
     try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
   }
   return await condition()
-}
-
-@available(macOS 15, *)
-public func xpcTest<Root: XPCRootActor>(
-  _ rootType: Root.Type,
-  _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
-  eventLog: XPCServiceEventLog? = nil,
-  watchdog: Duration? = nil
-) throws -> XPCRootTestCoordinator<Root> {
-  try XPCRootTestCoordinator(rootType, delegate, eventLog: eventLog, watchdog: watchdog)
 }

@@ -73,8 +73,8 @@ let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
   eventLog: log, watchdog: .seconds(10))
 defer { service.close() }
 let root = service.channel.root
-#expect(log.events.contains(.didAcceptPeer))
-await service.waitUntil { log.events.contains(.peerDidEnd) }
+#expect(log.events.map(\.kind).contains(.didAcceptPeer))
+await service.waitUntil { log.events.map(\.kind).contains(.peerDidEnd) }
 // service.host.requestShutdown(), service.dropServerPeer(), ...
 ```
 

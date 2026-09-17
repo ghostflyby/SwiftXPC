@@ -259,7 +259,6 @@ open class XPCServiceHost: @unchecked Sendable {
       return reject(nil)
     }
 
-    record(.shouldAcceptPeer)
     if let requirement = delegate.peerCodeSigningRequirement {
       do {
         try connection.setPeerCodeSigningRequirement(requirement)
@@ -267,6 +266,7 @@ open class XPCServiceHost: @unchecked Sendable {
         return reject(error)
       }
     }
+    record(.shouldAcceptPeer)
     do {
       guard try delegate.shouldAcceptPeer(connection) else { return reject(nil) }
     } catch {
@@ -275,7 +275,6 @@ open class XPCServiceHost: @unchecked Sendable {
     do {
       try peerHandler.withLock { $0 }(connection)
     } catch {
-      record(.didRejectPeer, error: error)
       return reject(error)
     }
     record(.didAcceptPeer)

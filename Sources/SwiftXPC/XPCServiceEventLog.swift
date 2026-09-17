@@ -10,7 +10,7 @@ import Synchronization
 @available(macOS 15, *)
 public struct XPCServiceEvent: Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
-    /// The audit hook was invoked for an incoming peer.
+    /// The audit window was entered for an incoming peer.
     case shouldAcceptPeer
     /// A peer was accepted (bound to the service, before activation).
     case didAcceptPeer
@@ -56,7 +56,9 @@ public final class XPCServiceEventLog: Sendable {
     state.withLock { $0 }
   }
 
-  /// Appends one event.
+  /// Appends one event. Intentionally public: a service can append custom
+  /// marker events between hook invocations, and tests can assert on the
+  /// combined timeline.
   public func append(
     _ kind: XPCServiceEvent.Kind,
     error: (any Error)? = nil

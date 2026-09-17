@@ -259,6 +259,11 @@ open class XPCServiceHost: @unchecked Sendable {
       return reject(nil)
     }
 
+    // libxpc traps if a message arrives on a connection activated without
+    // an event handler. Install the no-op default first; a peerHandler
+    // that wires real routing replaces it (exactly like reject() above).
+    connection.setEventHandler { _ in }
+
     if let requirement = delegate.peerCodeSigningRequirement {
       do {
         try connection.setPeerCodeSigningRequirement(requirement)
@@ -343,6 +348,10 @@ open class XPCServiceHost: @unchecked Sendable {
 /// entry point, so the type itself can carry `@main`. The library-provided
 /// `main()` hosts a fresh instance through `XPCServiceHost(Self())` and
 /// exits the process after a cooperative shutdown.
+///
+/// The default peer handler ignores incoming traffic: a plain service that
+/// should respond to messages installs its routing from
+/// `serviceWillStart(host:)` via `host.setPeerHandler(...)`.
 @available(macOS 15, *)
 public protocol XPCServiceMain: XPCServiceDelegate {
   /// Creates the delegate for hosting.

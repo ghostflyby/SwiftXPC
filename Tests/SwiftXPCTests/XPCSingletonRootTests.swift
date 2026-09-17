@@ -15,10 +15,11 @@ distributed actor ExitSingletonRoot: XPCRootActor {
   // The witness reads the file-scoped singleton; creation itself lives at
   // file scope because the witness requirement's isolation inference breaks
   // when the type creates itself in its own static scope (Swift 6.4).
-  // NOTE: placed first in the file on purpose — as a P0 detector this test
-  // only works when it runs before any accept materializes the singleton.
   // This type intentionally overrides the default `shared`: it is the
   // stateful-singleton variant used to prove cross-peer instance identity.
+  // (The old order-dependent P0 detector is structurally impossible now:
+  // the service host reserves `.root` at creation, before any type can
+  // materialize a shared instance.)
   static var shared: ExitSingletonRoot { singletonInstance }
 
   private let bumps = Mutex(0)

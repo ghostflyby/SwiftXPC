@@ -39,7 +39,7 @@ public struct XPCServiceEvent: Equatable, Sendable {
 ///     let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(), eventLog: log)
 ///     _ = try await service.channel.root.ping()
 ///     service.host.requestShutdown()
-///     #expect(log.events.map(\\.kind) == [
+///     #expect(log.events.map(\.kind) == [
 ///       .shouldAcceptPeer, .didAcceptPeer, .serviceWillShutdown])
 ///
 /// Pairs naturally with Swift Testing's

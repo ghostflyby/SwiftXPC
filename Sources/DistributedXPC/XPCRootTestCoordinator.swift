@@ -17,7 +17,7 @@ import Synchronization
 ///     let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
 ///       onPeerAccept: { connection in /* audit hook fires here too */ }))
 ///     defer { service.close() }
-///     let root = try await service.channel.retrying {
+///     let root = try await service.channel.retrying { _ in
 ///       try await service.channel.root.ping()
 ///     }
 ///

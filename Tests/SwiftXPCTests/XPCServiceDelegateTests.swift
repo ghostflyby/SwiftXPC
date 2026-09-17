@@ -57,6 +57,28 @@ struct XPCServiceDelegateTests {
     #expect(events.withLock { $0 } == ["shutdown", "exit"])
   }
 
+  @Test func PlainHostAcceptsPeerMessageWithoutCrashing() async throws {
+    // Regression: a bare XPCServiceHost (default no-op peer handler) used to
+    // activate peers with no libxpc event handler installed — the first
+    // incoming message raised _xpc_api_misuse and killed the process. The
+    // fallback handler must keep the service alive and silent instead.
+    guard #available(macOS 15, *) else { return }
+    let host = XPCServiceHost(XPCServiceConfiguration())
+    let listener = XPCConnection(name: nil)
+    listener.setEventHandler { object in
+      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object.xpc_object))
+    }
+    listener.activate()
+    let client = try XPCConnection.unmarshal(from: listener.marshal())
+    client.setEventHandler { _ in }
+    client.activate()
+
+    client.sendAndForget(message: XPCDictionary())
+    host.requestShutdown()  // Reaching this point proves the process survived.
+    listener.cancel()
+  }
+
   @Test func DefaultHostingServesSingletonRoot() async throws {
     guard #available(macOS 15, *) else { return }
     let channel = try RootChannel(DelegateRoot.self)

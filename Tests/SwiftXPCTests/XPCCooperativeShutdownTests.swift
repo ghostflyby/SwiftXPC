@@ -32,7 +32,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   let root = try ShutdownRoot.connect(using: channel.client)
   #expect(try await root.ping() == "root")
 
-  channel.server.requestShutdown()
+  channel.host.requestShutdown()
 
   // Poll: the server-side cancel races with in-flight sends.
   let failed = await pollUntil {
@@ -57,7 +57,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   )
   defer { channel.close() }
 
-  channel.server.requestShutdown()
+  channel.host.requestShutdown()
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
@@ -90,7 +90,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   #expect(try await root.ping() == "root")
   #expect(audits.withLock { $0 } == 1)
 
-  channel.server.requestShutdown()
+  channel.host.requestShutdown()
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
@@ -114,9 +114,9 @@ distributed actor ShutdownRoot: XPCRootActor {
   let root = try ShutdownRoot.connect(using: channel.client)
   #expect(try await root.ping() == "root")
 
-  channel.server.requestShutdown()
-  channel.server.requestShutdown()
-  channel.server.requestShutdown()
+  channel.host.requestShutdown()
+  channel.host.requestShutdown()
+  channel.host.requestShutdown()
 
   #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
   #expect(shutdowns.withLock { $0 } == 1)

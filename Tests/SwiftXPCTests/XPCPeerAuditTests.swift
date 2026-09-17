@@ -174,7 +174,7 @@ private func waitUntil(
 /// Regression: the sync `send` must pass the connection itself to
 /// `xpc_connection_send_message_with_reply_sync`; passing the message twice
 /// is a libxpc programming error that traps the process.
-@Test func SyncSendSurfacesInterruptionFromRejectedPeer() throws {
+@Test func SyncSendSurfacesInterruptionFromRejectedPeer() async throws {
   guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(
     AuditRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))

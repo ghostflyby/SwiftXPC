@@ -56,14 +56,14 @@ func pollUntil(
 /// watchdog.
 @available(macOS 15, *)
 final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
-  let harness: XPCRootTestHarness<Root>
-  var server: XPCRootActorServer<Root> { harness.server }
+  let harness: XPCRootTestCoordinator<Root>
+  var host: XPCServiceHost { harness.host }
   var client: XPCConnection { harness.channel.connection }
   private let watchdog: DispatchWorkItem
 
   init(
     _ rootType: Root.Type,
-    _ delegate: any XPCServiceDelegate<Root> = XPCServiceConfiguration<Root>()
+    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
   ) throws {
     let harness = try xpcTest(rootType, delegate)
     self.harness = harness
@@ -85,6 +85,57 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
   func close() {
     watchdog.cancel()
     harness.close()
+  }
+
+  deinit { close() }
+}
+
+/// Drives the **production** singleton path: an `XPCRootActorServer` binds
+/// `Root.shared` on the process-global service host, exactly as a hosted
+/// `xpcMain` service does. The service host is process-global — one root
+/// type per test process — so suites using this fixture must be
+/// `.serialized`.
+@available(macOS 15, *)
+final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
+  let server: XPCRootActorServer<Root>
+  let client: XPCConnection
+  private let listener: XPCConnection
+  private let watchdog: DispatchWorkItem
+
+  init(
+    _ rootType: Root.Type,
+    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
+  ) throws {
+    let listener = XPCConnection(name: nil)
+    let server = XPCRootActorServer<Root>(rootType, delegate)
+    listener.setEventHandler { object in
+      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
+      server.accept(XPCConnection(xpc_object: object.xpc_object))
+    }
+    listener.activate()
+
+    let client = try XPCConnection.unmarshal(from: listener.marshal())
+    self.listener = listener
+    self.server = server
+    self.client = client
+    watchdog = DispatchWorkItem {
+      client.cancel()
+      listener.cancel()
+      server.cancel()
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
+  }
+
+  /// Dials a fresh, inactive client connection to the same listener.
+  func makeClient() throws -> XPCConnection {
+    try XPCConnection.unmarshal(from: listener.marshal())
+  }
+
+  func close() {
+    watchdog.cancel()
+    client.cancel()
+    listener.cancel()
+    server.cancel()
   }
 
   deinit { close() }

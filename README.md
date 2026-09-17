@@ -8,8 +8,8 @@ Two products ship from this package:
 
 | Product | Contents |
 |---|---|
-| `SwiftXPC` | Swift wrapper vocabulary for the XPC C API: `XPCObject`/`XPCArray`/`XPCDictionary`, the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the `xpcMain` service entry point |
-| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor`, `XPCRootActorServer`, `XPCServiceDelegate` + `xpcMain`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
+| `SwiftXPC` | Swift wrapper vocabulary for the XPC C API: `XPCObject`/`XPCArray`/`XPCDictionary`, the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`, `XPCServiceMain`) |
+| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCRootActorServer`, `XPCApp` `@main`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
 
 ## Requirements
 
@@ -41,40 +41,35 @@ distributed actor ServiceRoot: XPCRootActor {
 }
 ```
 
-Serve it from the XPC service process:
+Serve it from the XPC service process — mark the delegate `@main` via
+`XPCApp` (the root actor is the service's process-wide singleton):
 
 ```swift
 @main
-enum Service {
-  @MainActor static func main() {
-    xpcMain(ServiceRoot.self)
-  }
+struct ServiceMain: XPCApp {
+  typealias Root = ServiceRoot
 }
 ```
 
-Customize how peers are audited and accepted, or how the root actor is
-constructed, by passing an `XPCServiceConfiguration` (or your own
-`XPCServiceDelegate` conformer); every hook defaults to the protocol
-behavior, so you only state what you customize:
-
-```swift
-xpcMain(ServiceRoot.self, XPCServiceConfiguration(
-  peerCodeSigningRequirement: "identifier \"com.example.agent\"",
-  shouldAccept: { $0.euid == 501 }))
-```
+Customize how peers are audited and accepted by implementing the
+`XPCServiceDelegate` hooks directly on the app type; every hook defaults to
+the protocol behavior, so you only state what you customize. The functional
+form `xpcMain(ServiceRoot.self, XPCServiceConfiguration(
+  peerCodeSigningRequirement: "identifier \"com.example.agent\""))` is
+equivalent.
 
 For in-process tests, spawn the same service over an anonymous channel with
-`xpcTest` — identical delegate semantics, but nothing exits the process. The
-harness pairs the hosting server with a full production `XPCRootConnection`
-client, so `events` and `retrying` behave exactly as against a launchd
-service:
+`xpcTest` — identical delegate semantics, but nothing exits the process, and
+each coordinator serves a **fresh, isolated** root instance so tests never
+share state. The client side is a full production `XPCRootConnection`, so
+`events` and `retrying` behave exactly as against a launchd service:
 
 ```swift
 let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
   onPeerAccept: { connection in /* hooks fire here too */ }))
 defer { service.close() }
 let root = service.channel.root
-// service.server.requestShutdown(), service.dropServerPeer(), ...
+// service.host.requestShutdown(), service.dropServerPeer(), ...
 ```
 
 Connect from the client process and call across the boundary:
@@ -91,6 +86,11 @@ print(try await worker.greet(name: "world"))
 
 ## Model
 
+- **One process, one root.** The root actor is a process-wide singleton
+  (`XPCRootActor.shared`): every accepted client channel serves the same
+  instance, and one service process hosts one root type — the shape of a
+  typical launchd-managed XPC service. Per-connection state belongs in the
+  child actors the root hands out.
 - **One channel, one actor.** The initial mach-service channel serves the root
   actor (`XPCActorID.root`); every returned actor reference exports a fresh
   anonymous channel. Calls on a channel are FIFO-ordered.

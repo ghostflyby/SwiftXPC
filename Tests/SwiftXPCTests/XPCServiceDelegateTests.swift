@@ -47,9 +47,9 @@ struct XPCServiceDelegateTests {
     // The completion is the hosting layer's process exit: installed by
     // xpcMain, it must run after the delegate hook, exactly once, on the
     // shutdown-driving thread.
-    service.server.setShutdownCompletion { events.withLock { $0.append("exit") } }
-    service.server.requestShutdown()
-    service.server.requestShutdown()
+    service.host.setShutdownCompletion { events.withLock { $0.append("exit") } }
+    service.host.requestShutdown()
+    service.host.requestShutdown()
 
     #expect(
       await pollUntil {
@@ -58,23 +58,7 @@ struct XPCServiceDelegateTests {
     #expect(events.withLock { $0 } == ["shutdown", "exit"])
   }
 
-  @Test func CustomMakeRootConstructsPerSessionRoot() async throws {
-    guard #available(macOS 15, *) else { return }
-    let factoryCalls = Mutex<Int>(0)
-    let channel = try RootChannel(
-      DelegateRoot.self,
-      XPCServiceConfiguration(
-        makeRoot: { system in
-          factoryCalls.withLock { $0 += 1 }
-          return DelegateRoot(actorSystem: system)
-        }))
-    defer { channel.close() }
-    let root = try DelegateRoot.connect(using: channel.client)
-    #expect(try await root.ping() == "delegate")
-    #expect(factoryCalls.withLock { $0 } == 1)
-  }
-
-  @Test func DefaultHostingServesRootWithoutFactory() async throws {
+  @Test func DefaultHostingServesSingletonRoot() async throws {
     guard #available(macOS 15, *) else { return }
     let channel = try RootChannel(DelegateRoot.self)
     defer { channel.close() }
@@ -106,7 +90,7 @@ struct XPCServiceDelegateTests {
 
     // A cooperative shutdown on the exposed server never exits the process;
     // it only tears the sessions down and fires the hook exactly once.
-    service.server.requestShutdown()
+    service.host.requestShutdown()
     #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
     #expect(shutdowns.withLock { $0 } == 1)
   }
@@ -173,19 +157,4 @@ struct XPCServiceDelegateTests {
     collector.cancel()
   }
 
-  @Test func MakeRootConflictAppliesOnlyToExitRootsWithFactory() {
-    guard #available(macOS 15, *) else { return }
-    // Plain roots may customize makeRoot.
-    #expect(
-      XPCServiceConfiguration<DelegateRoot>.makeRootConflict(
-        makeRoot: { system in DelegateRoot(actorSystem: system) }
-      ) == nil)
-    // Exit roots without a factory are fine; with one they conflict.
-    #expect(
-      XPCServiceConfiguration<ExitSingletonRoot>.makeRootConflict(makeRoot: nil) == nil)
-    #expect(
-      XPCServiceConfiguration<ExitSingletonRoot>.makeRootConflict(
-        makeRoot: { _ in ExitSingletonRoot.shared }
-      ) != nil)
-  }
 }

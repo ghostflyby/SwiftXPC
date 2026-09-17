@@ -159,8 +159,8 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
 /// Connection-lifecycle plumbing for an XPC service: session bookkeeping,
 /// the pre-activation audit window, rejection paths, and the cooperative
 /// shutdown pipeline. Actor-free — an actor runtime layers on top by
-/// installing a `peerHandler` that binds accepted peers, exactly as
-/// `DistributedXPC`'s root-actor server does.
+/// subclassing and installing a `peerHandler` that binds accepted peers,
+/// exactly as `DistributedXPC`'s root-actor server does.
 ///
 /// Lifecycle of an accepted peer: requirement install →
 /// `shouldAcceptPeer` → `peerHandler` (wire message routing) →
@@ -172,7 +172,7 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
 /// decision (on-demand reaping) or the hosting entry point's
 /// (`setShutdownCompletion`); the host itself never exits the process.
 @available(macOS 15, *)
-public class XPCServiceHost: @unchecked Sendable {
+open class XPCServiceHost: @unchecked Sendable {
   final class Session: @unchecked Sendable {
     let peerConnection: XPCConnection
 
@@ -189,26 +189,27 @@ public class XPCServiceHost: @unchecked Sendable {
 
   private let state = Mutex(State())
   private let delegate: any XPCServiceDelegate
-  private let peerHandler: @Sendable (XPCConnection) -> Void
+  private let peerHandler = Mutex<@Sendable (XPCConnection) -> Void>({ _ in })
   /// Installed by a hosting entry point; runs after
   /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
   private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
 
-  /// - Parameters:
-  ///   - delegate: the connection-lifecycle customization.
-  ///   - peerHandler: invoked for each audited, accepted peer *before
-  ///     activation* — wire message routing here (the host activates).
-  ///     Defaults to a no-op for delegates that manage peers purely through
-  ///     the hooks.
-  public init(
-    _ delegate: some XPCServiceDelegate,
-    peerHandler: @escaping @Sendable (XPCConnection) -> Void = { _ in }
-  ) {
+  /// - Parameter delegate: the connection-lifecycle customization.
+  public init(_ delegate: some XPCServiceDelegate) {
     self.delegate = delegate
-    self.peerHandler = peerHandler
   }
 
   deinit { cancel() }
+
+  /// Installs the message-routing step for accepted peers — invoked for
+  /// each audited, accepted peer *before activation* and before
+  /// `didAcceptPeer`. Wire event handlers or bind service state here; the
+  /// host activates the connection. Must be installed before the host
+  /// starts accepting; defaults to a no-op for delegates that manage peers
+  /// purely through the hooks.
+  public func setPeerHandler(_ handler: @escaping @Sendable (XPCConnection) -> Void) {
+    peerHandler.withLock { $0 = handler }
+  }
 
   /// Installs the hosting layer's post-shutdown step — the explicit
   /// process-retirement control (e.g. `exit(0)` under a hosted entry
@@ -252,14 +253,15 @@ public class XPCServiceHost: @unchecked Sendable {
     } catch {
       return reject(error)
     }
-    peerHandler(connection)
+    peerHandler.withLock { $0 }(connection)
     delegate.didAcceptPeer(connection)
 
     let key = UUID()
     let session = Session(peerConnection: connection)
     connection.addInvalidationHandler { [weak self] in
       self?.delegate.peerDidEnd(connection)
-      self?.state.withLock { $0.sessions.removeValue(forKey: key) }
+      let removed = self?.state.withLock { $0.sessions.removeValue(forKey: key) }
+      withExtendedLifetime(removed) {}
     }
     // A peer that activates but then fails the kernel-level requirement
     // delivers XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT; cancel drives the
@@ -292,7 +294,8 @@ public class XPCServiceHost: @unchecked Sendable {
     guard first else { return }
     cancel()
     delegate.serviceWillShutdown()
-    shutdownCompletion.withLock { $0 }()
+    let completion = shutdownCompletion.withLock { $0 }
+    completion()
   }
 
   /// Silently cancels every accepted peer and closes the host to new ones

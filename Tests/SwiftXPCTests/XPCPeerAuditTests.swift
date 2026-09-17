@@ -37,17 +37,6 @@ private func ownSigningIdentifier() -> String? {
   return (info as NSDictionary)[kSecCodeInfoIdentifier as String] as? String
 }
 
-private func waitUntil(
-  deadline: ContinuousClock.Instant = .now + .seconds(2),
-  _ condition: () -> Bool
-) async -> Bool {
-  while ContinuousClock.now < deadline {
-    if condition() { return true }
-    try? await Task.sleep(for: .milliseconds(10))
-  }
-  return condition()
-}
-
 // MARK: - Server-side requirement installation
 
 @Test func MalformedRequirementRejectsPeerBeforeAudit() async throws {
@@ -70,7 +59,7 @@ private func waitUntil(
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await waitUntil { !rejections.withLock { $0 }.isEmpty })
+  #expect(await xpcPollUntil { !rejections.withLock { $0 }.isEmpty })
   // The requirement install failure must preempt the audit hook and surface
   // as a PeerRequirementError (fail-closed, no silent degradation).
   #expect(auditCalls.withLock { $0 } == 0)
@@ -100,7 +89,7 @@ private func waitUntil(
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await waitUntil { ends.withLock { $0 } >= 1 })
+  #expect(await xpcPollUntil { ends.withLock { $0 } >= 1 })
   #expect(accepted.withLock { $0 } == 1)
   #expect(rejections.withLock { $0 }.isEmpty)
 }
@@ -138,7 +127,7 @@ private func waitUntil(
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await waitUntil { !rejections.withLock { $0 }.isEmpty })
+  #expect(await xpcPollUntil { !rejections.withLock { $0 }.isEmpty })
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   #expect(rejectionsSeen.first is AuditHookFailure)
@@ -159,7 +148,7 @@ private func waitUntil(
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await waitUntil { !rejections.withLock { $0 }.isEmpty })
+  #expect(await xpcPollUntil { !rejections.withLock { $0 }.isEmpty })
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   // Element type is (any Error)?; unwrap the array's outer optional first so

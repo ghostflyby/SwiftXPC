@@ -27,21 +27,6 @@ func makeIdleConnection() -> XPCConnection {
   return connection
 }
 
-/// Polls `condition` until it holds or the deadline passes, returning the
-/// final value. For events that race with async XPC teardown.
-func pollUntil(
-  seconds: Double = 2,
-  intervalMilliseconds: Int = 20,
-  _ condition: @Sendable () async -> Bool
-) async -> Bool {
-  let deadline = ContinuousClock.now + .seconds(seconds)
-  while ContinuousClock.now < deadline {
-    if await condition() { return true }
-    try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
-  }
-  return await condition()
-}
-
 /// An in-process XPC channel carrying real mach traffic between a server side
 /// hosted on an anonymous listener and a client side dialed from its endpoint,
 /// so root-actor tests need no launchd-managed service. A thin test harness
@@ -59,16 +44,12 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
   let harness: XPCRootTestCoordinator<Root>
   var host: XPCServiceHost { harness.host }
   var client: XPCConnection { harness.channel.connection }
-  private let watchdog: DispatchWorkItem
 
   init(
     _ rootType: Root.Type,
     _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
   ) throws {
-    let harness = try xpcTest(rootType, delegate)
-    self.harness = harness
-    watchdog = DispatchWorkItem { harness.close() }
-    DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
+    harness = try xpcTest(rootType, delegate, watchdog: .seconds(10))
   }
 
   /// Dials a fresh, inactive client connection to the same listener.
@@ -83,7 +64,6 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
   }
 
   func close() {
-    watchdog.cancel()
     harness.close()
   }
 

@@ -190,14 +190,27 @@ open class XPCServiceHost: @unchecked Sendable {
 
   private let state = Mutex(State())
   private let delegate: any XPCServiceDelegate
+  private let eventLog: XPCServiceEventLog?
   private let peerHandler = Mutex<@Sendable (XPCConnection) throws -> Void>({ _ in })
   /// Installed by a hosting entry point; runs after
   /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
   private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
 
-  /// - Parameter delegate: the connection-lifecycle customization.
-  public init(_ delegate: some XPCServiceDelegate) {
+  /// - Parameters:
+  ///   - delegate: the connection-lifecycle customization.
+  ///   - eventLog: when non-nil, the host records every delegate-hook
+  ///     invocation into it, in invocation order — the basis for hook
+  ///     assertions in tests.
+  public init(
+    _ delegate: some XPCServiceDelegate,
+    eventLog: XPCServiceEventLog? = nil
+  ) {
     self.delegate = delegate
+    self.eventLog = eventLog
+  }
+
+  private func record(_ kind: XPCServiceEvent.Kind, error: (any Error)? = nil) {
+    eventLog?.append(kind, error: error)
   }
 
   deinit { cancel() }
@@ -238,6 +251,7 @@ open class XPCServiceHost: @unchecked Sendable {
       connection.setEventHandler { _ in }
       connection.activate()
       connection.cancel()
+      record(.didRejectPeer, error: error)
       delegate.didRejectPeer(connection, error: error)
     }
 
@@ -245,6 +259,7 @@ open class XPCServiceHost: @unchecked Sendable {
       return reject(nil)
     }
 
+    record(.shouldAcceptPeer)
     if let requirement = delegate.peerCodeSigningRequirement {
       do {
         try connection.setPeerCodeSigningRequirement(requirement)
@@ -260,13 +275,16 @@ open class XPCServiceHost: @unchecked Sendable {
     do {
       try peerHandler.withLock { $0 }(connection)
     } catch {
+      record(.didRejectPeer, error: error)
       return reject(error)
     }
+    record(.didAcceptPeer)
     delegate.didAcceptPeer(connection)
 
     let key = UUID()
     let session = Session(peerConnection: connection)
     connection.addInvalidationHandler { [weak self] in
+      self?.record(.peerDidEnd)
       self?.delegate.peerDidEnd(connection)
       let removed = self?.state.withLock { $0.sessions.removeValue(forKey: key) }
       withExtendedLifetime(removed) {}
@@ -301,6 +319,7 @@ open class XPCServiceHost: @unchecked Sendable {
     }
     guard first else { return }
     cancel()
+    record(.serviceWillShutdown)
     delegate.serviceWillShutdown()
     let completion = shutdownCompletion.withLock { $0 }
     completion()

@@ -173,12 +173,12 @@ struct XPCSingletonRootTests {
     let workerID = worker?.id
     let id = try #require(workerID)
     _ = try await worker?.greet()
-    #expect(await pollUntil { host.hasLiveExportPeers })
+    #expect(await xpcPollUntil { host.hasLiveExportPeers })
 
     worker = nil
 
-    #expect(await pollUntil { !host.hasLiveExportPeers })
-    #expect(await pollUntil { !hostRegistryContains(id) })
+    #expect(await xpcPollUntil { !host.hasLiveExportPeers })
+    #expect(await xpcPollUntil { !hostRegistryContains(id) })
   }
 
   @available(macOS 15, *)
@@ -191,14 +191,14 @@ struct XPCSingletonRootTests {
     var worker: ExitWorker? = try await root.makeOrReuseWorker()
     #expect(try await worker?.bump() == 1)
     worker = nil
-    #expect(await pollUntil { !host.hasLiveExportPeers })
+    #expect(await xpcPollUntil { !host.hasLiveExportPeers })
 
     // The drained child's registry pin was released, but the singleton still
     // references it: re-handing it out must re-adopt the registry entry and
     // serve the same living instance.
     let reacquired = try await root.makeOrReuseWorker()
     #expect(try await reacquired.bump() == 2)
-    #expect(await pollUntil { hostRegistryContains(reacquired.id) })
+    #expect(await xpcPollUntil { hostRegistryContains(reacquired.id) })
   }
 
   @available(macOS 15, *)
@@ -210,10 +210,10 @@ struct XPCSingletonRootTests {
 
     var handedOut: ExitSingletonRoot? = try await root.me()
     _ = try await handedOut?.bump()
-    #expect(await pollUntil { host.hasLiveExportPeers })
+    #expect(await xpcPollUntil { host.hasLiveExportPeers })
 
     handedOut = nil
-    #expect(await pollUntil { !host.hasLiveExportPeers })
+    #expect(await xpcPollUntil { !host.hasLiveExportPeers })
 
     // The `.root` registry entry is never reclaimed...
     #expect(hostRegistryContains(.root))

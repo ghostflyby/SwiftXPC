@@ -52,6 +52,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   private let listener: XPCConnection
   private let system: XPCDistributedActorSystem
   private let closed = Mutex(false)
+  private var watchdog: DispatchWorkItem?
 
   /// Retains the latest server-side peer so tests can simulate the service
   /// dropping a client.
@@ -60,9 +61,20 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   }
   private let serverPeer: ServerPeerBox
 
+  /// - Parameters:
+  ///   - rootType: the concrete root actor type served on the channel.
+  ///   - delegate: the connection-lifecycle customization.
+  ///   - eventLog: when non-nil, every delegate-hook invocation is recorded
+  ///     into it for hook-order and count assertions.
+  ///   - watchdog: when non-nil, the coordinator force-closes itself after
+  ///     this duration so a hung test fails fast (pending calls observe the
+  ///     channel going down) instead of blocking the suite. The watchdog
+  ///     fires from a global queue; `close()` cancels it.
   init(
     _ rootType: Root.Type,
-    _ delegate: some XPCServiceDelegate
+    _ delegate: some XPCServiceDelegate,
+    eventLog: XPCServiceEventLog? = nil,
+    watchdog: Duration? = nil
   ) throws {
     let processConnection = XPCConnection(name: nil)
     processConnection.setEventHandler { _ in }
@@ -74,7 +86,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     system.reserveRootID()
     let root = Root(actorSystem: system)
 
-    let host = XPCServiceHost(delegate)
+    let host = XPCServiceHost(delegate, eventLog: eventLog)
     host.setPeerHandler { [weak host] connection in
       system.setServiceShutdownHandler { [weak host] in host?.requestShutdown() }
       system.bind(connection, to: root)
@@ -97,6 +109,17 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     self.host = host
     self.channel = channel
     self.serverPeer = serverPeer
+
+    // Scheduled last: `self` may only be captured once every stored
+    // property is initialized.
+    self.watchdog = nil
+    guard let watchdog else { return }
+    let item = DispatchWorkItem { [weak self] in self?.close() }
+    let seconds =
+      Double(watchdog.components.seconds)
+      + Double(watchdog.components.attoseconds) * 1e-18
+    DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+    self.watchdog = item
   }
 
   /// Dials a fresh, inactive client connection to the same listener, for
@@ -128,10 +151,25 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
       return true
     }
     guard first else { return }
+    watchdog?.cancel()
     channel.close()
     listener.cancel()
     host.cancel()
     system.invalidate()
+  }
+
+  /// Waits until `condition` holds or the default two-second deadline
+  /// passes. XPC teardown and hook delivery race with in-flight calls;
+  /// poll instead of asserting once.
+  public func waitUntil(
+    seconds: Double = 2,
+    intervalMilliseconds: Int = 20,
+    _ condition: @Sendable () async -> Bool
+  ) async -> Bool {
+    await xpcPollUntil(
+      seconds: seconds,
+      intervalMilliseconds: intervalMilliseconds,
+      condition)
   }
 
   deinit { close() }
@@ -153,10 +191,30 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
 ///   - delegate: the service customization; typically an
 ///     `XPCServiceConfiguration` whose closures record side effects for
 ///     assertions.
+/// Polls `condition` until it holds or the deadline passes, returning the
+/// final evaluation. XPC teardown and hook delivery race with in-flight
+/// calls; poll instead of asserting once. The wait is cooperative —
+/// condition runs on the cooperative pool, so keep it non-blocking.
+@available(macOS 15, *)
+public func xpcPollUntil(
+  seconds: Double = 2,
+  intervalMilliseconds: Int = 20,
+  _ condition: @Sendable () async -> Bool
+) async -> Bool {
+  let deadline = ContinuousClock.now + .seconds(seconds)
+  while ContinuousClock.now < deadline {
+    if await condition() { return true }
+    try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
+  }
+  return await condition()
+}
+
 @available(macOS 15, *)
 public func xpcTest<Root: XPCRootActor>(
   _ rootType: Root.Type,
-  _ delegate: some XPCServiceDelegate = XPCServiceConfiguration()
+  _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
+  eventLog: XPCServiceEventLog? = nil,
+  watchdog: Duration? = nil
 ) throws -> XPCRootTestCoordinator<Root> {
-  try XPCRootTestCoordinator(rootType, delegate)
+  try XPCRootTestCoordinator(rootType, delegate, eventLog: eventLog, watchdog: watchdog)
 }

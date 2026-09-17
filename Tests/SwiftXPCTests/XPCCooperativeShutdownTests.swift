@@ -35,7 +35,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   channel.host.requestShutdown()
 
   // Poll: the server-side cancel races with in-flight sends.
-  let failed = await pollUntil {
+  let failed = await xpcPollUntil {
     (try? await root.ping()) == nil
   }
   #expect(failed)
@@ -64,7 +64,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   await #expect(throws: XPCConnection.ConnectionError.interrupted) {
     _ = try await lateRoot.ping()
   }
-  #expect(await pollUntil { rejections.withLock { $0 } == 1 })
+  #expect(await xpcPollUntil { rejections.withLock { $0 } == 1 })
 }
 
 @Test func ShutdownRejectsBeforeAuditWindow() async throws {
@@ -99,7 +99,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   }
   // The post-shutdown rejection happens before the audit window: the late
   // peer never reached `shouldAccept`.
-  #expect(await pollUntil { rejections.withLock { $0 } == 1 })
+  #expect(await xpcPollUntil { rejections.withLock { $0 } == 1 })
   #expect(audits.withLock { $0 } == 1)
 }
 
@@ -118,7 +118,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   channel.host.requestShutdown()
   channel.host.requestShutdown()
 
-  #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
+  #expect(await xpcPollUntil { shutdowns.withLock { $0 } == 1 })
   #expect(shutdowns.withLock { $0 } == 1)
 }
 
@@ -135,9 +135,9 @@ distributed actor ShutdownRoot: XPCRootActor {
   // The reply to this very call is normally lost to the synchronous cancel;
   // fire it and observe the teardown instead of awaiting it.
   let reply = Task { try await root.shutdownService() }
-  #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
+  #expect(await xpcPollUntil { shutdowns.withLock { $0 } == 1 })
 
-  let failed = await pollUntil {
+  let failed = await xpcPollUntil {
     (try? await root.ping()) == nil
   }
   #expect(failed)

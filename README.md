@@ -62,13 +62,19 @@ For in-process tests, spawn the same service over an anonymous channel with
 `xpcTest` — identical delegate semantics, but nothing exits the process, and
 each coordinator serves a **fresh, isolated** root instance so tests never
 share state. The client side is a full production `XPCRootConnection`, so
-`events` and `retrying` behave exactly as against a launchd service:
+`events` and `retrying` behave exactly as against a launchd service. A
+watchdog force-closes a hung test, and an `XPCServiceEventLog` records every
+delegate-hook invocation for order and count assertions:
 
 ```swift
+let log = XPCServiceEventLog()
 let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
-  onPeerAccept: { connection in /* hooks fire here too */ }))
+  onPeerAccept: { connection in /* hooks fire here too */ }),
+  eventLog: log, watchdog: .seconds(10))
 defer { service.close() }
 let root = service.channel.root
+#expect(log.events.contains(.didAcceptPeer))
+await service.waitUntil { log.events.contains(.peerDidEnd) }
 // service.host.requestShutdown(), service.dropServerPeer(), ...
 ```
 

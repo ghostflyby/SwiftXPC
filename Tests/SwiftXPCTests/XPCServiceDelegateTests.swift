@@ -51,7 +51,7 @@ struct XPCServiceDelegateTests {
     service.host.requestShutdown()
 
     #expect(
-      await pollUntil {
+      await xpcPollUntil {
         events.withLock { $0 } == ["shutdown", "exit"]
       })
     #expect(events.withLock { $0 } == ["shutdown", "exit"])
@@ -76,6 +76,32 @@ struct XPCServiceDelegateTests {
     #expect(delegate.accepted.withLock { $0 } == 1)
   }
 
+  @Test func EventLogRecordsHookSequenceAndShutdown() async throws {
+    guard #available(macOS 15, *) else { return }
+    let log = XPCServiceEventLog()
+    let service = try xpcTest(DelegateRoot.self, XPCServiceConfiguration(), eventLog: log)
+    defer { service.close() }
+
+    #expect(try await service.channel.root.ping() == "delegate")
+    #expect(log.events.map(\.kind) == [.shouldAcceptPeer, .didAcceptPeer])
+
+    service.host.requestShutdown()
+    #expect(
+      await xpcPollUntil {
+        log.events.map(\.kind) == [.shouldAcceptPeer, .didAcceptPeer, .serviceWillShutdown]
+      })
+  }
+
+  @Test func WatchdogForceClosesTheServiceAfterDuration() async throws {
+    guard #available(macOS 15, *) else { return }
+    let service = try xpcTest(DelegateRoot.self, watchdog: .milliseconds(50))
+    #expect(try await service.channel.root.ping() == "delegate")
+
+    // The watchdog closes the coordinator so a hung test fails fast:
+    // pending calls observe the channel going down.
+    #expect(await xpcPollUntil { (try? await service.channel.root.ping()) == nil })
+  }
+
   @Test func XPCRootTestCoordinatorResolvesRootAndReportsShutdown() async throws {
     guard #available(macOS 15, *) else { return }
     let shutdowns = Mutex<Int>(0)
@@ -90,7 +116,7 @@ struct XPCServiceDelegateTests {
     // A cooperative shutdown on the exposed server never exits the process;
     // it only tears the sessions down and fires the hook exactly once.
     service.host.requestShutdown()
-    #expect(await pollUntil { shutdowns.withLock { $0 } == 1 })
+    #expect(await xpcPollUntil { shutdowns.withLock { $0 } == 1 })
     #expect(shutdowns.withLock { $0 } == 1)
   }
 
@@ -111,12 +137,12 @@ struct XPCServiceDelegateTests {
       }
     }
     service.dropServerPeer()
-    #expect(await pollUntil { disconnected.withLock { $0 } })
+    #expect(await xpcPollUntil { disconnected.withLock { $0 } })
 
     // ...and because the channel dials the harness's listener endpoint,
     // libxpc re-dials it and the server accepts a fresh session, so the
     // same root proxy keeps working.
-    #expect(await pollUntil { (try? await service.channel.root.ping()) == "delegate" })
+    #expect(await xpcPollUntil { (try? await service.channel.root.ping()) == "delegate" })
     collector.cancel()
   }
 
@@ -140,7 +166,7 @@ struct XPCServiceDelegateTests {
     }
     service.dropServerPeer()
     // The drop propagates asynchronously; wait until the channel is down.
-    #expect(await pollUntil { disconnected.withLock { $0 } })
+    #expect(await xpcPollUntil { disconnected.withLock { $0 } })
 
     // `retrying` is client-side logic, so it runs unchanged in-process: the
     // interrupted call is retried, the channel re-dials the anonymous

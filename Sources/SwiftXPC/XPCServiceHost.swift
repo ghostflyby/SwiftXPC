@@ -195,6 +195,9 @@ open class XPCServiceHost: @unchecked Sendable {
   /// Installed by a hosting entry point; runs after
   /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
   private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
+  private let shutdownLock = NSLock()
+  private var shutdownNotified = false
+  private var shutdownWaiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
 
   /// - Parameters:
   ///   - delegate: the connection-lifecycle customization.
@@ -327,6 +330,62 @@ open class XPCServiceHost: @unchecked Sendable {
     delegate.serviceWillShutdown()
     let completion = shutdownCompletion.withLock { $0 }
     completion()
+    notifyShutdown()
+  }
+
+  /// Deterministically waits until a cooperative shutdown has run its
+  /// pipeline and returns `true`. Returns immediately when the host already
+  /// shut down; returns `false` when `timeout` elapses first. Never polls.
+  public func expectShutdown(timeout: Duration? = nil) async -> Bool {
+    await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+      insertShutdownWaiter(id: UUID(), continuation: cont, timeout: timeout)
+    }
+  }
+
+  private func insertShutdownWaiter(
+    id: UUID,
+    continuation: CheckedContinuation<Bool, Never>,
+    timeout: Duration?
+  ) {
+    shutdownLock.lock()
+    defer { shutdownLock.unlock() }
+    if shutdownNotified {
+      continuation.resume(returning: true)
+      return
+    }
+    shutdownWaiters.append((id, continuation))
+    if let timeout {
+      let host = self
+      let deadline =
+        DispatchTime.now()
+        + Double(timeout.components.seconds)
+        + Double(timeout.components.attoseconds) * 1e-18
+      DispatchQueue.global().asyncAfter(deadline: deadline) {
+        host.cancelShutdownWaiter(id: id)
+      }
+    }
+  }
+
+  private func cancelShutdownWaiter(id: UUID) {
+    shutdownLock.lock()
+    guard let index = shutdownWaiters.firstIndex(where: { $0.id == id }) else {
+      shutdownLock.unlock()
+      return
+    }
+    let waiter = shutdownWaiters.remove(at: index)
+    shutdownLock.unlock()
+    waiter.continuation.resume(returning: false)
+  }
+
+  private func notifyShutdown() {
+    shutdownLock.lock()
+    shutdownNotified = true
+    let waiters = shutdownWaiters
+    shutdownWaiters.removeAll()
+    shutdownLock.unlock()
+    for waiter in waiters {
+      waiter.continuation.resume(returning: true)
+    }
   }
 
   /// Silently cancels every accepted peer and closes the host to new ones

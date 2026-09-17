@@ -72,9 +72,10 @@ let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
   onPeerAccept: { connection in /* hooks fire here too */ }),
   eventLog: log, watchdog: .seconds(10))
 defer { service.close() }
-let root = service.channel.root
+let root = service.client.root
 #expect(log.events.map(\.kind).contains(.didAcceptPeer))
-await service.waitUntil { log.events.map(\.kind).contains(.peerDidEnd) }
+// Deterministic waiting: suspends until the hook fires — no polling.
+#expect(await log.expectEvent(.peerDidEnd, timeout: .seconds(2)) != nil)
 // service.host.requestShutdown(), service.dropServerPeer(), ...
 ```
 

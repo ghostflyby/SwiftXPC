@@ -43,7 +43,7 @@ func makeIdleConnection() -> XPCConnection {
 final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
   let harness: XPCRootTestCoordinator<Root>
   var host: XPCServiceHost { harness.host }
-  var client: XPCConnection { harness.channel.connection }
+  var client: XPCConnection { harness.client.connection }
 
   init(
     _ rootType: Root.Type,

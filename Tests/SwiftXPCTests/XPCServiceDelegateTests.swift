@@ -142,6 +142,23 @@ struct XPCServiceDelegateTests {
     #expect(shutdowns.withLock { $0 } == 1)
   }
 
+  @available(macOS 15, *)
+  @Test func ExpectCountHoldsThresholdUntilReached() async throws {
+    let log = XPCServiceEventLog()
+    log.append(.didAcceptPeer)  // count = 1: below the threshold.
+
+    // Below the threshold the waiter must not resolve early — it expires.
+    async let pending = log.expectCount(
+      .didAcceptPeer, atLeast: 2, timeout: .milliseconds(150))
+    #expect(await pending == false)
+
+    // Reaching the threshold resolves the same expectation.
+    async let satisfied = log.expectCount(
+      .didAcceptPeer, atLeast: 2, timeout: .seconds(2))
+    log.append(.didAcceptPeer)
+    #expect(await satisfied)
+  }
+
   @Test func XPCRootTestCoordinatorDropServerPeerEmitsDisconnectAndReestablishes() async throws {
     guard #available(macOS 15, *) else { return }
     let service = try xpcTest(DelegateRoot.self)
@@ -166,6 +183,23 @@ struct XPCServiceDelegateTests {
     // same root proxy keeps working.
     #expect(await xpcPollUntil { (try? await service.client.root.ping()) == "delegate" })
     collector.cancel()
+  }
+
+  @Test func CoordinatorExpectShutdownResolvesFalseAfterCancel() async throws {
+    guard #available(macOS 15, *) else { return }
+    let service = try xpcTest(
+      DelegateRoot.self,
+      XPCServiceConfiguration(),
+      eventLog: XPCServiceEventLog())
+    defer { service.close() }
+
+    // The waiter suspends; cancel() must release it with `false` — a
+    // cancelled host never runs the pipeline.
+    let waiter = Task { await service.waitForShutdown(timeout: .seconds(2)) }
+    service.host.cancel()
+
+    #expect(await waiter.value == false)
+    #expect(await !service.host.expectShutdown(timeout: .milliseconds(100)))
   }
 
   @Test func XPCRootTestCoordinatorRetryingRidesOutServerPeerDrop() async throws {

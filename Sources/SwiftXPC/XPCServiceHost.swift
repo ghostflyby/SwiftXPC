@@ -335,7 +335,9 @@ open class XPCServiceHost: @unchecked Sendable {
 
   /// Deterministically waits until a cooperative shutdown has run its
   /// pipeline and returns `true`. Returns immediately when the host already
-  /// shut down; returns `false` when `timeout` elapses first. Never polls.
+  /// shut down; returns `false` when `timeout` elapses first or when the
+  /// host was cancelled (a cancelled host never runs the pipeline). Never
+  /// polls.
   public func expectShutdown(timeout: Duration? = nil) async -> Bool {
     await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
       insertShutdownWaiter(id: UUID(), continuation: cont, timeout: timeout)

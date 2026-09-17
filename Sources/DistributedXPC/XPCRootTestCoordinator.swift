@@ -54,6 +54,9 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   private let system: XPCDistributedActorSystem
   private let eventLog: XPCServiceEventLog?
   private let closed = Mutex(false)
+  private let closeLock = NSLock()
+  private var closeNotified = false
+  private var closeWaiters: [CheckedContinuation<Void, Never>] = []
   private var watchdog: DispatchWorkItem?
 
   /// Retains the latest server-side peer so tests can simulate the service
@@ -186,23 +189,33 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     listener.cancel()
     host.cancel()
     system.invalidate()
+    notifyClosed()
   }
 
-  /// Waits until `condition` holds or the default two-second deadline
-  /// passes. XPC teardown and hook delivery race with in-flight calls;
-  /// poll instead of asserting once.
-  public func waitUntil(
-    seconds: Double = 2,
-    intervalMilliseconds: Int = 20,
-    _ condition: @Sendable () async -> Bool
-  ) async -> Bool {
-    await xpcPollUntil(
-      seconds: seconds,
-      intervalMilliseconds: intervalMilliseconds,
-      condition)
+  private func notifyClosed() {
+    closeLock.lock()
+    closeNotified = true
+    let waiters = closeWaiters
+    closeWaiters.removeAll()
+    closeLock.unlock()
+    waiters.forEach { $0.resume() }
   }
 
-  deinit { close() }
+  /// Deterministically waits until the coordinator has been closed — by
+  /// \`close()\`, the watchdog, or deinit — and everything it owned has been
+  /// torn down. Returns immediately when already closed. Never polls.
+  public func waitUntilClosed() async {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      closeLock.lock()
+      if closeNotified {
+        closeLock.unlock()
+        cont.resume()
+        return
+      }
+      closeWaiters.append(cont)
+      closeLock.unlock()
+    }
+  }
 }
 
 /// Spawns a coordinated in-process test service serving a **fresh
@@ -234,22 +247,4 @@ public func xpcTest<Root: XPCRootActor>(
   watchdog: Duration? = nil
 ) throws -> XPCRootTestCoordinator<Root> {
   try XPCRootTestCoordinator(rootType, delegate, eventLog: eventLog, watchdog: watchdog)
-}
-
-/// Polls `condition` until it holds or the deadline passes, returning the
-/// final evaluation. XPC teardown and hook delivery race with in-flight
-/// calls; poll instead of asserting once. The wait is cooperative —
-/// condition runs on the cooperative pool, so keep it non-blocking.
-@available(macOS 15, *)
-public func xpcPollUntil(
-  seconds: Double = 2,
-  intervalMilliseconds: Int = 20,
-  _ condition: @Sendable () async -> Bool
-) async -> Bool {
-  let deadline = ContinuousClock.now + .seconds(seconds)
-  while ContinuousClock.now < deadline {
-    if await condition() { return true }
-    try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
-  }
-  return await condition()
 }

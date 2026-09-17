@@ -36,6 +36,8 @@ final class _ConnectionHandlerState: @unchecked Sendable {
 
   private let lock = NSLock()
   private var handlers = Handlers()
+  private var invalidationDelivered = false
+  private var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
 
   private func withHandlers<T>(_ body: (inout Handlers) -> T) -> T {
     lock.lock()
@@ -60,6 +62,19 @@ final class _ConnectionHandlerState: @unchecked Sendable {
     }
   }
 
+  /// Registers a continuation resumed on invalidation. Resumes immediately
+  /// when invalidation was already delivered.
+  func waitForInvalidation(continuation: CheckedContinuation<Void, Never>) {
+    lock.lock()
+    if invalidationDelivered {
+      lock.unlock()
+      continuation.resume()
+      return
+    }
+    invalidationWaiters.append(continuation)
+    lock.unlock()
+  }
+
   /// Routes one connection event object to the matching dedicated handler.
   /// Invalidation and interruption events are always consumed by their
   /// dedicated chain (even when empty, matching historical behavior);
@@ -69,7 +84,13 @@ final class _ConnectionHandlerState: @unchecked Sendable {
     let snapshot = withHandlers { $0 }
     let raw = object.xpc_object
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
+      lock.lock()
+      invalidationDelivered = true
+      let waiters = invalidationWaiters
+      invalidationWaiters.removeAll()
+      lock.unlock()
       snapshot.invalidation?()
+      waiters.forEach { $0.resume() }
       return
     }
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
@@ -145,6 +166,16 @@ extension XPCConnection {
   /// Multiple handlers are chained: the previous handler runs before the new one.
   public func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
     _handlerState.chain(\.invalidation, handler)
+  }
+
+  /// Deterministically waits until the connection is invalidated
+  /// (`XPC_ERROR_CONNECTION_INVALID`). Returns immediately when already
+  /// invalidated. Never polls — the wait suspends and is resumed by the
+  /// invalidation event itself.
+  public func waitForInvalidation() async {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      _handlerState.waitForInvalidation(continuation: cont)
+    }
   }
 
   /// Register a handler to run when the connection is interrupted.

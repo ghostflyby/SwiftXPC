@@ -415,7 +415,13 @@ open class XPCServiceHost: @unchecked Sendable {
     for session in sessions.values {
       session.peerConnection.cancel()
     }
-    cancelShutdownWaiters(resuming: false)
+    // requestShutdown() drives the shutdown waiters itself (they resolve
+    // true after the pipeline runs); a bare cancel() — silent teardown —
+    // resolves them with false instead.
+    let requested = state.withLock { $0.shutdownRequested }
+    if !requested {
+      cancelShutdownWaiters(resuming: false)
+    }
   }
 }
 

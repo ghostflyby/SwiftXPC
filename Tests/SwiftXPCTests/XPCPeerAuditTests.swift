@@ -43,6 +43,7 @@ private func ownSigningIdentifier() -> String? {
   guard #available(macOS 15, *) else { return }
   let auditCalls = Mutex<Int>(0)
   let rejections = Mutex<[(any Error)?]>([])
+  let log = XPCServiceEventLog()
   let channel = try RootChannel(
     AuditRoot.self,
     XPCServiceConfiguration(
@@ -53,13 +54,14 @@ private func ownSigningIdentifier() -> String? {
       },
       onPeerReject: { _, error in
         rejections.withLock { $0.append(error) }
-      }))
+      }),
+    eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await xpcPollUntil { !rejections.withLock { $0 }.isEmpty })
+  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
   // The requirement install failure must preempt the audit hook and surface
   // as a PeerRequirementError (fail-closed, no silent degradation).
   #expect(auditCalls.withLock { $0 } == 0)
@@ -73,6 +75,7 @@ private func ownSigningIdentifier() -> String? {
   let accepted = Mutex<Int>(0)
   let rejections = Mutex<[(any Error)?]>([])
   let ends = Mutex<Int>(0)
+  let log = XPCServiceEventLog()
   let channel = try RootChannel(
     AuditRoot.self,
     XPCServiceConfiguration(
@@ -81,7 +84,8 @@ private func ownSigningIdentifier() -> String? {
       onPeerEnd: { _ in ends.withLock { $0 += 1 } },
       onPeerReject: { _, error in
         rejections.withLock { $0.append(error) }
-      }))
+      }),
+    eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
   // The requirement installs cleanly; the kernel drops the peer when the
@@ -89,7 +93,7 @@ private func ownSigningIdentifier() -> String? {
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await xpcPollUntil { ends.withLock { $0 } >= 1 })
+  #expect(await log.expectCount(.peerDidEnd, atLeast: 1, timeout: .seconds(2)))
   #expect(accepted.withLock { $0 } == 1)
   #expect(rejections.withLock { $0 }.isEmpty)
 }
@@ -114,6 +118,7 @@ private func ownSigningIdentifier() -> String? {
 @Test func ThrowingShouldAcceptRejectsPeerWithError() async throws {
   guard #available(macOS 15, *) else { return }
   struct AuditHookFailure: Error {}
+  let log = XPCServiceEventLog()
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
     AuditRoot.self,
@@ -121,13 +126,14 @@ private func ownSigningIdentifier() -> String? {
       shouldAccept: { _ in throw AuditHookFailure() },
       onPeerReject: { _, error in
         rejections.withLock { $0.append(error) }
-      }))
+      }),
+    eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await xpcPollUntil { !rejections.withLock { $0 }.isEmpty })
+  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   #expect(rejectionsSeen.first is AuditHookFailure)
@@ -135,6 +141,7 @@ private func ownSigningIdentifier() -> String? {
 
 @Test func ShouldAcceptFalseReportsNilError() async throws {
   guard #available(macOS 15, *) else { return }
+  let log = XPCServiceEventLog()
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
     AuditRoot.self,
@@ -142,13 +149,14 @@ private func ownSigningIdentifier() -> String? {
       shouldAccept: { _ in false },
       onPeerReject: { _, error in
         rejections.withLock { $0.append(error) }
-      }))
+      }),
+    eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
-  #expect(await xpcPollUntil { !rejections.withLock { $0 }.isEmpty })
+  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   // Element type is (any Error)?; unwrap the array's outer optional first so

@@ -174,12 +174,16 @@ struct XPCSingletonRootTests {
     let workerID = worker?.id
     let id = try #require(workerID)
     _ = try await worker?.greet()
-    #expect(await xpcPollUntil { host.hasLiveExportPeers })
+    // A successful call proves the export channel is live.
+    #expect(host.hasLiveExportPeers)
 
     worker = nil
 
-    #expect(await xpcPollUntil { !host.hasLiveExportPeers })
-    #expect(await xpcPollUntil { !hostRegistryContains(id) })
+    // Dropping the last remote reference drains the channel; the wait
+    // resumes after child reclamation has been attempted.
+    await host.waitForExportDrain()
+    #expect(!host.hasLiveExportPeers)
+    #expect(!hostRegistryContains(id))
   }
 
   @available(macOS 15, *)
@@ -192,14 +196,16 @@ struct XPCSingletonRootTests {
     var worker: ExitWorker? = try await root.makeOrReuseWorker()
     #expect(try await worker?.bump() == 1)
     worker = nil
-    #expect(await xpcPollUntil { !host.hasLiveExportPeers })
+    await host.waitForExportDrain()
 
     // The drained child's registry pin was released, but the singleton still
     // references it: re-handing it out must re-adopt the registry entry and
     // serve the same living instance.
     let reacquired = try await root.makeOrReuseWorker()
+    // A successful call on the reacquired proxy proves the re-export went
+    // through, which re-adopts the registry entry.
     #expect(try await reacquired.bump() == 2)
-    #expect(await xpcPollUntil { hostRegistryContains(reacquired.id) })
+    #expect(hostRegistryContains(reacquired.id))
   }
 
   @available(macOS 15, *)
@@ -211,10 +217,10 @@ struct XPCSingletonRootTests {
 
     var handedOut: ExitSingletonRoot? = try await root.me()
     _ = try await handedOut?.bump()
-    #expect(await xpcPollUntil { host.hasLiveExportPeers })
+    #expect(host.hasLiveExportPeers)
 
     handedOut = nil
-    #expect(await xpcPollUntil { !host.hasLiveExportPeers })
+    await host.waitForExportDrain()
 
     // The `.root` registry entry is never reclaimed...
     #expect(hostRegistryContains(.root))

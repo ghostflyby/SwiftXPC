@@ -16,7 +16,7 @@ import XPC
 /// connection, which launchd re-establishes transparently after a service
 /// restart.
 @available(macOS 15, *)
-public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
+public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked Sendable {
   public typealias ActorID = XPCActorID
   public typealias ResultHandler = XPCInvocationResultHandler
   public typealias InvocationEncoder = XPCInvocationEncoder
@@ -193,6 +193,37 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     serviceShutdownHandler.withLock { $0 = handler }
   }
 
+  private let drainLock = NSLock()
+  private var drainWaiters: [CheckedContinuation<Void, Never>] = []
+
+  /// Waits until no export session of this system has live peers — every
+  /// export session fully drained (child reclamation attempted). Returns
+  /// immediately when already drained. Never polls.
+  func waitForExportDrain() async {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      insertDrainWaiter(continuation: cont)
+    }
+  }
+
+  private func insertDrainWaiter(continuation: CheckedContinuation<Void, Never>) {
+    drainLock.lock()
+    defer { drainLock.unlock() }
+    if !hasLiveExportPeers {
+      continuation.resume()
+      return
+    }
+    drainWaiters.append(continuation)
+  }
+
+  private func notifyDrainIfQuiescent() {
+    drainLock.lock()
+    let quiescent = !hasLiveExportPeers
+    let waiters = quiescent ? drainWaiters : []
+    drainWaiters.removeAll()
+    drainLock.unlock()
+    waiters.forEach { $0.resume() }
+  }
+
   var hasLiveExportPeers: Bool {
     // Same criterion as child reclamation: a session that was handed out but
     // never dialed is an in-flight wire, not an idle one.
@@ -219,6 +250,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       }
       withExtendedLifetime(removed) {}
     }
+    notifyDrainIfQuiescent()
   }
 
   /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the

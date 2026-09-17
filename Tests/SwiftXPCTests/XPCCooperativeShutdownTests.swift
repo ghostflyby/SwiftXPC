@@ -34,26 +34,21 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   channel.host.requestShutdown()
 
-  // Poll: the server-side cancel races with in-flight sends.
-  let failed = await xpcPollUntil {
-    (try? await root.ping()) == nil
+  // The server-side cancel races with in-flight sends; wait for the client
+  // to observe the invalidation.
+  await channel.client.waitForInvalidation()
+  await #expect(throws: XPCConnection.ConnectionError.self) {
+    _ = try await root.ping()
   }
-  #expect(failed)
 }
 
 @Test func ShutdownRejectsNewPeersThroughRejectHook() async throws {
   guard #available(macOS 15, *) else { return }
-  let rejections = Mutex<Int>(0)
+  let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
-    XPCServiceConfiguration(
-      onPeerReject: { _, error in
-        // Shutdown-window rejections carry no error, like shouldAccept=false.
-        if error == nil {
-          rejections.withLock { $0 += 1 }
-        }
-      }
-    )
+    XPCServiceConfiguration(),
+    eventLog: log
   )
   defer { channel.close() }
 
@@ -64,31 +59,22 @@ distributed actor ShutdownRoot: XPCRootActor {
   await #expect(throws: XPCConnection.ConnectionError.interrupted) {
     _ = try await lateRoot.ping()
   }
-  #expect(await xpcPollUntil { rejections.withLock { $0 } == 1 })
+  let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
+  #expect(rejection?.errorDescription == nil)
 }
 
 @Test func ShutdownRejectsBeforeAuditWindow() async throws {
   guard #available(macOS 15, *) else { return }
-  let audits = Mutex<Int>(0)
-  let rejections = Mutex<Int>(0)
+  let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
-    XPCServiceConfiguration(
-      shouldAccept: { _ in
-        audits.withLock { $0 += 1 }
-        return true
-      },
-      onPeerReject: { _, error in
-        if error == nil {
-          rejections.withLock { $0 += 1 }
-        }
-      }
-    )
+    XPCServiceConfiguration(),
+    eventLog: log
   )
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
   #expect(try await root.ping() == "root")
-  #expect(audits.withLock { $0 } == 1)
+  #expect(log.events.filter { $0.kind == .shouldAcceptPeer }.count == 1)
 
   channel.host.requestShutdown()
 
@@ -99,16 +85,17 @@ distributed actor ShutdownRoot: XPCRootActor {
   }
   // The post-shutdown rejection happens before the audit window: the late
   // peer never reached `shouldAccept`.
-  #expect(await xpcPollUntil { rejections.withLock { $0 } == 1 })
-  #expect(audits.withLock { $0 } == 1)
+  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
+  #expect(log.events.filter { $0.kind == .shouldAcceptPeer }.count == 1)
 }
 
 @Test func ShutdownFiresOnShutdownExactlyOnce() async throws {
   guard #available(macOS 15, *) else { return }
-  let shutdowns = Mutex<Int>(0)
+  let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
-    XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } })
+    XPCServiceConfiguration(),
+    eventLog: log
   )
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
@@ -118,29 +105,27 @@ distributed actor ShutdownRoot: XPCRootActor {
   channel.host.requestShutdown()
   channel.host.requestShutdown()
 
-  #expect(await xpcPollUntil { shutdowns.withLock { $0 } == 1 })
-  #expect(shutdowns.withLock { $0 } == 1)
+  #expect(await log.expectEvent(.serviceWillShutdown, timeout: .seconds(2)) != nil)
+  #expect(
+    log.events.map(\.kind).filter { $0 == .serviceWillShutdown } == [.serviceWillShutdown]
+  )
 }
 
 @Test func RequestServiceShutdownBridgesFromRootActor() async throws {
   guard #available(macOS 15, *) else { return }
-  let shutdowns = Mutex<Int>(0)
-  let channel = try RootChannel(
-    ShutdownRoot.self,
-    XPCServiceConfiguration(onShutdown: { shutdowns.withLock { $0 += 1 } })
-  )
+  let channel = try RootChannel(ShutdownRoot.self, XPCServiceConfiguration())
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
 
   // The reply to this very call is normally lost to the synchronous cancel;
   // fire it and observe the teardown instead of awaiting it.
   let reply = Task { try await root.shutdownService() }
-  #expect(await xpcPollUntil { shutdowns.withLock { $0 } == 1 })
+  #expect(await channel.host.expectShutdown(timeout: .seconds(2)))
 
-  let failed = await xpcPollUntil {
-    (try? await root.ping()) == nil
+  await channel.client.waitForInvalidation()
+  await #expect(throws: XPCConnection.ConnectionError.self) {
+    _ = try await root.ping()
   }
-  #expect(failed)
   _ = reply  // resolved by channel.close() cancelling the pending call
 }
 

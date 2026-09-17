@@ -50,10 +50,8 @@ struct XPCServiceDelegateTests {
     service.host.requestShutdown()
     service.host.requestShutdown()
 
-    #expect(
-      await xpcPollUntil {
-        events.withLock { $0 } == ["shutdown", "exit"]
-      })
+    // requestShutdown is synchronous: hook and completion have both run by
+    // the time it returns.
     #expect(events.withLock { $0 } == ["shutdown", "exit"])
   }
 
@@ -108,10 +106,10 @@ struct XPCServiceDelegateTests {
     #expect(log.events.map(\.kind) == [.shouldAcceptPeer, .didAcceptPeer])
 
     service.host.requestShutdown()
-    #expect(
-      await xpcPollUntil {
-        log.events.map(\.kind) == [.shouldAcceptPeer, .didAcceptPeer, .serviceWillShutdown]
-      })
+    // The cancelled peer's peerDidEnd races serviceWillShutdown (different
+    // threads), so assert the prefix and the shutdown event separately.
+    #expect(log.events.map(\.kind).prefix(2) == [.shouldAcceptPeer, .didAcceptPeer])
+    #expect(log.events.map(\.kind).contains(.serviceWillShutdown))
   }
 
   @Test func WatchdogForceClosesTheServiceAfterDuration() async throws {
@@ -121,7 +119,10 @@ struct XPCServiceDelegateTests {
 
     // The watchdog closes the coordinator so a hung test fails fast:
     // pending calls observe the channel going down.
-    #expect(await xpcPollUntil { (try? await service.client.root.ping()) == nil })
+    await service.waitUntilClosed()
+    await #expect(throws: XPCConnection.ConnectionError.self) {
+      _ = try await service.client.root.ping()
+    }
   }
 
   @Test func XPCRootTestCoordinatorResolvesRootAndReportsShutdown() async throws {
@@ -138,7 +139,7 @@ struct XPCServiceDelegateTests {
     // A cooperative shutdown on the exposed server never exits the process;
     // it only tears the sessions down and fires the hook exactly once.
     service.host.requestShutdown()
-    #expect(await xpcPollUntil { shutdowns.withLock { $0 } == 1 })
+    #expect(await service.host.expectShutdown(timeout: .seconds(2)))
     #expect(shutdowns.withLock { $0 } == 1)
   }
 
@@ -161,28 +162,29 @@ struct XPCServiceDelegateTests {
 
   @Test func XPCRootTestCoordinatorDropServerPeerEmitsDisconnectAndReestablishes() async throws {
     guard #available(macOS 15, *) else { return }
-    let service = try xpcTest(DelegateRoot.self)
+    let log = XPCServiceEventLog()
+    let service = try xpcTest(DelegateRoot.self, XPCServiceConfiguration(), eventLog: log)
     defer { service.close() }
     #expect(try await service.client.root.ping() == "delegate")
 
     // Drop surfaces on the production event stream...
-    let disconnected = Mutex(false)
-    let collector = Task {
-      for await event in service.client.events {
-        if case .disconnected = event {
-          disconnected.withLock { $0 = true }
-          break
-        }
-      }
-    }
     service.dropServerPeer()
-    #expect(await xpcPollUntil { disconnected.withLock { $0 } })
+    // The drop surfaces deterministically in the hook log...
+    #expect(await log.expectEvent(.peerDidEnd, timeout: .seconds(2)) != nil)
 
-    // ...and because the channel dials the harness's listener endpoint,
-    // libxpc re-dials it and the server accepts a fresh session, so the
-    // same root proxy keeps working.
-    #expect(await xpcPollUntil { (try? await service.client.root.ping()) == "delegate" })
-    collector.cancel()
+    // ...and the next call provokes libxpc to re-dial the coordinator's
+    // listener endpoint: a call racing the teardown may observe .interrupted
+    // once, so retry until the fresh session answers (a second
+    // didAcceptPeer) and the same root proxy keeps working.
+    #expect(
+      try await service.client.retrying(
+        XPCRetryPolicy(
+          maxAttempts: 5, initialBackoff: .milliseconds(20), multiplier: 1,
+          maxBackoff: .milliseconds(100))
+      ) { _ in
+        try await service.client.root.ping()
+      } == "delegate")
+    #expect(await log.expectCount(.didAcceptPeer, atLeast: 2, timeout: .seconds(2)))
   }
 
   @Test func CoordinatorExpectShutdownResolvesFalseAfterCancel() async throws {

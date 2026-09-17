@@ -104,9 +104,10 @@ public final class XPCRootActorServer<Root: XPCRootActor>: XPCServiceHost, @unch
   ///     plain `XPCServiceConfiguration`.
   public init(
     _ rootType: Root.Type = Root.self,
-    _ delegate: some XPCServiceDelegate = XPCServiceConfiguration()
+    _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
+    eventLog: XPCServiceEventLog? = nil
   ) {
-    super.init(delegate)
+    super.init(delegate, eventLog: eventLog)
     setPeerHandler { [weak self] connection in
       let serviceHost = XPCDistributedActorSystem.serviceHost
       // Reserve before the first `shared` access so lazy creation assigns

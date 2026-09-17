@@ -47,9 +47,14 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
 
   init(
     _ rootType: Root.Type,
-    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
+    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    eventLog: XPCServiceEventLog? = nil
   ) throws {
-    harness = try xpcTest(rootType, delegate, watchdog: .seconds(10))
+    harness = try xpcTest(
+      rootType,
+      delegate,
+      eventLog: eventLog,
+      watchdog: .seconds(10))
   }
 
   /// Dials a fresh, inactive client connection to the same listener.
@@ -84,10 +89,11 @@ final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
 
   init(
     _ rootType: Root.Type,
-    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
+    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    eventLog: XPCServiceEventLog? = nil
   ) throws {
     let listener = XPCConnection(name: nil)
-    let server = XPCRootActorServer<Root>(rootType, delegate)
+    let server = XPCRootActorServer<Root>(rootType, delegate, eventLog: eventLog)
     listener.setEventHandler { object in
       guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
       server.accept(XPCConnection(xpc_object: object.xpc_object))

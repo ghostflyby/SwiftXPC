@@ -142,7 +142,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
 
   /// Reserves `.root` for the next actor created on this system. Only call
   /// on a freshly created system before any concurrent `assignID` (the
-  /// framework does this inside `XPCRootActorServer.accept`). A no-op when
+  /// root-binding peer handler does this before materializing `shared`).
+  /// A no-op when
   /// `.root` is already assigned: the long-lived service host system
   /// re-reserves on every accept, but only the first accept — the one that
   /// materializes the singleton — may consume a reservation; a dangling
@@ -185,9 +186,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
 
   public func makeInvocationEncoder() -> InvocationEncoder { .init() }
 
-  /// Routes `requestServiceShutdown()` to the `XPCRootActorServer` that
-  /// accepted this session. Installed by the server during `accept`; never
-  /// set on client-side systems.
+  /// Routes `requestServiceShutdown()` to the `XPCServiceHost` accepting
+  /// this session's channel. Installed by the root-binding peer handler;
+  /// never set on client-side systems.
   func setServiceShutdownHandler(_ handler: @escaping @Sendable () -> Void) {
     serviceShutdownHandler.withLock { $0 = handler }
   }
@@ -258,9 +259,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
     notifyDrainIfQuiescent()
   }
 
-  /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the
+  /// Requests a cooperative shutdown of the `XPCServiceHost` hosting the
   /// session this system belongs to; see
-  /// `XPCRootActorServer.requestShutdown()`. This is the entry point for
+  /// `XPCServiceHost.requestShutdown()`. This is the entry point for
   /// service-initiated retirement: under hosted `xpcMain`, one call from a
   /// root actor's `distributed func shutdown()` ends the process
   /// cooperatively — peers observe clean disconnects, `serviceWillShutdown`

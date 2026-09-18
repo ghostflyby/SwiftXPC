@@ -163,8 +163,8 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
 /// Connection-lifecycle plumbing for an XPC service: session bookkeeping,
 /// the pre-activation audit window, rejection paths, and the cooperative
 /// shutdown pipeline. Actor-free — an actor runtime layers on top by
-/// subclassing and installing a `peerHandler` that binds accepted peers,
-/// exactly as `DistributedXPC`'s root-actor server does.
+/// installing a `peerHandler` that binds accepted peers, exactly as
+/// `DistributedXPC`'s `XPCServiceHost(_:_:eventLog:)` initializer does.
 ///
 /// Lifecycle of an accepted peer: requirement install →
 /// `shouldAcceptPeer` → `peerHandler` (wire message routing) →
@@ -433,6 +433,14 @@ public final class XPCServiceHost: Sendable {
 }
 
 extension XPCServiceDelegate {
+  /// Runs the XPC service event loop with `Self` as the delegate — the
+  /// `@main` entry point for a delegate type constructible with no
+  /// arguments. Never returns; the hosted service *is* the process, so a
+  /// cooperative shutdown exits it.
+  ///
+  /// The default peer handler ignores incoming traffic: a plain service
+  /// that should respond to messages installs its routing from
+  /// `serviceWillStart(host:)` via `host.setPeerHandler(...)`.
   @MainActor
   public static func main() {
     let delegate = Self()

@@ -82,6 +82,20 @@ extension XPCRootActor {
 }
 
 extension XPCServiceHost {
+  /// Serves `rootType`'s process-wide singleton on every accepted peer:
+  /// the installed peer handler binds each connection to `Root.shared`
+  /// under `XPCActorID.root`. This is the in-process root-actor host used
+  /// by `xpcMain`/`XPCApp.main()`, and it is available directly to
+  /// embedders and tests that drive `accept(_:)` themselves.
+  ///
+  /// - Parameters:
+  ///   - rootType: the concrete root actor type served on every accepted
+  ///     peer; only its `shared` singleton is ever constructed.
+  ///   - delegate: the connection-lifecycle customization; see
+  ///     `XPCServiceDelegate` for the per-hook semantics. Defaults to a
+  ///     plain `XPCServiceConfiguration`.
+  ///   - eventLog: when non-nil, the host records every delegate-hook
+  ///     invocation into it, in invocation order.
   public convenience init<Root: XPCRootActor>(
     _ rootType: Root.Type = Root.self,
     _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
@@ -124,10 +138,10 @@ extension XPCServiceHost {
 ///     }
 ///
 /// The type must be constructible with no arguments: the library-provided
-/// `main()` hosts a fresh instance as the delegate of an
-/// `XPCRootActorServer` for `Root.shared`, and exits the process after a
-/// cooperative shutdown. All customization lives in the conformer's own
-/// requirement implementations, exactly as in `xpcMain`.
+/// `main()` hosts a fresh instance as the delegate of an `XPCServiceHost`
+/// serving `Root.shared`, and exits the process after a cooperative
+/// shutdown. All customization lives in the conformer's own requirement
+/// implementations, exactly as in `xpcMain`.
 public protocol XPCApp: XPCServiceDelegate {
   /// The singleton root actor type served by the app.
   associatedtype Root: XPCRootActor
@@ -160,8 +174,8 @@ extension XPCApp {
 /// service process (`xpc_main` aborts anywhere else), so a cooperative
 /// shutdown unconditionally ends the process: see the delegate overload.
 /// For in-process hosting — tests and embedders — use `xpcTest(_:_:)` or a
-/// standalone `XPCRootActorServer`, neither of which ever exits the
-/// process.
+/// standalone `XPCServiceHost(rootType, delegate)`, neither of which ever
+/// exits the process.
 @MainActor
 public func xpcMain<Root>(
   _ rootType: Root.Type,

@@ -24,8 +24,8 @@ import Synchronization
 /// Coordinators are fully isolated from one another — parallel-safe, no
 /// shared `.root` identity, no shared shutdown bridge — and each serves a
 /// fresh root. The process-global `XPCRootActor.shared` singleton
-/// (production semantics) is exercised by hosting `XPCRootActorServer`
-/// directly instead.
+/// (production semantics) is exercised by hosting
+/// `XPCServiceHost(rootType, delegate)` directly instead.
 ///
 /// The client side is a full production `XPCRootConnection` — `root`,
 /// `events`, and `retrying` behave exactly as against a launchd service,

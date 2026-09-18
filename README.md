@@ -8,12 +8,12 @@ Two products ship from this package:
 
 | Product | Contents |
 |---|---|
-| `SwiftXPC` | Swift wrapper vocabulary for the XPC C API: `XPCObject`/`XPCArray`/`XPCDictionary`, the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`, `XPCServiceMain`) |
-| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCRootActorServer`, `XPCApp` `@main`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
+| `SwiftXPC` | Swift wrapper vocabulary for the XPC C API: `XPCObject`/`XPCArray`/`XPCDictionary`, the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
+| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCApp` `@main`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
 
 ## Requirements
 
-- macOS 11+ (distributed actor APIs require macOS 15)
+- macOS 15+
 - Swift 6.2 toolchain
 
 ## Installation

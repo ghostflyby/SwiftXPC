@@ -74,11 +74,11 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
   deinit { close() }
 }
 
-/// Drives the **production** singleton path: an `XPCRootActorServer` binds
-/// `Root.shared` on the process-global service host, exactly as a hosted
-/// `xpcMain` service does. The service host is process-global — one root
-/// type per test process — so suites using this fixture must be
-/// `.serialized`.
+/// Drives the **production** singleton path: `XPCServiceHost(rootType,
+/// delegate)` binds `Root.shared` on the process-global service host,
+/// exactly as a hosted `xpcMain` service does. The service host is
+/// process-global — one root type per test process — so suites using this
+/// fixture must be `.serialized`.
 final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
   let server: XPCServiceHost
   let client: XPCConnection

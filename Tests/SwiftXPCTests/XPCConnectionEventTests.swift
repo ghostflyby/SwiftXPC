@@ -82,6 +82,80 @@ private func assertRouting(
     expected: ["generic"])
 }
 
+@Test func InvalidationHandlerAddedAfterDeliveryRunsImmediately() {
+  // Invalidation is terminal and delivered once; a handler installed after
+  // delivery must still observe it (XPCRootConnection installs its handlers
+  // on an already-activated channel). `chainInvalidation` reports the
+  // already-delivered case so the caller invokes the handler itself.
+  let state = _ConnectionHandlerState()
+  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INVALID))
+
+  #expect(state.chainInvalidation {} == true)
+}
+
+@Test func WaitForDisconnectionResumesOnInterruption() async throws {
+  // A graceful peer cancel surfaces as INTERRUPTED, not INVALID; the wait
+  // must resume on either signal or callers hang forever.
+  let state = _ConnectionHandlerState()
+  let waiter = Task {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      state.waitForDisconnection(continuation: cont)
+    }
+  }
+  try await Task.sleep(for: .milliseconds(50))
+  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INTERRUPTED))
+
+  let resumed = await withTaskGroup(of: Bool.self) { group in
+    group.addTask {
+      await waiter.value
+      return true
+    }
+    group.addTask {
+      try? await Task.sleep(for: .seconds(5))
+      return false
+    }
+    let first = await group.next()!
+    group.cancelAll()
+    return first
+  }
+  #expect(resumed)
+}
+
+@Test func WaitForDisconnectionResumesOnInvalidation() async throws {
+  let state = _ConnectionHandlerState()
+  let waiter = Task {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      state.waitForDisconnection(continuation: cont)
+    }
+  }
+  try await Task.sleep(for: .milliseconds(50))
+  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INVALID))
+
+  let resumed = await withTaskGroup(of: Bool.self) { group in
+    group.addTask {
+      await waiter.value
+      return true
+    }
+    group.addTask {
+      try? await Task.sleep(for: .seconds(5))
+      return false
+    }
+    let first = await group.next()!
+    group.cancelAll()
+    return first
+  }
+  #expect(resumed)
+}
+
+@Test func WaitForDisconnectionResumesImmediatelyAfterDelivery() async throws {
+  let state = _ConnectionHandlerState()
+  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INTERRUPTED))
+  // Already down: the wait must not suspend.
+  await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+    state.waitForDisconnection(continuation: cont)
+  }
+}
+
 @Test func ConnectionExposesPeerPidAndDebugDescription() async throws {
   let listener = XPCConnection(name: nil)
   let accepted = Mutex<XPCConnection?>(nil)

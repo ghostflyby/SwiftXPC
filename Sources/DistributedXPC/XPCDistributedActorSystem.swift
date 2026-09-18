@@ -103,6 +103,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       return retained
     }
     withExtendedLifetime(actors) {}
+    // Sessions are gone: no export session has live peers anymore, so any
+    // drain waiter must be released here too — the drain notification only
+    // fires from `exportSessionDrained`, which this path bypasses.
+    notifyDrainIfQuiescent()
   }
 
   func rememberImported(_ reference: StoredActorReference) {
@@ -143,12 +147,11 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// Reserves `.root` for the next actor created on this system. Only call
   /// on a freshly created system before any concurrent `assignID` (the
   /// root-binding peer handler does this before materializing `shared`).
-  /// A no-op when
-  /// `.root` is already assigned: the long-lived service host system
-  /// re-reserves on every accept, but only the first accept — the one that
-  /// materializes the singleton — may consume a reservation; a dangling
-  /// reservation would hand `.root` to the next child actor created on the
-  /// host.
+  /// A no-op when `.root` is already assigned: the long-lived service host
+  /// system re-reserves on every accept, but only the first accept — the
+  /// one that materializes the singleton — may consume a reservation; a
+  /// dangling reservation would hand `.root` to the next child actor
+  /// created on the host.
   func reserveRootID() {
     _ = reservedIDLock.withLock { reserved -> Bool in
       let taken = assignedIDsLock.withLock { $0.contains(.root) }
@@ -156,6 +159,14 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       reserved = .root
       return true
     }
+  }
+
+  /// Drops a pending `.root` reservation without consuming it. Called when
+  /// the root-binding guard fails: the reservation was armed for a
+  /// singleton that turned out not to own `.root`, and leaving it pending
+  /// would let the next unrelated `assignID` claim the identity.
+  func clearRootReservation() {
+    reservedIDLock.withLock { $0 = nil }
   }
 
   /// Registers a freshly created local actor under its assigned ID.
@@ -182,6 +193,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       return matching.map(\.value)
     }
     for session in sessions { session.cancel() }
+    // This removal path bypasses `exportSessionDrained`; release drain
+    // waiters whose condition may now hold.
+    notifyDrainIfQuiescent()
   }
 
   public func makeInvocationEncoder() -> InvocationEncoder { .init() }
@@ -220,7 +234,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     }
   }
 
-  private func notifyDrainIfQuiescent() {
+  func notifyDrainIfQuiescent() {
     let toResume: [CheckedContinuation<Void, Never>] = drainWaiters.withLock { waiters in
       guard !hasLiveExportPeers else { return [] }
       let drained = waiters

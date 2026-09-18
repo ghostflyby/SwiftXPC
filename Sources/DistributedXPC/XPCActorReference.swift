@@ -267,5 +267,8 @@ extension XPCDistributedActorSystem {
   private func removeExportSession(_ id: UUID) {
     let session = exportSessionsLock.withLock { $0.removeValue(forKey: id) }
     session?.cancel()
+    // Removing a session bypasses `exportSessionDrained`; a drain waiter
+    // may now be quiescent.
+    notifyDrainIfQuiescent()
   }
 }

@@ -53,20 +53,34 @@ public protocol XPCRootActor: XPCExportableActor,
 /// protocols cannot hold static stored properties, and a noncopyable
 /// registry cannot be aliased into a second mutable copy.
 private struct SharedRootRegistry: Sendable, ~Copyable {
-  private let roots: Mutex<[ObjectIdentifier: any XPCRootActor]> = .init([:])
+  private let roots = Mutex<[ObjectIdentifier: any XPCRootActor]>([:])
+  /// Serializes first construction. Creating outside a lock can build two
+  /// instances under a concurrent first access: both consume identities on
+  /// the service host (one wins `.root`, the other gets a stray ID and is
+  /// pinned in the registry by `actorReady`), and only one can be cached —
+  /// if the cached one is not the `.root` instance, every subsequent peer's
+  /// identity check fails permanently. The lock is held only across
+  /// construction, and the cache is re-checked inside it, so `init` that
+  /// re-enters the registry for a different root type stays correct. The
+  /// conformer's `init(actorSystem:)` must not re-enter `shared` for the
+  /// same type.
+  private let creation = Mutex<Void>(())
 
   func root<R: XPCRootActor>(for rootType: R.Type) -> R {
     let key = ObjectIdentifier(rootType)
-    if let existing = roots.withLock({
-      $0[key]
-    }) {
+    if let existing = roots.withLock({ $0[key] }) {
       return existing as! R
     }
-    let created = R(actorSystem: .serviceHost)
-    roots.withLock {
-      $0[key] = created
+    return creation.withLock { _ in
+      if let existing = roots.withLock({ $0[key] }) {
+        return existing as! R
+      }
+      let created = R(actorSystem: .serviceHost)
+      roots.withLock {
+        $0[key] = created
+      }
+      return created
     }
-    return created
   }
 }
 
@@ -74,8 +88,8 @@ private let sharedRootRegistry = SharedRootRegistry()
 
 extension XPCRootActor {
   /// The process-wide singleton root, lazily created and cached on the
-  /// long-lived service host system. Concurrent first accesses race to
-  /// create; the cache guarantees exactly one surviving instance.
+  /// long-lived service host system. Concurrent first accesses are
+  /// serialized: exactly one instance is created and cached.
   public static var shared: Self {
     sharedRootRegistry.root(for: Self.self)
   }
@@ -117,6 +131,9 @@ extension XPCServiceHost {
       // addressed to `.root`. Throwing rejects the peer through the host's
       // standard rejection path.
       guard root.id == .root else {
+        // Do not leave this peer's reservation pending: it would hand
+        // `.root` to the next unrelated actor created on the host.
+        serviceHost.clearRootReservation()
         throw XPCDispatchError.unknownActor(.root)
       }
       serviceHost.bind(connection, to: root)

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
+import Foundation
 @testable import DistributedXPC
 import Synchronization
 import SwiftXPC
@@ -54,6 +55,21 @@ distributed actor ExitSingletonRoot: XPCRootActor {
 
 private let singletonInstance = ExitSingletonRoot(actorSystem: .serviceHost)
 
+/// Uses the **default** `shared` implementation (no override) — the
+/// documented path for dependency-free roots. The deliberately slow init
+/// widens the concurrent-creation race window.
+@XPCService
+distributed actor DefaultSharedRoot: XPCRootActor {
+  typealias ActorSystem = XPCDistributedActorSystem
+
+  init(actorSystem: XPCDistributedActorSystem) {
+    self.actorSystem = actorSystem
+    Thread.sleep(forTimeInterval: 0.03)
+  }
+
+  distributed func ping() -> String { "default" }
+}
+
 @XPCService
 distributed actor ExitWorker {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -93,6 +109,59 @@ struct XPCSingletonRootTests {
 
   private func hostRegistryContains(_ id: XPCActorID) -> Bool {
     XPCDistributedActorSystem.serviceHost.activeActorsLock.withLock { $0[id] != nil }
+  }
+
+  @Test func DefaultSharedSerializesConcurrentCreation() async {
+    // Consume the host's `.root` reservation with the suite's singleton
+    // first: this test's type must take a regular identity, and only one
+    // root type may own `.root` per process.
+    _ = ExitSingletonRoot.shared
+
+    // The default `shared` must serialize first construction: without the
+    // registry's creation lock, concurrent first accesses each build an
+    // instance, both land in the host registry (pinned), and callers can
+    // receive different "singletons".
+    let roots = await withTaskGroup(of: DefaultSharedRoot.self) { group in
+      for _ in 0..<4 {
+        group.addTask { DefaultSharedRoot.shared }
+      }
+      return await group.reduce(into: [DefaultSharedRoot]()) { $0.append($1) }
+    }
+    let first = roots[0]
+    #expect(roots.allSatisfy { $0 === first })
+    // The reserved identity belongs to the suite singleton, not to this type.
+    #expect(first.id != .root)
+  }
+
+  @Test func DrainWaiterResumesWhenSystemIsInvalidated() async throws {
+    // invalidate() removes export sessions without going through the
+    // normal drain notification; a pending waitForExportDrain must still be
+    // released, or it would hang forever (the wait has no timeout).
+    let system = XPCDistributedActorSystem(connection: makeIdleConnection())
+    let worker = ExitWorker(actorSystem: system)
+    _ = try system.export(worker)  // Minted but never dialed: a live session.
+    #expect(system.hasLiveExportPeers)
+
+    let waiter = Task { await system.waitForExportDrain() }
+    try await Task.sleep(for: .milliseconds(100))  // Let the waiter register.
+
+    system.invalidate()
+    #expect(!system.hasLiveExportPeers)
+
+    let resumed = await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        await waiter.value
+        return true
+      }
+      group.addTask {
+        try? await Task.sleep(for: .seconds(5))
+        return false
+      }
+      let first = await group.next()!
+      group.cancelAll()
+      return first
+    }
+    #expect(resumed)
   }
 
   @Test func SingletonRootServesAllPeersThroughOneInstance() async throws {

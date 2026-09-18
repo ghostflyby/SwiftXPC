@@ -17,6 +17,35 @@ distributed actor DelegateRoot: XPCRootActor {
   }
 }
 
+/// One-shot async latch: `signal()` before `wait()` resolves the wait
+/// immediately; otherwise `wait()` suspends until `signal()`.
+private final class Latch: Sendable {
+  private let state = Mutex<(fired: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
+
+  func signal() {
+    let waiter = state.withLock { state -> CheckedContinuation<Void, Never>? in
+      state.fired = true
+      let waiter = state.waiter
+      state.waiter = nil
+      return waiter
+    }
+    waiter?.resume()
+  }
+
+  func wait() async {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      let alreadyFired = state.withLock { state -> Bool in
+        if state.fired { return true }
+        state.waiter = cont
+        return false
+      }
+      if alreadyFired {
+        cont.resume()
+      }
+    }
+  }
+}
+
 struct XPCServiceDelegateTests {
   private final class CountingDelegate: XPCServiceDelegate {
     let audits = Mutex<Int>(0)
@@ -77,6 +106,68 @@ struct XPCServiceDelegateTests {
     defer { channel.close() }
     let root = try DelegateRoot.connect(using: channel.client)
     #expect(try await root.ping() == "delegate")
+  }
+
+  @Test func CancelledHostRejectsNewPeersBeforeAudit() async throws {
+    // A bare cancel() closes the host to new peers: they must be rejected
+    // through didRejectPeer without reaching the audit window or the peer
+    // handler (which would bind them to a session that dies immediately).
+    let log = XPCServiceEventLog()
+    let audits = Mutex<Int>(0)
+    let host = XPCServiceHost(
+      XPCServiceConfiguration(shouldAccept: { _ in
+        audits.withLock { $0 += 1 }
+        return true
+      }), eventLog: log)
+    host.cancel()
+
+    let listener = XPCConnection(name: nil)
+    listener.setEventHandler { object in
+      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object.xpc_object))
+    }
+    listener.activate()
+
+    let client = try XPCConnection.unmarshal(from: listener.marshal())
+    client.setEventHandler { _ in }
+    client.activate()
+    client.sendAndForget(message: XPCDictionary())
+
+    let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
+    #expect(rejection != nil)
+    #expect(rejection?.errorDescription == nil)
+    #expect(audits.withLock { $0 } == 0)
+    listener.cancel()
+    client.cancel()
+  }
+
+  @Test func ExpectShutdownDuringPipelineWaitsForCompletion() async throws {
+    // requestShutdown() cancels before running the delegate hook and the
+    // completion. A waiter arriving in that window must wait for the
+    // pipeline to finish and resolve true — the cancelled-without-pipeline
+    // fast path must not fire while a pipeline is in flight.
+    let entered = Latch()
+    let completed = Latch()
+    let release = DispatchSemaphore(value: 0)
+    let host = XPCServiceHost(
+      XPCServiceConfiguration(onShutdown: {
+        entered.signal()
+        release.wait()
+      }))
+    DispatchQueue.global().async {
+      host.requestShutdown()
+      completed.signal()
+    }
+    await entered.wait()  // The pipeline is now inside the delegate hook.
+
+    async let result = host.expectShutdown(timeout: .seconds(5))
+    // The waiter registers while the pipeline is parked in the hook; the
+    // sleep only widens that window, the assertion does not depend on it.
+    try await Task.sleep(for: .milliseconds(100))
+    release.signal()  // Let the pipeline complete.
+
+    #expect(await result)
+    await completed.wait()
   }
 
   @Test func RawConformerHooksDriveTheServer() async throws {
@@ -147,6 +238,48 @@ struct XPCServiceDelegateTests {
       .didAcceptPeer, atLeast: 2, timeout: .seconds(2))
     log.append(.didAcceptPeer)
     #expect(await satisfied)
+  }
+
+  @Test func CoordinatorOccurrenceSelectsNthEvent() async throws {
+    let log = XPCServiceEventLog()
+    let service = try xpcTest(DelegateRoot.self, XPCServiceConfiguration(), eventLog: log)
+    defer { service.close() }
+
+    // Two distinct clients, two didAcceptPeer events.
+    #expect(try await service.client.root.ping() == "delegate")
+    let secondClient = try service.makeClient()
+    let second = try DelegateRoot.connect(using: secondClient)
+    #expect(try await second.ping() == "delegate")
+
+    #expect(await service.expectEvent(.didAcceptPeer, occurrence: 2, timeout: .seconds(2)) != nil)
+    let missing = await service.expectEvent(
+      .didAcceptPeer, occurrence: 3, timeout: .milliseconds(150))
+    #expect(missing == nil)
+  }
+
+  @Test func PeerHandlerThrowRejectsPeerThroughHook() async throws {
+    let log = XPCServiceEventLog()
+    let host = XPCServiceHost(XPCServiceConfiguration(), eventLog: log)
+    host.setPeerHandler { _ in throw XPCDispatchError.unknownActor(.root) }
+    // The throw must reject through didRejectPeer — not trap and not accept.
+    let listener = XPCConnection(name: nil)
+    listener.setEventHandler { object in
+      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object.xpc_object))
+    }
+    listener.activate()
+
+    let client = try XPCConnection.unmarshal(from: listener.marshal())
+    client.setEventHandler { _ in }
+    client.activate()
+    client.sendAndForget(message: XPCDictionary())
+
+    let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
+    #expect(rejection != nil)
+    #expect(rejection?.errorDescription != nil)
+    listener.cancel()
+    host.cancel()
+    client.cancel()
   }
 
   @Test func XPCRootTestCoordinatorDropServerPeerEmitsDisconnectAndReestablishes() async throws {

@@ -42,6 +42,17 @@ import Testing
   #expect(try String.unmarshal(from: decoded.payload!) == "pong")
 }
 
+@Test func ReplyEnvelopeRejectsUnknownVersion() throws {
+  // The reply path must validate the wire version like the invocation and
+  // actor-reference paths do; an unknown version cannot be decoded safely.
+  let envelope = XPCReplyEnvelope(
+    version: XPCWireProtocol.currentVersion + 1,
+    kind: .returnVoid)
+  #expect(throws: XPCMarshalError.self) {
+    _ = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
+  }
+}
+
 @Test func ReplyEnvelopeRoundTripWithoutPayload() throws {
   let envelope = XPCReplyEnvelope(
     kind: .throwError,

@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Synchronization
 import XPC
 
-nonisolated(unsafe)
-  private var mainHandler: @Sendable (XPCConnection) -> Void = { _ in }
+private let mainHandler = Mutex<@Sendable (XPCConnection) -> Void>({ _ in })
 
 private func handleIncomingConnection(_ connection: xpc_connection_t) {
-  mainHandler(XPCConnection(xpc_object: connection))
+  mainHandler.withLock { $0 }(XPCConnection(xpc_object: connection))
 }
 
 /// Runs the XPC service event loop, invoking `handler` for every accepted
@@ -17,6 +17,6 @@ private func handleIncomingConnection(_ connection: xpc_connection_t) {
 /// entry point.
 @MainActor
 public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection) -> Void) -> Never {
-  mainHandler = handler
+  mainHandler.withLock { $0 = handler }
   xpc_main(handleIncomingConnection)
 }

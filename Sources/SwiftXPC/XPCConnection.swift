@@ -24,7 +24,9 @@ public struct XPCConnection: @unchecked Sendable {
 /// Per-connection event handler storage. Thread-safe: XPC delivers events on
 /// the connection's target queue while handlers may be chained from any
 /// queue, so all access is lock-protected. Handlers should be installed
-/// before `activate()`; later additions take effect for subsequent events.
+/// before `activate()`; later additions take effect for subsequent events,
+/// except invalidation handlers, which run immediately when invalidation was
+/// already delivered (it is terminal and never repeats).
 final class _ConnectionHandlerState: Sendable {
   struct Handlers: Sendable {
     var generic: (@Sendable (XPCObject) -> Void)?
@@ -37,7 +39,8 @@ final class _ConnectionHandlerState: Sendable {
   private struct State: Sendable {
     var handlers = Handlers()
     var invalidationDelivered = false
-    var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
+    var interruptionDelivered = false
+    var disconnectionWaiters: [CheckedContinuation<Void, Never>] = []
   }
 
   private let state = Mutex(State())
@@ -65,15 +68,33 @@ final class _ConnectionHandlerState: Sendable {
     }
   }
 
-  /// Registers a continuation resumed on invalidation. Resumes immediately
-  /// when invalidation was already delivered.
-  func waitForInvalidation(continuation: CheckedContinuation<Void, Never>) {
-    let delivered: Bool = state.withLock { state in
-      if state.invalidationDelivered { return true }
-      state.invalidationWaiters.append(continuation)
+  /// Registers an invalidation handler. Invalidation is terminal and
+  /// delivered once, so a handler installed after delivery would otherwise
+  /// never run: returns `true` in that case and the caller invokes it.
+  func chainInvalidation(_ handler: @escaping @Sendable () -> Void) -> Bool {
+    state.withLock { state in
+      if state.invalidationDelivered {
+        return true
+      }
+      let previous = state.handlers.invalidation
+      state.handlers.invalidation = {
+        previous?()
+        handler()
+      }
       return false
     }
-    if delivered {
+  }
+
+  /// Registers a continuation resumed when the connection goes down —
+  /// invalidation or interruption. Resumes immediately when either event
+  /// was already delivered.
+  func waitForDisconnection(continuation: CheckedContinuation<Void, Never>) {
+    let down: Bool = state.withLock { state in
+      if state.invalidationDelivered || state.interruptionDelivered { return true }
+      state.disconnectionWaiters.append(continuation)
+      return false
+    }
+    if down {
       continuation.resume()
     }
   }
@@ -89,8 +110,15 @@ final class _ConnectionHandlerState: Sendable {
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
       let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
         state.invalidationDelivered = true
-        let waiters = state.invalidationWaiters
-        state.invalidationWaiters.removeAll()
+        // Invalidation is terminal: nothing can invoke these two handlers
+        // afterwards. Dropping them here releases what they captured —
+        // including the connection itself, which service-host handlers
+        // capture strongly and which would otherwise form a
+        // connection -> event-handler block -> closure -> connection cycle.
+        state.handlers.invalidation = nil
+        state.handlers.peerCodeSigningError = nil
+        let waiters = state.disconnectionWaiters
+        state.disconnectionWaiters.removeAll()
         return waiters
       }
       snapshot.invalidation?()
@@ -98,7 +126,14 @@ final class _ConnectionHandlerState: Sendable {
       return
     }
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
+      let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
+        state.interruptionDelivered = true
+        let waiters = state.disconnectionWaiters
+        state.disconnectionWaiters.removeAll()
+        return waiters
+      }
       snapshot.interruption?()
+      waiters.forEach { $0.resume() }
       return
     }
     if xpc_equal(raw, XPC_ERROR_TERMINATION_IMMINENT) {
@@ -166,18 +201,24 @@ extension XPCConnection {
     )
   }
   /// Register a handler to run when the connection is invalidated.
-  /// Multiple handlers are chained: the previous handler runs before the new one.
+  /// Multiple handlers are chained: the previous handler runs before the new
+  /// one. Invalidation is delivered once, so a handler registered after
+  /// delivery is invoked immediately instead of being stored.
   public func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
-    _handlerState.chain(\.invalidation, handler)
+    if _handlerState.chainInvalidation(handler) {
+      handler()
+    }
   }
 
-  /// Deterministically waits until the connection is invalidated
-  /// (`XPC_ERROR_CONNECTION_INVALID`). Returns immediately when already
-  /// invalidated. Never polls — the wait suspends and is resumed by the
-  /// invalidation event itself.
-  public func waitForInvalidation() async {
+  /// Deterministically waits until the connection goes down — invalidated or
+  /// interrupted. Returns immediately when either was already delivered.
+  /// Never polls — the wait suspends and is resumed by the disconnecting
+  /// event itself. An interruption may be transient (named services and
+  /// endpoint channels re-dial on the next call), so the wait only observes
+  /// that a disconnection happened, not that it was permanent.
+  public func waitForDisconnection() async {
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-      _handlerState.waitForInvalidation(continuation: cont)
+      _handlerState.waitForDisconnection(continuation: cont)
     }
   }
 

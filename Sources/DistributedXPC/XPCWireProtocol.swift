@@ -90,6 +90,9 @@ extension XPCReplyEnvelope: XPCMarshal {
       throw XPCMarshalError.missingKey("version")
     }
     let version = try UInt64.unmarshal(from: versionObject)
+    guard version == XPCWireProtocol.currentVersion else {
+      throw .unsupportedProtocolVersion(expected: XPCWireProtocol.currentVersion, actual: version)
+    }
     guard let kindObject = dictionary["kind"] else {
       throw XPCMarshalError.missingKey("kind")
     }

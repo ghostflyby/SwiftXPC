@@ -139,6 +139,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     occurrence: Int = 1,
     timeout: Duration? = nil
   ) async -> XPCServiceEvent? {
+    precondition(occurrence >= 1, "occurrence is 1-based")
     guard let eventLog else { return nil }
     guard
       await eventLog.expectCount(
@@ -205,7 +206,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   }
 
   /// Deterministically waits until the coordinator has been closed — by
-  /// \`close()\`, the watchdog, or deinit — and everything it owned has been
+  /// `close()`, the watchdog, or deinit — and everything it owned has been
   /// torn down. Returns immediately when already closed. Never polls.
   public func waitUntilClosed() async {
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -221,6 +222,8 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
       }
     }
   }
+
+  deinit { close() }
 }
 
 /// Spawns a coordinated in-process test service serving a **fresh

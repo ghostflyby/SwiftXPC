@@ -47,9 +47,9 @@ public protocol XPCServiceDelegate: Sendable {
   /// Invoked when a peer is rejected before ever being accepted:
   /// `shouldAcceptPeer(_:)` returned `false` (error is `nil`), it threw, the
   /// peer handler threw, the code signing requirement could not be
-  /// installed, or the host already shut down (error is `nil`). The
-  /// connection is already cancelled; only identity inspection is
-  /// meaningful.
+  /// installed, or the host already shut down or was cancelled (error is
+  /// `nil`). The connection is already cancelled; only identity inspection
+  /// is meaningful.
   func didRejectPeer(_ connection: XPCConnection, error: (any Error)?)
 
   /// Invoked by a hosted entry point once the host exists, before the event
@@ -59,11 +59,12 @@ public protocol XPCServiceDelegate: Sendable {
   /// reference.
   func serviceWillStart(host: XPCServiceHost)
 
-  /// Invoked exactly once after a cooperative shutdown finished tearing
-  /// every accepted peer down, on the thread that drove it. Whether the
-  /// process then dies is launchd's decision (on-demand reaping) or the
-  /// hosting entry point's (which installs the shutdown completion); this
-  /// hook is only the notification.
+  /// Invoked exactly once after a cooperative shutdown has initiated
+  /// teardown of every accepted peer, on the thread that drove it. Peer
+  /// cancellation is asynchronous, so `peerDidEnd` for those peers may
+  /// arrive after this hook. Whether the process then dies is launchd's
+  /// decision (on-demand reaping) or the hosting entry point's (which
+  /// installs the shutdown completion); this hook is only the notification.
   func serviceWillShutdown()
 }
 
@@ -263,7 +264,10 @@ public final class XPCServiceHost: Sendable {
       delegate.didRejectPeer(connection, error: error)
     }
 
-    if state.withLock({ $0.shutdownRequested }) {
+    // A cancelled host takes no new peers: reject before the audit window,
+    // like a post-shutdown peer. (The check runs before installing the
+    // no-op handler; reject() installs its own.)
+    if state.withLock({ $0.shutdownRequested || $0.cancelled }) {
       return reject(nil)
     }
 
@@ -310,10 +314,16 @@ public final class XPCServiceHost: Sendable {
     let accepted = state.withLock { state -> Bool in
       guard !state.cancelled else { return false }
       state.sessions[key] = session
+      // Activate inside the critical section: a concurrent cancel() removes
+      // sessions and cancels their connections outside the lock, and it must
+      // never observe a registered-but-never-activated connection — libxpc
+      // gives cancelling an unactivated connection no defined behavior (the
+      // reject path above deliberately activates first for that reason).
+      connection.activate()
       return true
     }
-    connection.activate()
     if !accepted {
+      connection.activate()
       connection.cancel()
     }
   }
@@ -341,8 +351,10 @@ public final class XPCServiceHost: Sendable {
   /// Deterministically waits until a cooperative shutdown has run its
   /// pipeline and returns `true`. Returns immediately when the host already
   /// shut down; returns `false` when `timeout` elapses first or when the
-  /// host was cancelled (a cancelled host never runs the pipeline). Never
-  /// polls.
+  /// host was cancelled without a shutdown request (a cancelled host never
+  /// runs the pipeline). A waiter arriving while the pipeline is mid-flight
+  /// — after cancellation, before the hook and completion have finished —
+  /// resolves with `true` once the pipeline completes. Never polls.
   public func expectShutdown(timeout: Duration? = nil) async -> Bool {
     await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
       insertShutdownWaiter(id: UUID(), continuation: cont, timeout: timeout)
@@ -355,8 +367,16 @@ public final class XPCServiceHost: Sendable {
     timeout: Duration?
   ) {
     let immediateResult = shutdownState.withLock { shutdown -> Bool? in
-      if shutdown.notified || state.withLock({ $0.cancelled }) {
-        return shutdown.notified
+      if shutdown.notified {
+        return true
+      }
+      // Only a bare cancel() — silent teardown with no pipeline — resolves
+      // waiters with false. requestShutdown() cancels before running the
+      // pipeline, so a waiter arriving in that window must not take the
+      // false fast path; it waits for notifyShutdown() like any other.
+      let (cancelled, requested) = state.withLock { ($0.cancelled, $0.shutdownRequested) }
+      if cancelled && !requested {
+        return false
       }
       shutdown.waiters.append((id, continuation))
       if let timeout {
@@ -411,7 +431,8 @@ public final class XPCServiceHost: Sendable {
   /// Silently cancels every accepted peer and closes the host to new ones
   /// without running the shutdown pipeline. Also runs from `deinit`. Any
   /// pending `expectShutdown` waiter is released with `false`: a cancelled
-  /// host never runs the pipeline.
+  /// host never runs the pipeline. Peers arriving after cancellation are
+  /// rejected through the standard path (`didRejectPeer` with a nil error).
   public func cancel() {
     let sessions = state.withLock { state -> [UUID: Session] in
       state.cancelled = true

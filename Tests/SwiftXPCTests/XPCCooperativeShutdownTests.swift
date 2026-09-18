@@ -31,10 +31,15 @@ distributed actor ShutdownRoot: XPCRootActor {
   #expect(try await root.ping() == "root")
 
   channel.host.requestShutdown()
+  // Gate on the pipeline itself first: without this, a broken requestShutdown
+  // would still let the disconnect wait below resolve via the harness
+  // watchdog, and the test would pass without exercising teardown.
+  #expect(await channel.host.expectShutdown(timeout: .seconds(2)))
 
   // The server-side cancel races with in-flight sends; wait for the client
-  // to observe the invalidation.
-  await channel.client.waitForInvalidation()
+  // to observe the channel going down (a graceful cancel surfaces as an
+  // interruption).
+  await channel.client.waitForDisconnection()
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }
@@ -116,7 +121,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   let reply = Task { try await root.shutdownService() }
   #expect(await channel.host.expectShutdown(timeout: .seconds(2)))
 
-  await channel.client.waitForInvalidation()
+  await channel.client.waitForDisconnection()
   await #expect(throws: XPCConnection.ConnectionError.self) {
     _ = try await root.ping()
   }

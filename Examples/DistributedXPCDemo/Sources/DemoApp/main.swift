@@ -9,11 +9,6 @@ import SwiftXPC
 @main
 struct DemoApp {
   static func main() async {
-    guard #available(macOS 15, *) else {
-      print("DistributedXPCDemo requires macOS 15 or newer.")
-      return
-    }
-
     do {
       // XPCRootConnection survives engine restarts: `handle.root` rides a
       // named mach connection that launchd transparently re-establishes, so

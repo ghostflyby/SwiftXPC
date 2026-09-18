@@ -204,11 +204,19 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
   }
 
   private func insertDrainWaiter(continuation: CheckedContinuation<Void, Never>) {
-    if !hasLiveExportPeers {
-      continuation.resume()
-      return
+    let drained = drainWaiters.withLock { waiters -> Bool in
+      // Atomic check-and-append: a drain observed between a segmented
+      // check and this append would fire on an empty list and this waiter
+      // would never be resumed.
+      if !hasLiveExportPeers {
+        return true
+      }
+      waiters.append(continuation)
+      return false
     }
-    drainWaiters.withLock { $0.append(continuation) }
+    if drained {
+      continuation.resume()
+    }
   }
 
   private func notifyDrainIfQuiescent() {

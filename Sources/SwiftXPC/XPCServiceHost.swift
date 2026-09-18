@@ -346,22 +346,26 @@ open class XPCServiceHost: @unchecked Sendable {
     timeout: Duration?
   ) {
     shutdownLock.lock()
-    defer { shutdownLock.unlock() }
-    let cancelled = state.withLock { $0.cancelled }
-    if shutdownNotified || cancelled {
-      continuation.resume(returning: shutdownNotified)
-      return
-    }
-    shutdownWaiters.append((id, continuation))
-    if let timeout {
-      let host = self
-      let deadline =
-        DispatchTime.now()
-        + Double(timeout.components.seconds)
-        + Double(timeout.components.attoseconds) * 1e-18
-      DispatchQueue.global().asyncAfter(deadline: deadline) {
-        host.cancelShutdownWaiter(id: id)
+    let immediateResult: Bool?
+    if shutdownNotified || state.withLock({ $0.cancelled }) {
+      immediateResult = shutdownNotified
+    } else {
+      immediateResult = nil
+      shutdownWaiters.append((id, continuation))
+      if let timeout {
+        let host = self
+        let deadline =
+          DispatchTime.now()
+          + Double(timeout.components.seconds)
+          + Double(timeout.components.attoseconds) * 1e-18
+        DispatchQueue.global().asyncAfter(deadline: deadline) {
+          host.cancelShutdownWaiter(id: id)
+        }
       }
+    }
+    shutdownLock.unlock()
+    if let immediateResult {
+      continuation.resume(returning: immediateResult)
     }
   }
 

@@ -68,12 +68,13 @@ final class _ConnectionHandlerState: Sendable {
   /// Registers a continuation resumed on invalidation. Resumes immediately
   /// when invalidation was already delivered.
   func waitForInvalidation(continuation: CheckedContinuation<Void, Never>) {
-    state.withLock { state in
-      if state.invalidationDelivered {
-        continuation.resume()
-        return
-      }
+    let delivered: Bool = state.withLock { state in
+      if state.invalidationDelivered { return true }
       state.invalidationWaiters.append(continuation)
+      return false
+    }
+    if delivered {
+      continuation.resume()
     }
   }
 

@@ -137,13 +137,16 @@ public final class XPCServiceEventLog: @unchecked Sendable {
     timeout: Duration?
   ) {
     lock.lock()
-    defer { lock.unlock() }
-    if recordedEvents.filter({ $0.kind == kind }).count >= count {
+    let alreadySatisfied = recordedEvents.filter { $0.kind == kind }.count >= count
+    let waiter = Waiter(kind: kind, atLeast: count, continuation: continuation)
+    if !alreadySatisfied {
+      waiters.append(waiter)
+    }
+    lock.unlock()
+    if alreadySatisfied {
       continuation.resume(returning: true)
       return
     }
-    let waiter = Waiter(kind: kind, atLeast: count, continuation: continuation)
-    waiters.append(waiter)
 
     if let timeout {
       let registry = self

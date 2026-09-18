@@ -194,14 +194,14 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   }
 
   private func notifyClosed() {
-    closeState.withLock { closeState in
-      closeState.notified = true
-      let waiters = closeState.waiters
-      closeState.waiters.removeAll()
-      for waiter in waiters {
-        waiter.resume()
+    let waiters =
+      closeState.withLock { closeState -> [CheckedContinuation<Void, Never>] in
+        closeState.notified = true
+        let waiters = closeState.waiters
+        closeState.waiters.removeAll()
+        return waiters
       }
-    }
+    waiters.forEach { $0.resume() }
   }
 
   /// Deterministically waits until the coordinator has been closed — by
@@ -209,12 +209,15 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// torn down. Returns immediately when already closed. Never polls.
   public func waitUntilClosed() async {
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-      closeState.withLock { closeState in
+      let alreadyClosed = closeState.withLock { closeState -> Bool in
         if closeState.notified {
-          cont.resume()
-          return
+          return true
         }
         closeState.waiters.append(cont)
+        return false
+      }
+      if alreadyClosed {
+        cont.resume()
       }
     }
   }

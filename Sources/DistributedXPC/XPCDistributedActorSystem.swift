@@ -131,7 +131,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
     let reserved = reservedIDLock.withLock { reserved -> ActorID? in
       guard let pending = reserved else { return nil }
       reserved = nil
-      assignedIDsLock.withLock { $0.insert(pending) }
+      assignedIDsLock.withLock { _ = $0.insert(pending) }
       return pending
     }
     if let reserved { return reserved }
@@ -149,7 +149,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
   /// reservation would hand `.root` to the next child actor created on the
   /// host.
   func reserveRootID() {
-    reservedIDLock.withLock { reserved -> Bool in
+    _ = reservedIDLock.withLock { reserved -> Bool in
       let taken = assignedIDsLock.withLock { $0.contains(.root) }
       guard !taken else { return false }
       reserved = .root

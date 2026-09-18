@@ -65,7 +65,7 @@ private final class AttemptCounter: @unchecked Sendable {
     maxAttempts: 3, initialBackoff: .milliseconds(1), multiplier: 1, maxBackoff: .milliseconds(1))
   let attempts = Mutex<Int>(0)
   do {
-    _ = try await handle.retrying(policy) { _ -> Never in
+    _ = try await handle.retrying(policy) { attempt in
       attempts.withLock { $0 += 1 }
       throw XPCConnection.ConnectionError.invalid
     }
@@ -111,7 +111,7 @@ private final class AttemptCounter: @unchecked Sendable {
 
   _ = try await handle.root.ping()
   let deadline = ContinuousClock.now + .seconds(2)
-  while ContinuousClock.now < deadline, accepted.withLock { $0 } == 0 {
+  while ContinuousClock.now < deadline, accepted.withLock({ $0 }) == 0 {
     try await Task.sleep(for: .milliseconds(10))
   }
   #expect(accepted.withLock { $0 } >= 1)

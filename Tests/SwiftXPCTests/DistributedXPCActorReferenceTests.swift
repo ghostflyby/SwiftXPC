@@ -278,6 +278,7 @@ private func totalExportPeerCount(of system: XPCDistributedActorSystem) -> Int {
 
   var box: PeerBox? = PeerBox(connection)
   box = nil
+  _ = box  // Explicit discard triggers deinit → connection.cancel()
 
   let deadline = ContinuousClock.now + .seconds(2)
   while ContinuousClock.now < deadline, !invalidated.withLock({ $0 }) {

@@ -50,21 +50,24 @@ public protocol XPCRootActor: XPCExportableActor,
   static var shared: Self { get }
 }
 
-/// Cache behind the default `shared`. An `NSLock` box: a generic
-/// distributed actor reference carries no static `Sendable` evidence for
-/// `Mutex`, and protocols cannot hold static stored properties.
+/// Cache behind the default `shared`. A `~Copyable` struct over a `Mutex`:
+/// protocols cannot hold static stored properties, and a noncopyable
+/// registry cannot be aliased into a second mutable copy.
 @available(macOS 15, *)
-private final class SharedRootRegistry: @unchecked Sendable {
-  private let lock = NSLock()
-  private var roots: [ObjectIdentifier: Any] = [:]
+private struct SharedRootRegistry: Sendable, ~Copyable {
+  private let roots: Mutex<[ObjectIdentifier: any XPCRootActor]> = .init([:])
 
   func root<R: XPCRootActor>(for rootType: R.Type) -> R {
-    lock.lock()
-    defer { lock.unlock() }
     let key = ObjectIdentifier(rootType)
-    if let existing = roots[key] { return existing as! R }
+    if let existing = roots.withLock({
+      $0[key]
+    }) {
+      return existing as! R
+    }
     let created = R(actorSystem: .serviceHost)
-    roots[key] = created
+    roots.withLock {
+      $0[key] = created
+    }
     return created
   }
 }

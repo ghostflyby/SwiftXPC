@@ -19,7 +19,7 @@ struct XPCActorReferenceWire {
 /// `marshal()` (export on a fresh channel) and `unmarshal(from:)` (dial the
 /// embedded endpoint, resolve a proxy) implementations.
 @available(macOS 15, *)
-public protocol XPCExportableActor: DistributedActor, XPCMarshal
+public protocol XPCExportableActor: DistributedActor, XPCMarshal, Sendable, SendableMetatype
 where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {}
 
 @available(macOS 15, *)

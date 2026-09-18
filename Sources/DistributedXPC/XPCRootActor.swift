@@ -81,31 +81,13 @@ extension XPCRootActor {
   }
 }
 
-/// Serves a singleton `Root` on every accepted peer channel. All
-/// connection-lifecycle plumbing — session bookkeeping, the audit window,
-/// rejection paths, and the shutdown pipeline — is inherited from
-/// `XPCServiceHost`; this class adds only the actor binding: each accepted
-/// peer is bound to `Root.shared` on the service host system.
-///
-/// A cooperative shutdown (`requestShutdown()`, or
-/// `XPCDistributedActorSystem.requestServiceShutdown()` from actor code)
-/// tears every peer down, runs the delegate's `serviceWillShutdown()`, and
-/// — under the hosted `xpcMain`/`XPCApp` entry points — exits the process.
-/// Without hosting, retirement is launchd's call: closing the last client
-/// channel is what its on-demand reaping needs.
-public final class XPCRootActorServer<Root: XPCRootActor>: XPCServiceHost, @unchecked Sendable {
-  /// - Parameters:
-  ///   - rootType: the concrete root actor type served on every accepted
-  ///     peer; only its `shared` singleton is ever constructed.
-  ///   - delegate: the connection-lifecycle customization; see
-  ///     `XPCServiceDelegate` for the per-hook semantics. Defaults to a
-  ///     plain `XPCServiceConfiguration`.
-  public init(
+extension XPCServiceHost {
+  public convenience init<Root: XPCRootActor>(
     _ rootType: Root.Type = Root.self,
     _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
     eventLog: XPCServiceEventLog? = nil
   ) {
-    super.init(delegate, eventLog: eventLog)
+    self.init(delegate, eventLog: eventLog)
     setPeerHandler { [weak self] connection in
       let serviceHost = XPCDistributedActorSystem.serviceHost
       // Reserve before the first `shared` access so lazy creation assigns
@@ -151,7 +133,7 @@ public protocol XPCApp: XPCServiceDelegate {
   associatedtype Root: XPCRootActor
 
   /// Creates the delegate for hosting.
-  @MainActor init()
+  init()
 
   /// Runs the XPC service event loop with `Self` as the delegate. Never
   /// returns. Provided by the library; this is the `@main` entry point.
@@ -185,7 +167,7 @@ public func xpcMain<Root>(
   _ rootType: Root.Type,
   _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
 ) -> Never where Root: XPCRootActor {
-  let server = XPCRootActorServer(rootType, delegate)
+  let server = XPCServiceHost(rootType, delegate)
   // The hosted service *is* the process: retire it right after the
   // delegate's shutdown hook has run.
   server.setShutdownCompletion { exit(0) }

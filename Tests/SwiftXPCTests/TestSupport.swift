@@ -80,7 +80,7 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
 /// type per test process — so suites using this fixture must be
 /// `.serialized`.
 final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
-  let server: XPCRootActorServer<Root>
+  let server: XPCServiceHost
   let client: XPCConnection
   private let listener: XPCConnection
   private let watchdog: DispatchWorkItem
@@ -91,7 +91,7 @@ final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
     eventLog: XPCServiceEventLog? = nil
   ) throws {
     let listener = XPCConnection(name: nil)
-    let server = XPCRootActorServer<Root>(rootType, delegate, eventLog: eventLog)
+    let server = XPCServiceHost(rootType, delegate, eventLog: eventLog)
     listener.setEventHandler { object in
       guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
       server.accept(XPCConnection(xpc_object: object.xpc_object))

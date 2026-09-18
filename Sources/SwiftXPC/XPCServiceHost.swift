@@ -14,6 +14,8 @@ import XPC
 /// shutdown. Conformance requires `Sendable`; keep shared state behind a
 /// lock.
 public protocol XPCServiceDelegate: Sendable {
+
+  init()
   /// Kernel-enforced code signing requirement installed on every peer
   /// *before activation*. Read once per accepted peer, so class-type
   /// conformers may vary it between peers. A requirement that cannot be
@@ -128,6 +130,10 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
     self.onShutdown = onShutdown
   }
 
+  public init() {
+    self.init(peerCodeSigningRequirement: nil)
+  }
+
   public func shouldAcceptPeer(_ connection: XPCConnection) throws -> Bool {
     guard let shouldAccept else { return true }
     return try shouldAccept(connection)
@@ -169,7 +175,7 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
 /// Whether the process retires when the service shuts down is launchd's
 /// decision (on-demand reaping) or the hosting entry point's
 /// (`setShutdownCompletion`); the host itself never exits the process.
-open class XPCServiceHost: @unchecked Sendable {
+public final class XPCServiceHost: Sendable {
   final class Session: Sendable {
     let peerConnection: XPCConnection
 
@@ -426,24 +432,7 @@ open class XPCServiceHost: @unchecked Sendable {
   }
 }
 
-/// Marks a no-argument-constructible delegate as a standalone XPC service
-/// entry point, so the type itself can carry `@main`. The library-provided
-/// `main()` hosts a fresh instance through `XPCServiceHost(Self())` and
-/// exits the process after a cooperative shutdown.
-///
-/// The default peer handler ignores incoming traffic: a plain service that
-/// should respond to messages installs its routing from
-/// `serviceWillStart(host:)` via `host.setPeerHandler(...)`.
-public protocol XPCServiceMain: XPCServiceDelegate {
-  /// Creates the delegate for hosting.
-  @MainActor init()
-
-  /// Runs the XPC service event loop with `Self` as the delegate. Never
-  /// returns. Provided by the library; this is the `@main` entry point.
-  @MainActor static func main()
-}
-
-extension XPCServiceMain {
+extension XPCServiceDelegate {
   @MainActor
   public static func main() {
     let delegate = Self()

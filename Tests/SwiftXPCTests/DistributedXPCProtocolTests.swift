@@ -5,7 +5,6 @@ import Distributed
 import SwiftXPC
 import Testing
 
-@available(macOS 13.0, *)
 @Test func InvocationMessageRoundTrip() throws {
   var arguments = XPCArray()
   arguments.append(try 42.marshal())
@@ -29,7 +28,6 @@ import Testing
   #expect(try String.unmarshal(from: decoded.arguments[1]) == "hello")
 }
 
-@available(macOS 13.0, *)
 @Test func ReplyEnvelopeRoundTripWithPayload() throws {
   let envelope = XPCReplyEnvelope(
     kind: .returnValue,
@@ -44,7 +42,6 @@ import Testing
   #expect(try String.unmarshal(from: decoded.payload!) == "pong")
 }
 
-@available(macOS 13.0, *)
 @Test func ReplyEnvelopeRoundTripWithoutPayload() throws {
   let envelope = XPCReplyEnvelope(
     kind: .throwError,

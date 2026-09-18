@@ -56,14 +56,12 @@ extension XPCExportableActor {
 /// forwarded to other processes without involving its owning process.
 final class StoredActorReference: @unchecked Sendable {
   let actorID: XPCActorID
-  private let endpointObject: xpc_object_t
+  let endpoint: XPCObject
 
   init(actorID: XPCActorID, endpoint: XPCObject) {
     self.actorID = actorID
-    self.endpointObject = endpoint.xpc_object
+    self.endpoint = endpoint
   }
-
-  var endpoint: XPCObject { XPCObject(xpc_object: endpointObject) }
 }
 
 /// One exported-actor endpoint: a fresh anonymous listener plus the peers
@@ -73,7 +71,7 @@ final class StoredActorReference: @unchecked Sendable {
 /// already have been handed to a receiver that has not dialed yet, and an
 /// anonymous listener occupies no launchd client connection, so it cannot
 /// block on-demand reaping.
-final class XPCActorExportSession: @unchecked Sendable {
+final class XPCActorExportSession: Sendable {
   let id: UUID
   let actorID: XPCActorID
   let listener: XPCConnection
@@ -155,7 +153,7 @@ final class XPCActorExportSession: @unchecked Sendable {
 /// releases its imported proxy, its owned system tears the connection down,
 /// and this end must close symmetrically instead of lingering half-open.
 /// Cancelling an already-dead connection is a no-op.
-final class PeerBox: @unchecked Sendable {
+final class PeerBox: Sendable {
   let id = UUID()
   let connection: XPCConnection
 

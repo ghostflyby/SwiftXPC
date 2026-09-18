@@ -30,7 +30,8 @@ let package = Package(
       name: "SwiftXPC",
       dependencies: [
         "SwiftXPCMacros"
-      ]
+      ],
+      swiftSettings: [.treatAllWarnings(as: .error)]
     ),
     .macro(
       name: "SwiftXPCMacros",
@@ -42,7 +43,8 @@ let package = Package(
     ),
     .target(
       name: "DistributedXPC",
-      dependencies: ["SwiftXPC"]
+      dependencies: ["SwiftXPC"],
+      swiftSettings: [.treatAllWarnings(as: .error)]
     ),
     .testTarget(
       name: "SwiftXPCTests",

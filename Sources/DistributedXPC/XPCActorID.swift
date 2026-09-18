@@ -3,8 +3,7 @@
 import SwiftXPC
 
 @XPCMarshal
-@available(macOS 13.0, *)
-public struct XPCActorID: Hashable, Sendable, Codable, Equatable {
+public struct XPCActorID: Hashable, Sendable, Codable {
   public static let root = XPCActorID(id: 0)
 
   internal let id: UInt64

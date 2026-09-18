@@ -53,9 +53,11 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   private let system: XPCDistributedActorSystem
   private let eventLog: XPCServiceEventLog?
   private let closed = Mutex(false)
-  private let closeLock = NSLock()
-  private var closeNotified = false
-  private var closeWaiters: [CheckedContinuation<Void, Never>] = []
+  private struct CloseWaiterState: Sendable {
+    var notified = false
+    var waiters: [CheckedContinuation<Void, Never>] = []
+  }
+  private let closeState = Mutex(CloseWaiterState())
   private var watchdog: DispatchWorkItem?
 
   /// Retains the latest server-side peer so tests can simulate the service
@@ -192,12 +194,14 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   }
 
   private func notifyClosed() {
-    closeLock.lock()
-    closeNotified = true
-    let waiters = closeWaiters
-    closeWaiters.removeAll()
-    closeLock.unlock()
-    waiters.forEach { $0.resume() }
+    closeState.withLock { closeState in
+      closeState.notified = true
+      let waiters = closeState.waiters
+      closeState.waiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
+    }
   }
 
   /// Deterministically waits until the coordinator has been closed — by
@@ -205,14 +209,13 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// torn down. Returns immediately when already closed. Never polls.
   public func waitUntilClosed() async {
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-      closeLock.lock()
-      if closeNotified {
-        closeLock.unlock()
-        cont.resume()
-        return
+      closeState.withLock { closeState in
+        if closeState.notified {
+          cont.resume()
+          return
+        }
+        closeState.waiters.append(cont)
       }
-      closeWaiters.append(cont)
-      closeLock.unlock()
     }
   }
 }

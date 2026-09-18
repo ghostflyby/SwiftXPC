@@ -25,8 +25,8 @@ public struct XPCConnection: @unchecked Sendable {
 /// the connection's target queue while handlers may be chained from any
 /// queue, so all access is lock-protected. Handlers should be installed
 /// before `activate()`; later additions take effect for subsequent events.
-final class _ConnectionHandlerState: @unchecked Sendable {
-  struct Handlers {
+final class _ConnectionHandlerState: Sendable {
+  struct Handlers: Sendable {
     var generic: (@Sendable (XPCObject) -> Void)?
     var invalidation: (@Sendable () -> Void)?
     var interruption: (@Sendable () -> Void)?
@@ -34,15 +34,18 @@ final class _ConnectionHandlerState: @unchecked Sendable {
     var peerCodeSigningError: (@Sendable () -> Void)?
   }
 
-  private let lock = NSLock()
-  private var handlers = Handlers()
-  private var invalidationDelivered = false
-  private var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
+  private struct State: Sendable {
+    var handlers = Handlers()
+    var invalidationDelivered = false
+    var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
+  }
+
+  private let state = Mutex(State())
 
   private func withHandlers<T>(_ body: (inout Handlers) -> T) -> T {
-    lock.lock()
-    defer { lock.unlock() }
-    return body(&handlers)
+    state.withLock { state in
+      body(&state.handlers)
+    }
   }
 
   func setGenericHandler(_ handler: @escaping @Sendable (XPCObject) -> Void) {
@@ -65,14 +68,13 @@ final class _ConnectionHandlerState: @unchecked Sendable {
   /// Registers a continuation resumed on invalidation. Resumes immediately
   /// when invalidation was already delivered.
   func waitForInvalidation(continuation: CheckedContinuation<Void, Never>) {
-    lock.lock()
-    if invalidationDelivered {
-      lock.unlock()
-      continuation.resume()
-      return
+    state.withLock { state in
+      if state.invalidationDelivered {
+        continuation.resume()
+        return
+      }
+      state.invalidationWaiters.append(continuation)
     }
-    invalidationWaiters.append(continuation)
-    lock.unlock()
   }
 
   /// Routes one connection event object to the matching dedicated handler.
@@ -84,11 +86,12 @@ final class _ConnectionHandlerState: @unchecked Sendable {
     let snapshot = withHandlers { $0 }
     let raw = object.xpc_object
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
-      lock.lock()
-      invalidationDelivered = true
-      let waiters = invalidationWaiters
-      invalidationWaiters.removeAll()
-      lock.unlock()
+      let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
+        state.invalidationDelivered = true
+        let waiters = state.invalidationWaiters
+        state.invalidationWaiters.removeAll()
+        return waiters
+      }
       snapshot.invalidation?()
       waiters.forEach { $0.resume() }
       return

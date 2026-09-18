@@ -192,8 +192,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
     serviceShutdownHandler.withLock { $0 = handler }
   }
 
-  private let drainLock = NSLock()
-  private var drainWaiters: [CheckedContinuation<Void, Never>] = []
+  private let drainWaiters = Mutex<[CheckedContinuation<Void, Never>]>([])
 
   /// Waits until no export session of this system has live peers — every
   /// export session fully drained (child reclamation attempted). Returns
@@ -205,22 +204,21 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked
   }
 
   private func insertDrainWaiter(continuation: CheckedContinuation<Void, Never>) {
-    drainLock.lock()
-    defer { drainLock.unlock() }
     if !hasLiveExportPeers {
       continuation.resume()
       return
     }
-    drainWaiters.append(continuation)
+    drainWaiters.withLock { $0.append(continuation) }
   }
 
   private func notifyDrainIfQuiescent() {
-    drainLock.lock()
-    let quiescent = !hasLiveExportPeers
-    let waiters = quiescent ? drainWaiters : []
-    drainWaiters.removeAll()
-    drainLock.unlock()
-    waiters.forEach { $0.resume() }
+    let toResume: [CheckedContinuation<Void, Never>] = drainWaiters.withLock { waiters in
+      guard !hasLiveExportPeers else { return [] }
+      let drained = waiters
+      waiters.removeAll()
+      return drained
+    }
+    toResume.forEach { $0.resume() }
   }
 
   var hasLiveExportPeers: Bool {

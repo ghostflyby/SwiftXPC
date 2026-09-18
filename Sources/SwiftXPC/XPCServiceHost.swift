@@ -191,9 +191,12 @@ open class XPCServiceHost: @unchecked Sendable {
   /// Installed by a hosting entry point; runs after
   /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
   private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
-  private let shutdownLock = NSLock()
-  private var shutdownNotified = false
-  private var shutdownWaiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+  private struct ShutdownState {
+    var notified = false
+    var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+  }
+
+  private let shutdownState = Mutex(ShutdownState())
 
   /// - Parameters:
   ///   - delegate: the connection-lifecycle customization.
@@ -345,13 +348,11 @@ open class XPCServiceHost: @unchecked Sendable {
     continuation: CheckedContinuation<Bool, Never>,
     timeout: Duration?
   ) {
-    shutdownLock.lock()
-    let immediateResult: Bool?
-    if shutdownNotified || state.withLock({ $0.cancelled }) {
-      immediateResult = shutdownNotified
-    } else {
-      immediateResult = nil
-      shutdownWaiters.append((id, continuation))
+    let immediateResult = shutdownState.withLock { shutdown -> Bool? in
+      if shutdown.notified || state.withLock({ $0.cancelled }) {
+        return shutdown.notified
+      }
+      shutdown.waiters.append((id, continuation))
       if let timeout {
         let host = self
         let deadline =
@@ -362,40 +363,40 @@ open class XPCServiceHost: @unchecked Sendable {
           host.cancelShutdownWaiter(id: id)
         }
       }
+      return nil
     }
-    shutdownLock.unlock()
     if let immediateResult {
       continuation.resume(returning: immediateResult)
     }
   }
 
   private func cancelShutdownWaiters(resuming value: Bool) {
-    shutdownLock.lock()
-    let waiters = shutdownWaiters
-    shutdownWaiters.removeAll()
-    shutdownLock.unlock()
+    let waiters = shutdownState.withLock { shutdown in
+      let waiters = shutdown.waiters
+      shutdown.waiters.removeAll()
+      return waiters
+    }
     for waiter in waiters {
       waiter.continuation.resume(returning: value)
     }
   }
 
   private func cancelShutdownWaiter(id: UUID) {
-    shutdownLock.lock()
-    guard let index = shutdownWaiters.firstIndex(where: { $0.id == id }) else {
-      shutdownLock.unlock()
-      return
+    let waiter = shutdownState.withLock { shutdown in
+      shutdown.waiters.firstIndex(where: { $0.id == id }).map {
+        shutdown.waiters.remove(at: $0)
+      }
     }
-    let waiter = shutdownWaiters.remove(at: index)
-    shutdownLock.unlock()
-    waiter.continuation.resume(returning: false)
+    waiter?.continuation.resume(returning: false)
   }
 
   private func notifyShutdown() {
-    shutdownLock.lock()
-    shutdownNotified = true
-    let waiters = shutdownWaiters
-    shutdownWaiters.removeAll()
-    shutdownLock.unlock()
+    let waiters = shutdownState.withLock { shutdown in
+      shutdown.notified = true
+      let waiters = shutdown.waiters
+      shutdown.waiters.removeAll()
+      return waiters
+    }
     for waiter in waiters {
       waiter.continuation.resume(returning: true)
     }

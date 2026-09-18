@@ -46,7 +46,7 @@ public struct XPCServiceEvent: Equatable, Sendable {
 /// `expectEvent(_:timeout:)` never polls: it returns immediately when the
 /// event is already recorded, otherwise it suspends and is resumed by the
 /// recording itself — a missed edge-triggered event is impossible.
-public final class XPCServiceEventLog: @unchecked Sendable {
+public final class XPCServiceEventLog: Sendable {
   private struct Waiter {
     let id = UUID()
     let kind: XPCServiceEvent.Kind
@@ -54,17 +54,18 @@ public final class XPCServiceEventLog: @unchecked Sendable {
     let continuation: CheckedContinuation<Bool, Never>
   }
 
-  private let lock = NSLock()
-  private var recordedEvents: [XPCServiceEvent] = []
-  private var waiters: [Waiter] = []
+  private struct State {
+    var recordedEvents: [XPCServiceEvent] = []
+    var waiters: [Waiter] = []
+  }
+
+  private let state = Mutex(State())
 
   public init() {}
 
   /// Snapshot of the recorded events, in invocation order.
   public var events: [XPCServiceEvent] {
-    lock.lock()
-    defer { lock.unlock() }
-    return recordedEvents
+    state.withLock { $0.recordedEvents }
   }
 
   /// Appends one event. Intentionally public: a service can append custom
@@ -77,16 +78,17 @@ public final class XPCServiceEventLog: @unchecked Sendable {
     let event = XPCServiceEvent(
       kind: kind,
       errorDescription: error.map(String.init(describing:)))
-    lock.lock()
-    recordedEvents.append(event)
-    var released: [CheckedContinuation<Bool, Never>] = []
-    while let index = waiters.firstIndex(where: {
-      $0.kind == event.kind
-        && recordedEvents.filter { $0.kind == event.kind }.count >= $0.atLeast
-    }) {
-      released.append(waiters.remove(at: index).continuation)
+    let released: [CheckedContinuation<Bool, Never>] = state.withLock { state in
+      state.recordedEvents.append(event)
+      var released: [CheckedContinuation<Bool, Never>] = []
+      while let index = state.waiters.firstIndex(where: {
+        $0.kind == event.kind
+          && state.recordedEvents.filter { $0.kind == event.kind }.count >= $0.atLeast
+      }) {
+        released.append(state.waiters.remove(at: index).continuation)
+      }
+      return released
     }
-    lock.unlock()
     released.forEach { $0.resume(returning: true) }
   }
 
@@ -119,15 +121,13 @@ public final class XPCServiceEventLog: @unchecked Sendable {
   }
 
   private func recorded(_ kind: XPCServiceEvent.Kind) -> XPCServiceEvent? {
-    lock.lock()
-    defer { lock.unlock() }
-    return recordedEvents.first(where: { $0.kind == kind })
+    state.withLock { $0.recordedEvents.first(where: { $0.kind == kind }) }
   }
 
   private func satisfied(_ kind: XPCServiceEvent.Kind, atLeast count: Int) -> Bool {
-    lock.lock()
-    defer { lock.unlock() }
-    return recordedEvents.filter { $0.kind == kind }.count >= count
+    state.withLock { state in
+      state.recordedEvents.filter { $0.kind == kind }.count >= count
+    }
   }
 
   private func insertWaiter(
@@ -136,13 +136,14 @@ public final class XPCServiceEventLog: @unchecked Sendable {
     continuation: CheckedContinuation<Bool, Never>,
     timeout: Duration?
   ) {
-    lock.lock()
-    let alreadySatisfied = recordedEvents.filter { $0.kind == kind }.count >= count
     let waiter = Waiter(kind: kind, atLeast: count, continuation: continuation)
-    if !alreadySatisfied {
-      waiters.append(waiter)
+    let alreadySatisfied = state.withLock { state -> Bool in
+      let satisfied = state.recordedEvents.filter { $0.kind == kind }.count >= count
+      if !satisfied {
+        state.waiters.append(waiter)
+      }
+      return satisfied
     }
-    lock.unlock()
     if alreadySatisfied {
       continuation.resume(returning: true)
       return
@@ -161,13 +162,12 @@ public final class XPCServiceEventLog: @unchecked Sendable {
   }
 
   private func cancelWaiter(id: UUID) {
-    lock.lock()
-    guard let index = waiters.firstIndex(where: { $0.id == id }) else {
-      lock.unlock()
-      return
+    let waiter = state.withLock { state -> Waiter? in
+      guard let index = state.waiters.firstIndex(where: { $0.id == id }) else {
+        return nil
+      }
+      return state.waiters.remove(at: index)
     }
-    let waiter = waiters.remove(at: index)
-    lock.unlock()
-    waiter.continuation.resume(returning: false)
+    waiter?.continuation.resume(returning: false)
   }
 }

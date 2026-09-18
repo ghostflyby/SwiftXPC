@@ -7,7 +7,6 @@ import Synchronization
 ///
 /// Events are appended in invocation order. Peer identity is not tracked —
 /// distinguish peers by order and counts.
-@available(macOS 15, *)
 public struct XPCServiceEvent: Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
     /// The audit window was entered for an incoming peer.
@@ -47,7 +46,6 @@ public struct XPCServiceEvent: Equatable, Sendable {
 /// `expectEvent(_:timeout:)` never polls: it returns immediately when the
 /// event is already recorded, otherwise it suspends and is resumed by the
 /// recording itself — a missed edge-triggered event is impossible.
-@available(macOS 15, *)
 public final class XPCServiceEventLog: @unchecked Sendable {
   private struct Waiter {
     let id = UUID()

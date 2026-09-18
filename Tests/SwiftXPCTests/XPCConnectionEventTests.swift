@@ -6,7 +6,6 @@ import Synchronization
 import Testing
 import XPC
 
-@available(macOS 15.0, *)
 private final class EventLog: @unchecked Sendable {
   private let items = Mutex<[String]>([])
 
@@ -19,7 +18,6 @@ private final class EventLog: @unchecked Sendable {
   }
 }
 
-@available(macOS 15.0, *)
 private func assertRouting(
   _ object: XPCObject,
   configured: @Sendable (_ConnectionHandlerState, EventLog) -> Void = { _, _ in },
@@ -37,21 +35,18 @@ private func assertRouting(
 }
 
 @Test func RoutingSendsInvalidToInvalidationHandler() async throws {
-  guard #available(macOS 15.0, *) else { return }
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_CONNECTION_INVALID),
     expected: ["invalid"])
 }
 
 @Test func RoutingSendsInterruptedToInterruptionHandler() async throws {
-  guard #available(macOS 15.0, *) else { return }
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_CONNECTION_INTERRUPTED),
     expected: ["interrupted"])
 }
 
 @Test func RoutingSendsTerminationImminentToDedicatedHandler() async throws {
-  guard #available(macOS 15.0, *) else { return }
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_TERMINATION_IMMINENT),
     configured: { state, log in
@@ -61,14 +56,12 @@ private func assertRouting(
 }
 
 @Test func RoutingFallsBackToGenericWithoutTerminationHandler() async throws {
-  guard #available(macOS 15.0, *) else { return }
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_TERMINATION_IMMINENT),
     expected: ["generic"])
 }
 
 @Test func RoutingSendsPeerCodeSigningErrorToDedicatedHandler() async throws {
-  guard #available(macOS 15.0, *) else { return }
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
     configured: { state, log in
@@ -78,21 +71,18 @@ private func assertRouting(
 }
 
 @Test func RoutingFallsBackToGenericWithoutPeerCodeSigningHandler() async throws {
-  guard #available(macOS 15.0, *) else { return }
   assertRouting(
     XPCObject(xpc_object: XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
     expected: ["generic"])
 }
 
 @Test func RoutingSendsPlainMessagesToGenericHandler() async throws {
-  guard #available(macOS 15.0, *) else { return }
   assertRouting(
     try "message".marshal(),
     expected: ["generic"])
 }
 
 @Test func ConnectionExposesPeerPidAndDebugDescription() async throws {
-  guard #available(macOS 15.0, *) else { return }
   let listener = XPCConnection(name: nil)
   let accepted = Mutex<XPCConnection?>(nil)
   listener.setEventHandler { object in

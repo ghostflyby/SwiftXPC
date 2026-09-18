@@ -8,7 +8,6 @@ import SwiftXPCMacros
 import Testing
 @testable import DistributedXPC
 
-@available(macOS 15, *)
 @XPCService
 distributed actor DelegateRoot: XPCRootActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -19,7 +18,6 @@ distributed actor DelegateRoot: XPCRootActor {
 }
 
 struct XPCServiceDelegateTests {
-  @available(macOS 15, *)
   private final class CountingDelegate: XPCServiceDelegate {
     let audits = Mutex<Int>(0)
     let accepted = Mutex<Int>(0)
@@ -34,9 +32,7 @@ struct XPCServiceDelegateTests {
     }
   }
 
-  @available(macOS 15, *)
   @Test func HostedShutdownCompletionRunsAfterServiceWillShutdown() async throws {
-    guard #available(macOS 15, *) else { return }
     let events = Mutex<[String]>([])
     let service = try xpcTest(
       DelegateRoot.self,
@@ -60,7 +56,6 @@ struct XPCServiceDelegateTests {
     // activate peers with no libxpc event handler installed — the first
     // incoming message raised _xpc_api_misuse and killed the process. The
     // fallback handler must keep the service alive and silent instead.
-    guard #available(macOS 15, *) else { return }
     let host = XPCServiceHost(XPCServiceConfiguration())
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
@@ -78,7 +73,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func DefaultHostingServesSingletonRoot() async throws {
-    guard #available(macOS 15, *) else { return }
     let channel = try RootChannel(DelegateRoot.self)
     defer { channel.close() }
     let root = try DelegateRoot.connect(using: channel.client)
@@ -86,7 +80,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func RawConformerHooksDriveTheServer() async throws {
-    guard #available(macOS 15, *) else { return }
     let delegate = CountingDelegate()
     let channel = try RootChannel(DelegateRoot.self, delegate)
     defer { channel.close() }
@@ -97,7 +90,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func EventLogRecordsHookSequenceAndShutdown() async throws {
-    guard #available(macOS 15, *) else { return }
     let log = XPCServiceEventLog()
     let service = try xpcTest(DelegateRoot.self, XPCServiceConfiguration(), eventLog: log)
     defer { service.close() }
@@ -113,7 +105,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func WatchdogForceClosesTheServiceAfterDuration() async throws {
-    guard #available(macOS 15, *) else { return }
     let service = try xpcTest(DelegateRoot.self, watchdog: .milliseconds(50))
     #expect(try await service.client.root.ping() == "delegate")
 
@@ -126,7 +117,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func XPCRootTestCoordinatorResolvesRootAndReportsShutdown() async throws {
-    guard #available(macOS 15, *) else { return }
     let shutdowns = Mutex<Int>(0)
     let service = try xpcTest(
       DelegateRoot.self,
@@ -143,7 +133,6 @@ struct XPCServiceDelegateTests {
     #expect(shutdowns.withLock { $0 } == 1)
   }
 
-  @available(macOS 15, *)
   @Test func ExpectCountHoldsThresholdUntilReached() async throws {
     let log = XPCServiceEventLog()
     log.append(.didAcceptPeer)  // count = 1: below the threshold.
@@ -161,7 +150,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func XPCRootTestCoordinatorDropServerPeerEmitsDisconnectAndReestablishes() async throws {
-    guard #available(macOS 15, *) else { return }
     let log = XPCServiceEventLog()
     let service = try xpcTest(DelegateRoot.self, XPCServiceConfiguration(), eventLog: log)
     defer { service.close() }
@@ -188,7 +176,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func CoordinatorExpectShutdownResolvesFalseAfterCancel() async throws {
-    guard #available(macOS 15, *) else { return }
     let service = try xpcTest(
       DelegateRoot.self,
       XPCServiceConfiguration(),
@@ -205,7 +192,6 @@ struct XPCServiceDelegateTests {
   }
 
   @Test func XPCRootTestCoordinatorRetryingRidesOutServerPeerDrop() async throws {
-    guard #available(macOS 15, *) else { return }
     let log = XPCServiceEventLog()
     let service = try xpcTest(
       DelegateRoot.self,

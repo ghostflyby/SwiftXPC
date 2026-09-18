@@ -196,7 +196,6 @@ extension XPCConnection {
   /// Register a handler to run when the peer fails this connection's code
   /// signing requirement (`XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT`).
   /// Multiple handlers are chained: the previous handler runs before the new one.
-  @available(macOS 15.0, *)
   public func addPeerCodeSigningErrorHandler(_ handler: @escaping @Sendable () -> Void) {
     _handlerState.chain(\.peerCodeSigningError, handler)
   }
@@ -251,12 +250,7 @@ extension XPCConnection {
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
       return .interrupted
     }
-    if #available(macOS 15.0, *),
-      xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT)
-    {
-      // Kept at 15 to match this package's existing gating of this signal
-      // (`route`); the 14.4 entitlement installers can also produce this
-      // error, which stays unmapped to a typed case on 14.4.
+    if xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT) {
       return .peerCodeSigningRequirement
     }
     return nil

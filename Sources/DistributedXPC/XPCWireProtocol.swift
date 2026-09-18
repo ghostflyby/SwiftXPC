@@ -110,7 +110,6 @@ extension XPCReplyEnvelope: XPCMarshal {
   }
 }
 
-@available(macOS 15, *)
 extension XPCReplyEnvelope {
   func decodeReturnValue<Res, Err>(
     throwing errorType: Err.Type,

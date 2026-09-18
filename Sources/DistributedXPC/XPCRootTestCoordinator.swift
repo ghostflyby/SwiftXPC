@@ -40,7 +40,6 @@ import Synchronization
 /// completion for exit-policy assertions), `makeClient()` dials additional
 /// clients, and `close()` tears everything down. Nothing ever exits the
 /// process.
-@available(macOS 15, *)
 public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendable {
   /// The default client: a production `XPCRootConnection` dialed against
   /// the coordinator's endpoint at spawn time — `root` for calls, `events`
@@ -239,7 +238,6 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
 ///   - watchdog: when non-nil, the coordinator force-closes itself after
 ///     this duration so a hung test fails fast (pending calls observe the
 ///     channel going down) instead of blocking the suite.
-@available(macOS 15, *)
 public func xpcTest<Root: XPCRootActor>(
   _ rootType: Root.Type,
   _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),

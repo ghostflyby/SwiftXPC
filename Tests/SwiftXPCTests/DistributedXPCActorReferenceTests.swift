@@ -9,7 +9,6 @@ import Synchronization
 import Testing
 import XPC
 
-@available(macOS 15, *)
 private final class MessageStore: @unchecked Sendable {
   private let messages = Mutex<[String]>([])
 
@@ -22,7 +21,6 @@ private final class MessageStore: @unchecked Sendable {
   }
 }
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ChannelCallback {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -39,7 +37,6 @@ distributed actor ChannelCallback {
   }
 }
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ChannelWorker {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -53,7 +50,6 @@ distributed actor ChannelWorker {
   }
 }
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ChannelRoot: XPCRootActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -68,7 +64,6 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func DirectLocalActorReferenceRoundTrip() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   let worker = ChannelWorker(actorSystem: system)
 
@@ -79,7 +74,6 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func RootBootstrapReturnsRemoteRoot() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
@@ -88,7 +82,6 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func RootReturnsActorOnIndependentChannel() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
@@ -98,7 +91,6 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func ActorParameterProvidesReverseCallbackChannel() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
@@ -113,7 +105,6 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func RootProxyExportIsRejected() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
@@ -129,7 +120,6 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func InvalidatingChildChannelDoesNotInvalidateRoot() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
@@ -146,7 +136,6 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func ActorReferenceRejectsUnsupportedVersion() throws {
-  guard #available(macOS 15, *) else { return }
   let listener = XPCConnection(name: nil)
   listener.setEventHandler { _ in }
   listener.activate()
@@ -170,14 +159,12 @@ distributed actor ChannelRoot: XPCRootActor {
 
 // MARK: - Export session peer lifecycle
 
-@available(macOS 15, *)
 private enum ExportPairError: Error {
   case peerAcceptTimedOut
 }
 
 /// A test-owned root channel so the server-side system — and with it the
 /// export session registry — is directly observable.
-@available(macOS 15, *)
 private struct ExportPair {
   let listener: XPCConnection
   let client: XPCConnection
@@ -191,7 +178,6 @@ private struct ExportPair {
   }
 }
 
-@available(macOS 15, *)
 private func makeExportPair() throws -> ExportPair {
   let listener = XPCConnection(name: nil)
   let captured = Mutex<(XPCDistributedActorSystem, ChannelRoot)?>(nil)
@@ -228,7 +214,6 @@ private func makeExportPair() throws -> ExportPair {
   )
 }
 
-@available(macOS 15, *)
 private func totalExportPeerCount(of system: XPCDistributedActorSystem) -> Int {
   system.exportSessionsLock.withLock { sessions in
     sessions.values.reduce(0) { $0 + $1.peerCount }
@@ -236,7 +221,6 @@ private func totalExportPeerCount(of system: XPCDistributedActorSystem) -> Int {
 }
 
 @Test func DroppingImportedProxyDrainsExportSessionPeers() async throws {
-  guard #available(macOS 15, *) else { return }
   let pair = try makeExportPair()
   defer { pair.close() }
   let root = try ChannelRoot.resolve(id: .root, using: pair.clientSystem)
@@ -263,7 +247,6 @@ private func totalExportPeerCount(of system: XPCDistributedActorSystem) -> Int {
 }
 
 @Test func PeerDeathDrainsExportSessionPeers() async throws {
-  guard #available(macOS 15, *) else { return }
   let pair = try makeExportPair()
   defer { pair.close() }
   let root = try ChannelRoot.resolve(id: .root, using: pair.clientSystem)
@@ -287,7 +270,6 @@ private func totalExportPeerCount(of system: XPCDistributedActorSystem) -> Int {
 }
 
 @Test func DroppingPeerBoxCancelsItsConnection() async throws {
-  guard #available(macOS 15, *) else { return }
   let invalidated = Mutex(false)
   let connection = XPCConnection(name: nil)
   connection.addInvalidationHandler { invalidated.withLock { $0 = true } }

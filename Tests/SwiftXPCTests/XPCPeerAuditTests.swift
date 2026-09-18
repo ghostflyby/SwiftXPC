@@ -9,7 +9,6 @@ import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
-@available(macOS 15, *)
 @XPCService
 distributed actor AuditRoot: XPCRootActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -40,7 +39,6 @@ private func ownSigningIdentifier() -> String? {
 // MARK: - Server-side requirement installation
 
 @Test func MalformedRequirementRejectsPeerBeforeAudit() async throws {
-  guard #available(macOS 15, *) else { return }
   let auditCalls = Mutex<Int>(0)
   let rejections = Mutex<[(any Error)?]>([])
   let log = XPCServiceEventLog()
@@ -71,7 +69,6 @@ private func ownSigningIdentifier() -> String? {
 }
 
 @Test func UnsatisfiableRequirementDropsPeerAtActivation() async throws {
-  guard #available(macOS 15, *) else { return }
   let accepted = Mutex<Int>(0)
   let rejections = Mutex<[(any Error)?]>([])
   let ends = Mutex<Int>(0)
@@ -99,7 +96,6 @@ private func ownSigningIdentifier() -> String? {
 }
 
 @Test func MatchingRequirementAllowsRootCalls() async throws {
-  guard #available(macOS 15, *) else { return }
   guard let identifier = ownSigningIdentifier() else {
     Issue.record("Could not determine the test binary's code signing identifier")
     return
@@ -116,7 +112,6 @@ private func ownSigningIdentifier() -> String? {
 // MARK: - shouldAccept hook semantics
 
 @Test func ThrowingShouldAcceptRejectsPeerWithError() async throws {
-  guard #available(macOS 15, *) else { return }
   struct AuditHookFailure: Error {}
   let log = XPCServiceEventLog()
   let rejections = Mutex<[(any Error)?]>([])
@@ -140,7 +135,6 @@ private func ownSigningIdentifier() -> String? {
 }
 
 @Test func ShouldAcceptFalseReportsNilError() async throws {
-  guard #available(macOS 15, *) else { return }
   let log = XPCServiceEventLog()
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
@@ -172,7 +166,6 @@ private func ownSigningIdentifier() -> String? {
 /// `xpc_connection_send_message_with_reply_sync`; passing the message twice
 /// is a libxpc programming error that traps the process.
 @Test func SyncSendSurfacesInterruptionFromRejectedPeer() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(
     AuditRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
   channel.client.setEventHandler { _ in }
@@ -186,7 +179,6 @@ private func ownSigningIdentifier() -> String? {
 // MARK: - Client-side service authentication
 
 @Test func MatchingClientRequirementAllowsRootCalls() async throws {
-  guard #available(macOS 15, *) else { return }
   guard let identifier = ownSigningIdentifier() else {
     Issue.record("Could not determine the test binary's code signing identifier")
     return
@@ -200,7 +192,6 @@ private func ownSigningIdentifier() -> String? {
 }
 
 @Test func UnsatisfiableClientRequirementRejectsService() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(AuditRoot.self)
   let root = try AuditRoot.connect(
     using: channel.client,

@@ -39,7 +39,6 @@ func makeIdleConnection() -> XPCConnection {
 /// `XPCRootActor.connect(using:)` or manually before sending on it.
 /// `close()` cancels every connection; it also runs from `deinit` and the
 /// watchdog.
-@available(macOS 15, *)
 final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
   let harness: XPCRootTestCoordinator<Root>
   var host: XPCServiceHost { harness.host }
@@ -80,7 +79,6 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
 /// `xpcMain` service does. The service host is process-global — one root
 /// type per test process — so suites using this fixture must be
 /// `.serialized`.
-@available(macOS 15, *)
 final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
   let server: XPCRootActorServer<Root>
   let client: XPCConnection

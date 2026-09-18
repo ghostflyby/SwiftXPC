@@ -7,7 +7,6 @@ import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ExitSingletonRoot: XPCRootActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -53,10 +52,8 @@ distributed actor ExitSingletonRoot: XPCRootActor {
   }
 }
 
-@available(macOS 15, *)
 private let singletonInstance = ExitSingletonRoot(actorSystem: .serviceHost)
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ExitWorker {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -76,7 +73,6 @@ distributed actor ExitWorker {
 /// singleton path (and the handlers installed on it) run serialized.
 @Suite(.serialized)
 struct XPCSingletonRootTests {
-  @available(macOS 15, *)
   @Test func EagerlyMaterializedSingletonKeepsRootIdentity() async throws {
     // P0 repro: materializing `shared` before the first connection used to
     // consume a regular identity (ID 1); clients dialing `.root` then failed
@@ -95,12 +91,10 @@ struct XPCSingletonRootTests {
     _ = try await worker.greet()
   }
 
-  @available(macOS 15, *)
   private func hostRegistryContains(_ id: XPCActorID) -> Bool {
     XPCDistributedActorSystem.serviceHost.activeActorsLock.withLock { $0[id] != nil }
   }
 
-  @available(macOS 15, *)
   @Test func SingletonRootServesAllPeersThroughOneInstance() async throws {
     let channel = try SharedSingletonChannel(ExitSingletonRoot.self)
     defer { channel.close() }
@@ -118,7 +112,6 @@ struct XPCSingletonRootTests {
     #expect(try await second.bump() == after + 2)
   }
 
-  @available(macOS 15, *)
   @Test func SingletonChildActorsDoNotCollideWithRoot() async throws {
     let channel = try SharedSingletonChannel(ExitSingletonRoot.self)
     defer { channel.close() }
@@ -139,7 +132,6 @@ struct XPCSingletonRootTests {
     #expect(try await worker.greet() == "worker")
   }
 
-  @available(macOS 15, *)
   @Test func ChildSurvivesRootClientDisconnect() async throws {
     // Singleton contract: the root (and children it minted on the service
     // host) outlive any one client connection — retirement is launchd's or
@@ -163,7 +155,6 @@ struct XPCSingletonRootTests {
     #expect(try await worker.greet() == "worker")
   }
 
-  @available(macOS 15, *)
   @Test func FullyDrainedChildIsUnpinned() async throws {
     let channel = try SharedSingletonChannel(ExitSingletonRoot.self)
     defer { channel.close() }
@@ -186,7 +177,6 @@ struct XPCSingletonRootTests {
     #expect(!hostRegistryContains(id))
   }
 
-  @available(macOS 15, *)
   @Test func ReadoptedChildIsReexportable() async throws {
     let channel = try SharedSingletonChannel(ExitSingletonRoot.self)
     defer { channel.close() }
@@ -208,7 +198,6 @@ struct XPCSingletonRootTests {
     #expect(hostRegistryContains(reacquired.id))
   }
 
-  @available(macOS 15, *)
   @Test func RootRegistryEntrySurvivesSelfHandout() async throws {
     let channel = try SharedSingletonChannel(ExitSingletonRoot.self)
     defer { channel.close() }

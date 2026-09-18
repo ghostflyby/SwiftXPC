@@ -6,7 +6,6 @@ import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ForwardWorker {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -16,7 +15,6 @@ distributed actor ForwardWorker {
   }
 }
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ForwardRoot: XPCRootActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -31,7 +29,6 @@ distributed actor ForwardRoot: XPCRootActor {
 }
 
 @Test func ForwardedProxyRoundTripsThroughOwnerEndpoint() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ForwardRoot.self)
   defer { channel.close() }
   let root = try ForwardRoot.connect(using: channel.client)
@@ -46,7 +43,6 @@ distributed actor ForwardRoot: XPCRootActor {
 }
 
 @Test func SameProxyForwardedTwiceServesParallelPeers() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ForwardRoot.self)
   defer { channel.close() }
   let root = try ForwardRoot.connect(using: channel.client)
@@ -68,7 +64,6 @@ distributed actor ForwardRoot: XPCRootActor {
 }
 
 @Test func RootServerRejectsPeerBeforeActivation() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(
     ForwardRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
   channel.client.setEventHandler { _ in }

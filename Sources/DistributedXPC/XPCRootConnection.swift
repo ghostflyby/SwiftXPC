@@ -8,7 +8,6 @@ import Synchronization
 /// How often and with which backoff a flaky transport operation is retried.
 /// Only infrastructure failures (`XPCConnection.ConnectionError`) are retried;
 /// errors thrown by the operation itself propagate immediately.
-@available(macOS 15, *)
 public struct XPCRetryPolicy: Sendable {
   /// Total number of attempts, including the first one. Must be >= 1.
   public let maxAttempts: Int
@@ -51,7 +50,6 @@ public struct XPCRetryPolicy: Sendable {
 }
 
 /// Lifecycle events of a root connection.
-@available(macOS 15, *)
 public enum XPCRootConnectionEvent: Sendable {
   /// The connection to the service is established.
   case connected
@@ -72,7 +70,6 @@ public enum XPCRootConnectionEvent: Sendable {
 /// handle adds lifecycle events and a retry policy for infrastructure
 /// failures. Callers observe `events` to rebuild dependent child-actor state
 /// after `.disconnected`.
-@available(macOS 15, *)
 public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   /// The permanent root proxy. Never needs replacement: after a service
   /// restart the next call on it succeeds against the relaunched instance.

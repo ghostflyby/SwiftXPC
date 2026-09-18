@@ -26,7 +26,6 @@ import Synchronization
 /// Services that need per-connection behavior build it on top of the
 /// singleton: hand out child actors from `shared`'s methods, or route by
 /// peer identity inside the delegate's `didAcceptPeer`.
-@available(macOS 15, *)
 public protocol XPCRootActor: XPCExportableActor,
   XPCDistributedTargetMetadataProviding
 {
@@ -53,7 +52,6 @@ public protocol XPCRootActor: XPCExportableActor,
 /// Cache behind the default `shared`. A `~Copyable` struct over a `Mutex`:
 /// protocols cannot hold static stored properties, and a noncopyable
 /// registry cannot be aliased into a second mutable copy.
-@available(macOS 15, *)
 private struct SharedRootRegistry: Sendable, ~Copyable {
   private let roots: Mutex<[ObjectIdentifier: any XPCRootActor]> = .init([:])
 
@@ -72,10 +70,8 @@ private struct SharedRootRegistry: Sendable, ~Copyable {
   }
 }
 
-@available(macOS 15, *)
 private let sharedRootRegistry = SharedRootRegistry()
 
-@available(macOS 15, *)
 extension XPCRootActor {
   /// The process-wide singleton root, lazily created and cached on the
   /// long-lived service host system. Concurrent first accesses race to
@@ -97,7 +93,6 @@ extension XPCRootActor {
 /// — under the hosted `xpcMain`/`XPCApp` entry points — exits the process.
 /// Without hosting, retirement is launchd's call: closing the last client
 /// channel is what its on-demand reaping needs.
-@available(macOS 15, *)
 public final class XPCRootActorServer<Root: XPCRootActor>: XPCServiceHost, @unchecked Sendable {
   /// - Parameters:
   ///   - rootType: the concrete root actor type served on every accepted
@@ -151,7 +146,6 @@ public final class XPCRootActorServer<Root: XPCRootActor>: XPCServiceHost, @unch
 /// `XPCRootActorServer` for `Root.shared`, and exits the process after a
 /// cooperative shutdown. All customization lives in the conformer's own
 /// requirement implementations, exactly as in `xpcMain`.
-@available(macOS 15, *)
 public protocol XPCApp: XPCServiceDelegate {
   /// The singleton root actor type served by the app.
   associatedtype Root: XPCRootActor
@@ -164,7 +158,6 @@ public protocol XPCApp: XPCServiceDelegate {
   @MainActor static func main()
 }
 
-@available(macOS 15, *)
 extension XPCApp {
   @MainActor
   public static func main() {
@@ -187,7 +180,6 @@ extension XPCApp {
 /// For in-process hosting — tests and embedders — use `xpcTest(_:_:)` or a
 /// standalone `XPCRootActorServer`, neither of which ever exits the
 /// process.
-@available(macOS 15, *)
 @MainActor
 public func xpcMain<Root>(
   _ rootType: Root.Type,
@@ -201,7 +193,6 @@ public func xpcMain<Root>(
   return SwiftXPC.xpcMain { connection in server.accept(connection) }
 }
 
-@available(macOS 15, *)
 extension XPCRootActor {
   /// Connects to a launchd-managed XPC service by mach service name and
   /// resolves its root actor.
@@ -240,7 +231,6 @@ extension XPCRootActor {
   }
 }
 
-@available(macOS 15, *)
 extension XPCConnection {
   /// Installs `requirement` on this connection when non-nil. Must run before
   /// activation; an install failure propagates so callers can fail closed.

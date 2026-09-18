@@ -15,7 +15,6 @@ import XPC
 /// actor reference mints its own channel. Outbound calls ride the named
 /// connection, which launchd re-establishes transparently after a service
 /// restart.
-@available(macOS 15, *)
 public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked Sendable {
   public typealias ActorID = XPCActorID
   public typealias ResultHandler = XPCInvocationResultHandler

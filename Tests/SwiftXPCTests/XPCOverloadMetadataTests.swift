@@ -9,7 +9,6 @@ import XPC
 /// Exercises overloading: `call(_:)` collides on the metadata key (same base
 /// name and labels, different parameter types); `call(value:)` has a distinct
 /// key; the `save(_:)` pair collides with *different* typed-throws errors.
-@available(macOS 15, *)
 @XPCService
 distributed actor OverloadActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -35,7 +34,6 @@ distributed actor OverloadActor {
   }
 }
 
-@available(macOS 15, *)
 public struct SaveIntError: Error, XPCMarshal, Equatable {
   public init() {}
 
@@ -51,7 +49,6 @@ public struct SaveIntError: Error, XPCMarshal, Equatable {
   }
 }
 
-@available(macOS 15, *)
 public struct SaveStringError: Error, XPCMarshal, Equatable {
   public init() {}
 
@@ -67,7 +64,6 @@ public struct SaveStringError: Error, XPCMarshal, Equatable {
   }
 }
 
-@available(macOS 15, *)
 private func makeOverloadSystem() -> XPCDistributedActorSystem {
   XPCDistributedActorSystem(connection: makeIdleConnection())
 }
@@ -75,7 +71,6 @@ private func makeOverloadSystem() -> XPCDistributedActorSystem {
 // MARK: - Reproduction: collisions in the generated metadata table
 
 @Test func OverloadMetadataCollapsesSameLabelKey() async throws {
-  guard #available(macOS 15, *) else { return }
   let table = OverloadActor.xpcDistributedTargetMetadata
 
   // Both `call(_:)` overloads share one key; the macro deduplicates so the
@@ -85,7 +80,6 @@ private func makeOverloadSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func OverloadMetadataOmitsAmbiguousErrorTypes() async throws {
-  guard #available(macOS 15, *) else { return }
   let table = OverloadActor.xpcDistributedTargetMetadata
 
   // The `save(_:)` overloads throw *different* error types, so the shared
@@ -97,7 +91,6 @@ private func makeOverloadSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func OverloadRealClientProxyDispatch() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeOverloadSystem()
   let actor = OverloadActor(actorSystem: system)
   let proxy = try OverloadActor.unmarshal(from: try actor.marshal())
@@ -116,7 +109,6 @@ private func makeOverloadSystem() -> XPCDistributedActorSystem {
 // MARK: - Distinct keys must not be affected
 
 @Test func DistinctLabelOverloadsGetDistinctKeys() async throws {
-  guard #available(macOS 15, *) else { return }
   let table = OverloadActor.xpcDistributedTargetMetadata
 
   #expect(table["call(value:)"] != nil)

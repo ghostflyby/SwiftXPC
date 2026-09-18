@@ -13,7 +13,6 @@ import XPC
 /// accepting thread), `serviceWillShutdown` on the thread that drove the
 /// shutdown. Conformance requires `Sendable`; keep shared state behind a
 /// lock.
-@available(macOS 15, *)
 public protocol XPCServiceDelegate: Sendable {
   /// Kernel-enforced code signing requirement installed on every peer
   /// *before activation*. Read once per accepted peer, so class-type
@@ -66,7 +65,6 @@ public protocol XPCServiceDelegate: Sendable {
   func serviceWillShutdown()
 }
 
-@available(macOS 15, *)
 extension XPCServiceDelegate {
   public var peerCodeSigningRequirement: String? { nil }
 
@@ -87,7 +85,6 @@ extension XPCServiceDelegate {
 /// "use the protocol default", so a service states only what it customizes.
 /// Closure properties mirror the delegate members they override; a `nil`
 /// closure falls through to the `XPCServiceDelegate` default.
-@available(macOS 15, *)
 public struct XPCServiceConfiguration: XPCServiceDelegate {
   /// See `XPCServiceDelegate.peerCodeSigningRequirement`.
   public let peerCodeSigningRequirement: String?
@@ -172,7 +169,6 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
 /// Whether the process retires when the service shuts down is launchd's
 /// decision (on-demand reaping) or the hosting entry point's
 /// (`setShutdownCompletion`); the host itself never exits the process.
-@available(macOS 15, *)
 open class XPCServiceHost: @unchecked Sendable {
   final class Session: @unchecked Sendable {
     let peerConnection: XPCConnection
@@ -433,7 +429,6 @@ open class XPCServiceHost: @unchecked Sendable {
 /// The default peer handler ignores incoming traffic: a plain service that
 /// should respond to messages installs its routing from
 /// `serviceWillStart(host:)` via `host.setPeerHandler(...)`.
-@available(macOS 15, *)
 public protocol XPCServiceMain: XPCServiceDelegate {
   /// Creates the delegate for hosting.
   @MainActor init()
@@ -443,7 +438,6 @@ public protocol XPCServiceMain: XPCServiceDelegate {
   @MainActor static func main()
 }
 
-@available(macOS 15, *)
 extension XPCServiceMain {
   @MainActor
   public static func main() {

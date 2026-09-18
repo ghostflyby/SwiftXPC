@@ -8,7 +8,6 @@ import XPC
 
 /// Declared WITHOUT any XPC conformance. Dispatch is permissive for actors
 /// without metadata: any distributed target the actor exposes is callable.
-@available(macOS 15, *)
 distributed actor RetrofittedActor {
   typealias ActorSystem = XPCDistributedActorSystem
 
@@ -21,7 +20,6 @@ distributed actor RetrofittedActor {
   }
 }
 
-@available(macOS 15, *)
 public enum RetroError: Error, XPCMarshal, Equatable {
   case boom
 
@@ -38,7 +36,6 @@ public enum RetroError: Error, XPCMarshal, Equatable {
 }
 
 @Test func PermissiveDispatchServesNonConformingActor() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeIdleSystem()
   let actor = RetrofittedActor(actorSystem: system)
 
@@ -59,7 +56,6 @@ public enum RetroError: Error, XPCMarshal, Equatable {
 }
 
 @Test func PermissiveDispatchDecodesMarshalableTypedErrors() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeIdleSystem()
   let actor = RetrofittedActor(actorSystem: system)
 
@@ -78,7 +74,6 @@ public enum RetroError: Error, XPCMarshal, Equatable {
 }
 
 @Test func PermissiveDispatchUnknownTargetFailsAtRuntime() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeIdleSystem()
   let actor = RetrofittedActor(actorSystem: system)
 
@@ -104,7 +99,6 @@ public enum RetroError: Error, XPCMarshal, Equatable {
 /// Adding `XPCExportableActor` conformance unlocks actor-reference marshaling
 /// (parameters, return values) without any other change.
 @Test func ExportableConformanceUnlocksReferenceRoundTrip() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeIdleSystem()
   let actor = RetroExportableActor(actorSystem: system)
 
@@ -112,13 +106,11 @@ public enum RetroError: Error, XPCMarshal, Equatable {
   #expect(try await proxy.greet(name: "x") == "Hello, x!")
 }
 
-@available(macOS 15, *)
 private func makeIdleSystem() -> XPCDistributedActorSystem {
   XPCDistributedActorSystem(connection: makeIdleConnection())
 }
 
 /// With reference marshaling opted in.
-@available(macOS 15, *)
 distributed actor RetroExportableActor: XPCExportableActor {
   typealias ActorSystem = XPCDistributedActorSystem
 
@@ -127,10 +119,8 @@ distributed actor RetroExportableActor: XPCExportableActor {
   }
 }
 
-@available(macOS 15, *)
 private let retroGreetTargetIdentifier =
   "$s13SwiftXPCTests16RetrofittedActorC5greet4nameS2S_tYaKFTE"
 
-@available(macOS 15, *)
 private let retroFailTargetIdentifier =
   "$s13SwiftXPCTests16RetrofittedActorC4failyyYaKFTE"

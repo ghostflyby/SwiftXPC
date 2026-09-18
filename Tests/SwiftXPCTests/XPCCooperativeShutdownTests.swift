@@ -7,7 +7,6 @@ import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ShutdownRoot: XPCRootActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -26,7 +25,6 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func ShutdownTearsDownExistingSession() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ShutdownRoot.self)
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
@@ -43,7 +41,6 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func ShutdownRejectsNewPeersThroughRejectHook() async throws {
-  guard #available(macOS 15, *) else { return }
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
@@ -64,7 +61,6 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func ShutdownRejectsBeforeAuditWindow() async throws {
-  guard #available(macOS 15, *) else { return }
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
@@ -90,7 +86,6 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func ShutdownFiresOnShutdownExactlyOnce() async throws {
-  guard #available(macOS 15, *) else { return }
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
@@ -112,7 +107,6 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func RequestServiceShutdownBridgesFromRootActor() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ShutdownRoot.self, XPCServiceConfiguration())
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
@@ -130,7 +124,6 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func RequestServiceShutdownWithoutServerIsNoOp() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   // Client-side systems host no server session: this must not route anywhere.
   system.requestServiceShutdown()

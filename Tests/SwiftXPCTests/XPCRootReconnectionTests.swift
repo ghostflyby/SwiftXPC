@@ -7,7 +7,6 @@ import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
-@available(macOS 15, *)
 private final class AttemptCounter: @unchecked Sendable {
   let count = Mutex<Int>(0)
 
@@ -28,7 +27,6 @@ private final class AttemptCounter: @unchecked Sendable {
 // MARK: - Retry policy unit behavior
 
 @Test func RetryingSucceedsAfterTransientConnectionErrors() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
@@ -41,7 +39,6 @@ private final class AttemptCounter: @unchecked Sendable {
 }
 
 @Test func RetryingDoesNotRetryBusinessErrors() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
@@ -60,7 +57,6 @@ private final class AttemptCounter: @unchecked Sendable {
 }
 
 @Test func RetryingExhaustsAttemptsAndThrowsLastError() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
@@ -82,7 +78,6 @@ private final class AttemptCounter: @unchecked Sendable {
 // MARK: - Lifecycle events and peer callbacks
 
 @Test func DisconnectEventFiresWhenServicePeerDies() async throws {
-  guard #available(macOS 15, *) else { return }
   let channel = try RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
@@ -101,7 +96,6 @@ private final class AttemptCounter: @unchecked Sendable {
 }
 
 @Test func ServerFiresPeerAcceptAndEndCallbacks() async throws {
-  guard #available(macOS 15, *) else { return }
   let accepted = Mutex<Int>(0)
   let ended = Mutex<Int>(0)
 
@@ -132,7 +126,6 @@ private final class AttemptCounter: @unchecked Sendable {
 
 // MARK: - Root channel
 
-@available(macOS 15, *)
 @XPCService
 distributed actor ReconnectRoot: XPCRootActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -142,7 +135,6 @@ distributed actor ReconnectRoot: XPCRootActor {
   }
 }
 
-@available(macOS 15, *)
 private func nextEvent(
   from stream: AsyncStream<XPCRootConnectionEvent>,
   expecting expected: XPCRootConnectionEvent

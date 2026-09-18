@@ -19,7 +19,6 @@ public struct DemoPayload: Equatable, Sendable {
   }
 }
 
-@available(macOS 15, *)
 @XPCService
 public distributed actor DemoRoot: XPCRootActor {
   public typealias ActorSystem = XPCDistributedActorSystem
@@ -29,7 +28,6 @@ public distributed actor DemoRoot: XPCRootActor {
   }
 }
 
-@available(macOS 15, *)
 public enum DemoGreeterError: Error, Equatable, CustomStringConvertible {
   case rejected
 
@@ -41,7 +39,6 @@ public enum DemoGreeterError: Error, Equatable, CustomStringConvertible {
   }
 }
 
-@available(macOS 15, *)
 extension DemoGreeterError: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
     try "rejected".marshal()
@@ -57,7 +54,6 @@ extension DemoGreeterError: XPCMarshal {
   }
 }
 
-@available(macOS 15, *)
 @XPCService
 public distributed actor DemoGreeter {
   public typealias ActorSystem = XPCDistributedActorSystem

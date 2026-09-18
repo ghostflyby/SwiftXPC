@@ -6,7 +6,7 @@ import Synchronization
 import Testing
 import XPC
 
-private final class EventLog: @unchecked Sendable {
+private final class EventLog: Sendable {
   private let items = Mutex<[String]>([])
 
   func record(_ name: String) {

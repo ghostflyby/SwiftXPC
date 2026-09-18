@@ -15,7 +15,7 @@ import XPC
 /// actor reference mints its own channel. Outbound calls ride the named
 /// connection, which launchd re-establishes transparently after a service
 /// restart.
-public final class XPCDistributedActorSystem: DistributedActorSystem, @unchecked Sendable {
+public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   public typealias ActorID = XPCActorID
   public typealias ResultHandler = XPCInvocationResultHandler
   public typealias InvocationEncoder = XPCInvocationEncoder

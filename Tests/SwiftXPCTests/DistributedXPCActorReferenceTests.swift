@@ -9,7 +9,7 @@ import Synchronization
 import Testing
 import XPC
 
-private final class MessageStore: @unchecked Sendable {
+private final class MessageStore: Sendable {
   private let messages = Mutex<[String]>([])
 
   func append(_ message: String) {

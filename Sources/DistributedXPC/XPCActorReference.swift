@@ -54,7 +54,7 @@ extension XPCExportableActor {
 
 /// The retained wire of an imported actor proxy, kept so the proxy can be
 /// forwarded to other processes without involving its owning process.
-final class StoredActorReference: @unchecked Sendable {
+struct StoredActorReference: Sendable {
   let actorID: XPCActorID
   let endpoint: XPCObject
 

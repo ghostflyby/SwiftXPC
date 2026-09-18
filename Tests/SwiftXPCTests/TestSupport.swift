@@ -39,7 +39,7 @@ func makeIdleConnection() -> XPCConnection {
 /// `XPCRootActor.connect(using:)` or manually before sending on it.
 /// `close()` cancels every connection; it also runs from `deinit` and the
 /// watchdog.
-final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
+final class RootChannel<Root: XPCRootActor>: Sendable {
   let harness: XPCRootTestCoordinator<Root>
   var host: XPCServiceHost { harness.host }
   var client: XPCConnection { harness.client.connection }

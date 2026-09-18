@@ -7,7 +7,7 @@ import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
-private final class AttemptCounter: @unchecked Sendable {
+private final class AttemptCounter: Sendable {
   let count = Mutex<Int>(0)
 
   /// Runs `body`, making it fail with a connection error `failures` times

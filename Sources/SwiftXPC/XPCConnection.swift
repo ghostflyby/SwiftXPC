@@ -103,8 +103,7 @@ final class _ConnectionHandlerState: @unchecked Sendable {
         return
       }
     }
-    if #available(macOS 15.0, *),
-      xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
+    if xpc_equal(raw, XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
       let handler = snapshot.peerCodeSigningError
     {
       handler()

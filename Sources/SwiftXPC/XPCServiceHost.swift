@@ -170,7 +170,7 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
 /// decision (on-demand reaping) or the hosting entry point's
 /// (`setShutdownCompletion`); the host itself never exits the process.
 open class XPCServiceHost: @unchecked Sendable {
-  final class Session: @unchecked Sendable {
+  final class Session: Sendable {
     let peerConnection: XPCConnection
 
     init(peerConnection: XPCConnection) {

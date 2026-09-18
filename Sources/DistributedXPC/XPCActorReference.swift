@@ -58,19 +58,18 @@ final class StoredActorReference: @unchecked Sendable {
   let actorID: XPCActorID
   private let endpointObject: xpc_object_t
 
+  /// `xpc_retain`/`xpc_release` are deprecated in macOS 14.4 SDK in favor of
+  /// ARC, but `xpc_object_t` is a raw C pointer type that ARC cannot manage.
+  /// These calls are the only way to correctly extend the lifetime of an XPC
+  /// object stored outside of the XPC runtime's own object graph.
+  @available(macOS, deprecated: 14.4)
   init(actorID: XPCActorID, endpoint: XPCObject) {
     self.actorID = actorID
-    // xpc_retain/xpc_release are deprecated in favor of ARC, but
-    // xpc_object_t is a C pointer type that ARC cannot manage. These calls
-    // are the only way to correctly extend the lifetime of an XPC object
-    // stored outside of the XPC runtime's own object graph.
     self.endpointObject = xpc_retain(endpoint.xpc_object)
   }
 
-  deinit {
-    // swiftlint:disable:next deprecated
-    xpc_release(endpointObject)
-  }
+  @available(macOS, deprecated: 14.4)
+  deinit { xpc_release(endpointObject) }
 
   var endpoint: XPCObject { XPCObject(xpc_object: endpointObject) }
 }

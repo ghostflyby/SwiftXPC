@@ -27,77 +27,81 @@ func makeIdleConnection() -> XPCConnection {
   return connection
 }
 
-/// Polls `condition` until it holds or the deadline passes, returning the
-/// final value. For events that race with async XPC teardown.
-func pollUntil(
-  seconds: Double = 2,
-  intervalMilliseconds: Int = 20,
-  _ condition: @Sendable () async -> Bool
-) async -> Bool {
-  let deadline = ContinuousClock.now + .seconds(seconds)
-  while ContinuousClock.now < deadline {
-    if await condition() { return true }
-    try? await Task.sleep(for: .milliseconds(intervalMilliseconds))
-  }
-  return await condition()
-}
-
 /// An in-process XPC channel carrying real mach traffic between a server side
 /// hosted on an anonymous listener and a client side dialed from its endpoint,
-/// so root-actor tests need no launchd-managed service. It cannot exercise
-/// launchd-relaunch reconnection, which only named-service connections have.
+/// so root-actor tests need no launchd-managed service. A thin test harness
+/// over the public `xpcTest(_:_:)` API, adding a 10 s watchdog so a lost
+/// reply fails the pending call instead of hanging the suite. It cannot
+/// exercise launchd-relaunch reconnection, which only named-service
+/// connections have.
 ///
 /// The client connection starts inactive: activate it via
-/// `XPCRootActor.connect(using:)`, `XPCRootConnection.connect(using:)`, or
-/// manually before sending on it. `close()` cancels every connection; it also
-/// runs from `deinit` and a 10 s watchdog, so a lost reply fails the pending
-/// call instead of hanging the suite.
-@available(macOS 15, *)
-final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
-  let listener: XPCConnection
-  let client: XPCConnection
-  let server: XPCRootActorServer<Root>
+/// `XPCRootActor.connect(using:)` or manually before sending on it.
+/// `close()` cancels every connection; it also runs from `deinit` and the
+/// watchdog.
+final class RootChannel<Root: XPCRootActor>: Sendable {
+  let harness: XPCRootTestCoordinator<Root>
+  var host: XPCServiceHost { harness.host }
+  var client: XPCConnection { harness.client.connection }
 
-  /// Retains the wrapper of the latest server-side peer so tests can simulate
-  /// the service dropping the client.
-  private final class ServerPeerBox: @unchecked Sendable {
-    let peer = Mutex<XPCConnection?>(nil)
+  init(
+    _ rootType: Root.Type,
+    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    eventLog: XPCServiceEventLog? = nil
+  ) throws {
+    harness = try xpcTest(
+      rootType,
+      delegate,
+      eventLog: eventLog,
+      watchdog: .seconds(10))
   }
-  private let serverPeer: ServerPeerBox
+
+  /// Dials a fresh, inactive client connection to the same listener.
+  func makeClient() throws -> XPCConnection {
+    try harness.makeClient()
+  }
+
+  /// Cancels the server-side peer connection as if the service dropped this
+  /// client; the client observes its channel going down.
+  func killServerPeer() {
+    harness.dropServerPeer()
+  }
+
+  func close() {
+    harness.close()
+  }
+
+  deinit { close() }
+}
+
+/// Drives the **production** singleton path: `XPCServiceHost(rootType,
+/// delegate)` binds `Root.shared` on the process-global service host,
+/// exactly as a hosted `xpcMain` service does. The service host is
+/// process-global — one root type per test process — so suites using this
+/// fixture must be `.serialized`.
+final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
+  let server: XPCServiceHost
+  let client: XPCConnection
+  private let listener: XPCConnection
   private let watchdog: DispatchWorkItem
 
   init(
     _ rootType: Root.Type,
-    peerCodeSigningRequirement: String? = nil,
-    shouldAccept: (@Sendable (XPCConnection) throws -> Bool)? = nil,
-    onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil,
-    onShutdown: (@Sendable () -> Void)? = nil
+    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    eventLog: XPCServiceEventLog? = nil
   ) throws {
     let listener = XPCConnection(name: nil)
-    let server = XPCRootActorServer<Root>(
-      peerCodeSigningRequirement: peerCodeSigningRequirement,
-      shouldAccept: shouldAccept,
-      onPeerAccept: onPeerAccept,
-      onPeerEnd: onPeerEnd,
-      onPeerReject: onPeerReject,
-      onShutdown: onShutdown
-    )
-    let serverPeer = ServerPeerBox()
+    let server = XPCServiceHost(rootType, delegate, eventLog: eventLog)
     listener.setEventHandler { object in
       guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      let peer = XPCConnection(xpc_object: object.xpc_object)
-      serverPeer.peer.withLock { $0 = peer }
-      server.accept(peer)
+      server.accept(XPCConnection(xpc_object: object.xpc_object))
     }
     listener.activate()
 
     let client = try XPCConnection.unmarshal(from: listener.marshal())
     self.listener = listener
-    self.client = client
     self.server = server
-    self.serverPeer = serverPeer
+    self.client = client
     watchdog = DispatchWorkItem {
       client.cancel()
       listener.cancel()
@@ -106,10 +110,9 @@ final class RootChannel<Root: XPCRootActor>: @unchecked Sendable {
     DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
   }
 
-  /// Cancels the server-side peer connection as if the service dropped this
-  /// client; the client observes its channel going down.
-  func killServerPeer() {
-    serverPeer.peer.withLock { $0 }?.cancel()
+  /// Dials a fresh, inactive client connection to the same listener.
+  func makeClient() throws -> XPCConnection {
+    try XPCConnection.unmarshal(from: listener.marshal())
   }
 
   func close() {

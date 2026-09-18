@@ -3,7 +3,6 @@
 import Distributed
 import SwiftXPC
 
-@available(macOS 13.0, *)
 /// Collects the arguments of an outbound distributed call into the XPC
 /// argument array. Internal plumbing for compiler-generated thunks.
 public struct XPCInvocationEncoder: DistributedTargetInvocationEncoder {

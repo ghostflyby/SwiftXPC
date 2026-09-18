@@ -8,7 +8,7 @@ import PackageDescription
 
 let package = Package(
   name: "SwiftXPC",
-  platforms: [.macOS(.v11)],
+  platforms: [.macOS(.v15)],
   products: [
     // Products define the executables and libraries a package produces, making them visible to other packages.
     .library(
@@ -30,7 +30,8 @@ let package = Package(
       name: "SwiftXPC",
       dependencies: [
         "SwiftXPCMacros"
-      ]
+      ],
+      swiftSettings: [.treatAllWarnings(as: .error)]
     ),
     .macro(
       name: "SwiftXPCMacros",
@@ -42,7 +43,8 @@ let package = Package(
     ),
     .target(
       name: "DistributedXPC",
-      dependencies: ["SwiftXPC"]
+      dependencies: ["SwiftXPC"],
+      swiftSettings: [.treatAllWarnings(as: .error)]
     ),
     .testTarget(
       name: "SwiftXPCTests",

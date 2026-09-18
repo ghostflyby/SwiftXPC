@@ -1,7 +1,7 @@
-import Dispatch
-import Foundation
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Dispatch
+import Foundation
 import Distributed
 import SwiftXPC
 import Synchronization
@@ -15,7 +15,6 @@ import XPC
 /// actor reference mints its own channel. Outbound calls ride the named
 /// connection, which launchd re-establishes transparently after a service
 /// restart.
-@available(macOS 15, *)
 public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   public typealias ActorID = XPCActorID
   public typealias ResultHandler = XPCInvocationResultHandler
@@ -56,7 +55,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     return system
   }()
 
-  /// The process-owned long-lived system hosting `XPCServiceExit` singleton
+  /// The process-owned long-lived system hosting `XPCRootActor` singleton
   /// roots. Its connection is a process-lifetime idle channel kept activated
   /// so the system — and the actors registered in it — never loses its
   /// transport; real traffic rides each bound peer connection and each
@@ -104,6 +103,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       return retained
     }
     withExtendedLifetime(actors) {}
+    // Sessions are gone: no export session has live peers anymore, so any
+    // drain waiter must be released here too — the drain notification only
+    // fires from `exportSessionDrained`, which this path bypasses.
+    notifyDrainIfQuiescent()
   }
 
   func rememberImported(_ reference: StoredActorReference) {
@@ -132,7 +135,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let reserved = reservedIDLock.withLock { reserved -> ActorID? in
       guard let pending = reserved else { return nil }
       reserved = nil
-      assignedIDsLock.withLock { $0.insert(pending) }
+      assignedIDsLock.withLock { _ = $0.insert(pending) }
       return pending
     }
     if let reserved { return reserved }
@@ -143,19 +146,27 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   /// Reserves `.root` for the next actor created on this system. Only call
   /// on a freshly created system before any concurrent `assignID` (the
-  /// framework does this inside `XPCRootActorServer.accept`). A no-op when
-  /// `.root` is already assigned: the long-lived service host system
-  /// re-reserves on every accept, but only the first accept — the one that
-  /// materializes the singleton — may consume a reservation; a dangling
-  /// reservation would hand `.root` to the next child actor created on the
-  /// host.
+  /// root-binding peer handler does this before materializing `shared`).
+  /// A no-op when `.root` is already assigned: the long-lived service host
+  /// system re-reserves on every accept, but only the first accept — the
+  /// one that materializes the singleton — may consume a reservation; a
+  /// dangling reservation would hand `.root` to the next child actor
+  /// created on the host.
   func reserveRootID() {
-    reservedIDLock.withLock { reserved -> Bool in
+    _ = reservedIDLock.withLock { reserved -> Bool in
       let taken = assignedIDsLock.withLock { $0.contains(.root) }
       guard !taken else { return false }
       reserved = .root
       return true
     }
+  }
+
+  /// Drops a pending `.root` reservation without consuming it. Called when
+  /// the root-binding guard fails: the reservation was armed for a
+  /// singleton that turned out not to own `.root`, and leaving it pending
+  /// would let the next unrelated `assignID` claim the identity.
+  func clearRootReservation() {
+    reservedIDLock.withLock { $0 = nil }
   }
 
   /// Registers a freshly created local actor under its assigned ID.
@@ -182,23 +193,55 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       return matching.map(\.value)
     }
     for session in sessions { session.cancel() }
+    // This removal path bypasses `exportSessionDrained`; release drain
+    // waiters whose condition may now hold.
+    notifyDrainIfQuiescent()
   }
 
   public func makeInvocationEncoder() -> InvocationEncoder { .init() }
 
-  /// Routes `requestServiceShutdown()` to the `XPCRootActorServer` that
-  /// accepted this session. Installed by the server during `accept`; never
-  /// set on client-side systems.
+  /// Routes `requestServiceShutdown()` to the `XPCServiceHost` accepting
+  /// this session's channel. Installed by the root-binding peer handler;
+  /// never set on client-side systems.
   func setServiceShutdownHandler(_ handler: @escaping @Sendable () -> Void) {
     serviceShutdownHandler.withLock { $0 = handler }
   }
 
-  private let exportDrainHandler = Mutex<(@Sendable () -> Void)?>(nil)
+  private let drainWaiters = Mutex<[CheckedContinuation<Void, Never>]>([])
 
-  /// Invoked when one of this system's export sessions drains to zero live
-  /// peers; the hosting server uses it for idle-exit accounting.
-  func setExportDrainHandler(_ handler: (@Sendable () -> Void)?) {
-    exportDrainHandler.withLock { $0 = handler }
+  /// Waits until no export session of this system has live peers — every
+  /// export session fully drained (child reclamation attempted). Returns
+  /// immediately when already drained. Never polls.
+  func waitForExportDrain() async {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      insertDrainWaiter(continuation: cont)
+    }
+  }
+
+  private func insertDrainWaiter(continuation: CheckedContinuation<Void, Never>) {
+    let drained = drainWaiters.withLock { waiters -> Bool in
+      // Atomic check-and-append: a drain observed between a segmented
+      // check and this append would fire on an empty list and this waiter
+      // would never be resumed.
+      if !hasLiveExportPeers {
+        return true
+      }
+      waiters.append(continuation)
+      return false
+    }
+    if drained {
+      continuation.resume()
+    }
+  }
+
+  func notifyDrainIfQuiescent() {
+    let toResume: [CheckedContinuation<Void, Never>] = drainWaiters.withLock { waiters in
+      guard !hasLiveExportPeers else { return [] }
+      let drained = waiters
+      waiters.removeAll()
+      return drained
+    }
+    toResume.forEach { $0.resume() }
   }
 
   var hasLiveExportPeers: Bool {
@@ -213,7 +256,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// With child reclamation enabled, releases the registry pin of `id` when
   /// every session minted for it is fully drained (zero live peers, none of
   /// them an un-dialed in-flight wire) — an actor nobody references anymore,
-  /// locally or remotely. The drain handler is notified either way.
+  /// locally or remotely.
   func exportSessionDrained(_ id: ActorID) {
     // The singleton root is permanent: never evict its registry entry.
     if allowsChildReclamation && id != .root {
@@ -227,16 +270,16 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       }
       withExtendedLifetime(removed) {}
     }
-    exportDrainHandler.withLock { $0 }?()
+    notifyDrainIfQuiescent()
   }
 
-  /// Requests a cooperative shutdown of the `XPCRootActorServer` hosting the
+  /// Requests a cooperative shutdown of the `XPCServiceHost` hosting the
   /// session this system belongs to; see
-  /// `XPCRootActorServer.requestShutdown()`. This is the entry point for
-  /// service-initiated retirement: hosted by `distributedXPCMain` (default
-  /// `exitOnShutdown: true`), one call from a root actor's
-  /// `distributed func shutdown()` ends the process cooperatively — peers
-  /// observe clean disconnects, `onShutdown` runs, then the process exits.
+  /// `XPCServiceHost.requestShutdown()`. This is the entry point for
+  /// service-initiated retirement: under hosted `xpcMain`, one call from a
+  /// root actor's `distributed func shutdown()` ends the process
+  /// cooperatively — peers observe clean disconnects, `serviceWillShutdown`
+  /// runs, then the process exits.
   ///
   /// A no-op on systems that host no server session — client-side systems
   /// (root connections, imported actor references) can never shut their

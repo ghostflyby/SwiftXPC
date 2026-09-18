@@ -8,7 +8,6 @@ import Synchronization
 /// How often and with which backoff a flaky transport operation is retried.
 /// Only infrastructure failures (`XPCConnection.ConnectionError`) are retried;
 /// errors thrown by the operation itself propagate immediately.
-@available(macOS 15, *)
 public struct XPCRetryPolicy: Sendable {
   /// Total number of attempts, including the first one. Must be >= 1.
   public let maxAttempts: Int
@@ -51,7 +50,6 @@ public struct XPCRetryPolicy: Sendable {
 }
 
 /// Lifecycle events of a root connection.
-@available(macOS 15, *)
 public enum XPCRootConnectionEvent: Sendable {
   /// The connection to the service is established.
   case connected
@@ -67,12 +65,10 @@ public enum XPCRootConnectionEvent: Sendable {
 ///
 /// Unlike child actor references, the root proxy rides a *named* mach service
 /// connection: when the service process dies, launchd relaunches it and the
-/// same proxy transparently works again on its next call (verified by probe;
-/// same proxy transparently works again on its next call). This
-/// handle adds lifecycle events and a retry policy for infrastructure
-/// failures. Callers observe `events` to rebuild dependent child-actor state
-/// after `.disconnected`.
-@available(macOS 15, *)
+/// same proxy transparently works again on its next call. This handle adds
+/// lifecycle events and a retry policy for infrastructure failures. Callers
+/// observe `events` to rebuild dependent child-actor state after
+/// `.disconnected`.
 public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   /// The permanent root proxy. Never needs replacement: after a service
   /// restart the next call on it succeeds against the relaunched instance.
@@ -98,15 +94,18 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
     var continuation: AsyncStream<XPCRootConnectionEvent>.Continuation!
     self.events = AsyncStream { continuation = $0 }
     state.withLock { $0.continuation = continuation }
+    emit(.connected)
     // Peer death arrives as INVALID on hard crashes and INTERRUPTED when the
-    // service cancels the peer gracefully; both mean "channel is down".
+    // service cancels the peer gracefully; both mean "channel is down". The
+    // invalidation handler additionally fires immediately if the connection
+    // was already invalidated before this install (connect resolved the root
+    // on an activated channel), so `.disconnected` is never missed.
     connection.addInvalidationHandler { [weak self] in
       self?.emit(.disconnected)
     }
     connection.addInterruptionHandler { [weak self] in
       self?.emit(.disconnected)
     }
-    emit(.connected)
   }
 
   /// Connects to a launchd-managed XPC service by mach service name and
@@ -129,8 +128,10 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   }
 
   /// Connects through an existing connection. Note: only connections to a
-  /// *named* mach service re-establish after a service restart; endpoint-based
-  /// connections die permanently with the peer.
+  /// *named* mach service survive a full service restart. An endpoint-based
+  /// connection re-dials across a dropped peer while the remote listener
+  /// lives, but dies permanently once the listener itself goes away
+  /// (anonymous endpoints are not re-established by launchd).
   ///
   /// `peerCodeSigningRequirement` authenticates the service and must be
   /// installed on a *not-yet-activated* connection. On an already-activated

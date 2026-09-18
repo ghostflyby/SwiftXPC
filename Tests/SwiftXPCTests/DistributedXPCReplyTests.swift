@@ -7,16 +7,13 @@ import Testing
 @testable import DistributedXPC
 @testable import SwiftXPC
 
-@available(macOS 15, *)
 @XPCMarshal
 enum SampleReplyError: Error, Equatable {
   case boom
 }
 
-@available(macOS 15, *)
 private let sampleReplyMetadataTargetIdentifier = "replyError()"
 
-@available(macOS 15, *)
 @XPCService
 distributed actor SampleReplyMetadataActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -26,7 +23,6 @@ distributed actor SampleReplyMetadataActor {
   }
 }
 
-@available(macOS 15, *)
 distributed actor SampleReplyActorWithoutMetadata {
   typealias ActorSystem = XPCDistributedActorSystem
 
@@ -36,9 +32,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeReplyReturnsValue() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let envelope = XPCReplyEnvelope(kind: .returnValue, payload: try "pong".marshal())
 
   let value: String = try envelope.decodeReturnValue(
@@ -50,18 +43,12 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeReplyVoidAcceptsVoidEnvelope() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let envelope = XPCReplyEnvelope(kind: .returnVoid)
 
   try envelope.decodeReturnVoid(throwing: SampleReplyError.self)
 }
 
 @Test func DecodeReplyThrowsMarshalableError() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
     payload: try SampleReplyError.boom.marshal()
@@ -76,9 +63,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeReplyUsesFallbackThrownErrorType() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
     payload: try SampleReplyError.boom.marshal()
@@ -94,9 +78,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeReplyVoidUsesFallbackThrownErrorType() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
     payload: try SampleReplyError.boom.marshal()
@@ -111,9 +92,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeReplyRejectsUnsupportedErasedErrorWithoutFallback() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
     payload: try SampleReplyError.boom.marshal()
@@ -128,9 +106,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeRemoteCallReplyUsesMetadataFallbackThrownErrorType() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   _ = SampleReplyMetadataActor(actorSystem: system)
   let envelope = XPCReplyEnvelope(
@@ -151,9 +126,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeRemoteCallReplyDoesNotRequireMetadataForMarshalableError() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let system = XPCDistributedActorSystem(connection: makeIdleConnection())
   _ = SampleReplyActorWithoutMetadata(actorSystem: system)
   let envelope = XPCReplyEnvelope(
@@ -174,9 +146,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeReplyRejectsUnexpectedKind() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   let envelope = XPCReplyEnvelope(kind: .returnVoid)
 
   #expect(throws: XPCRemoteCallError.invalidReplyKind(expected: .returnValue, actual: .returnVoid))
@@ -189,9 +158,6 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func ReplyEnvelopeWritesIntoDictionary() throws {
-  guard #available(macOS 15, *) else {
-    return
-  }
   var dictionary = XPCDictionary()
   let envelope = XPCReplyEnvelope(
     kind: .returnValue,
@@ -205,9 +171,7 @@ distributed actor SampleReplyActorWithoutMetadata {
   #expect(try String.unmarshal(from: decoded.payload!) == "payload")
 }
 
-@available(macOS 15, *)
 @Test func ReplyEnvelopeRoundTripsNullPayload() throws {
-  guard #available(macOS 15, *) else { return }
   // Optional.none 返回值经 onReturn 编码为 xpc_null 载荷;线缆往返后必须仍是
   // "有载荷且为 null",不得折叠成"无载荷"(否则客户端报 missingPayload)。
   let envelope = XPCReplyEnvelope(
@@ -220,9 +184,7 @@ distributed actor SampleReplyActorWithoutMetadata {
   #expect(SwiftXPC.xpcGetType(decoded.payload!.xpc_object) == SwiftXPC.xpcTypeNull)
 }
 
-@available(macOS 15, *)
 @Test func ReplyEnvelopeRoundTripsAbsentPayload() throws {
-  guard #available(macOS 15, *) else { return }
   let envelope = XPCReplyEnvelope(kind: .returnVoid)
 
   let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())

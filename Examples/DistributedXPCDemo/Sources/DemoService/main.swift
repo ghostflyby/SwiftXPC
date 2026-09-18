@@ -4,12 +4,6 @@ import DemoShared
 import DistributedXPC
 
 @main
-enum DemoService {
-  @MainActor
-  static func main() {
-    guard #available(macOS 15, *) else {
-      fatalError("DistributedXPCDemo service requires macOS 15 or newer.")
-    }
-    distributedXPCMain(DemoRoot.self)
-  }
+struct DemoServiceMain: XPCApp {
+  typealias Root = DemoRoot
 }

@@ -29,7 +29,7 @@ The shared actors use `@XPCService` to generate distributed-target metadata and
 actor-reference marshaling. No experimental SPI or hand-written metadata table
 is required.
 
-`DemoRoot` is the service root actor registered via `distributedXPCMain(DemoRoot.self)`.
+`DemoRoot` is the service root actor hosted by the `DemoServiceMain` `XPCApp` entry point.
 `DemoApp` connects with `DemoRoot.connect(toService:)`, obtains the remote root proxy,
 and calls `makeGreeter()`; the returned `DemoGreeter` lives on its own independent
 XPC channel created by actor-reference export. The greet/ping/error calls all run

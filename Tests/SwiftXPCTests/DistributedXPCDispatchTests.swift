@@ -7,7 +7,6 @@ import Testing
 
 @testable import DistributedXPC
 
-@available(macOS 15, *)
 @XPCService
 distributed actor SampleDispatchActor {
   typealias ActorSystem = XPCDistributedActorSystem
@@ -19,31 +18,25 @@ distributed actor SampleDispatchActor {
   distributed func ping() {}
 }
 
-@available(macOS 15, *)
 distributed actor SampleActorWithoutMetadata {
   typealias ActorSystem = XPCDistributedActorSystem
 
   distributed func ping() {}
 }
 
-@available(macOS 15, *)
 private let sampleGreetTargetIdentifier =
   "$s13SwiftXPCTests19SampleDispatchActorC5greet4nameS2S_tYaKFTE"
 
-@available(macOS 15, *)
 private let samplePingTargetIdentifier = "$s13SwiftXPCTests19SampleDispatchActorC4pingyyYaKFTE"
 
-@available(macOS 15, *)
 private let sampleActorWithoutMetadataPingTargetIdentifier =
   "$s13SwiftXPCTests26SampleActorWithoutMetadataC4pingyyYaKFTE"
 
-@available(macOS 15, *)
 private func makeSystem() -> XPCDistributedActorSystem {
   XPCDistributedActorSystem(connection: makeIdleConnection())
 }
 
 @Test func DispatchInvocationExecutesDistributedTarget() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -65,7 +58,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func DispatchInvocationExecutesVoidDistributedTarget() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -84,7 +76,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func DispatchInvocationFailsForUnknownTarget() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -109,7 +100,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 /// Actors without metadata conformance dispatch permissively: every target
 /// the actor exposes is callable.
 @Test func DispatchInvocationPermitsNonConformingActor() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleActorWithoutMetadata(actorSystem: system)
 
@@ -127,7 +117,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func DispatchInvocationRejectsMismatchedActorID() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -150,7 +139,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func HandleIncomingMessageDispatchesInvocation() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -168,7 +156,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func HandleIncomingMessageEncodesDispatchErrors() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -183,7 +170,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func DispatchInvocationRejectsWrongArgumentType() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -206,7 +192,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func DispatchInvocationRejectsMissingArguments() async throws {
-  guard #available(macOS 15, *) else { return }
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
@@ -226,7 +211,6 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func ParseTargetIdentifierMultiLabelMethodWithClassReturnType() {
-  guard #available(macOS 15, *) else { return }
   // The return-type mangling `AA0C4Note` contains a `C` after the class
   // terminator; a rightmost scan would mis-parse this identifier as "Note()".
   let identifier =
@@ -235,14 +219,12 @@ private func makeSystem() -> XPCDistributedActorSystem {
 }
 
 @Test func ParseTargetIdentifierStopsAtReturnTypeComponent() {
-  guard #available(macOS 15, *) else { return }
   // An unsubstituted struct return type also starts with digits; it must not
   // be swallowed as a parameter label.
   #expect(parseTargetIdentifier("$s4demo8GreeterC5greet4name4NoteYT") == "greet(name:)")
 }
 
 @Test func ParseTargetIdentifierUnnamedFirstParameter() {
-  guard #available(macOS 15, *) else { return }
   // An unnamed first parameter is spelled `_` in the mangled label sequence
   // (`12selectSchema_3for`); it must be skipped, not parsed as the whole
   // label list — otherwise the key becomes "selectSchema()" and misses the

@@ -3,7 +3,6 @@
 import SwiftXPC
 
 /// Errors produced on the client side while decoding a remote call reply.
-@available(macOS 15, *)
 @XPCMarshal
 public enum XPCRemoteCallError: Error, Sendable, Equatable {
   case invalidReplyKind(expected: XPCReplyKind, actual: XPCReplyKind)

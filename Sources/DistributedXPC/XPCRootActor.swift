@@ -6,354 +6,206 @@ import SwiftXPC
 import Synchronization
 
 /// Marks a concrete distributed actor as the bootstrap entry point of an
-/// XPC service: every accepted peer channel serves one instance of this
-/// actor under `XPCActorID.root`. Clients obtain it via
-/// `connect(toService:)` / `connect(using:)`.
-@available(macOS 15, *)
+/// XPC service: the actor is a process-wide singleton hosted on the
+/// long-lived service host system, and every accepted peer channel binds to
+/// `shared` under `XPCActorID.root` — the one-instance-per-process shape of
+/// a typical XPC service. Clients obtain it via `connect(toService:)` /
+/// `connect(using:)`.
+///
+/// Conformance is nearly free: `init(actorSystem:)` plus the export
+/// metadata are all a bare root needs — `shared` has a default
+/// implementation that lazily creates and caches
+/// `Self(actorSystem: .serviceHost)`. Override `shared` when construction
+/// needs dependencies:
+///
+///     private let sharedRoot = ServiceRoot(greeter: Greeter(), actorSystem: .serviceHost)
+///     extension ServiceRoot: XPCRootActor {
+///       static var shared: ServiceRoot { sharedRoot }
+///     }
+///
+/// Services that need per-connection behavior build it on top of the
+/// singleton: hand out child actors from `shared`'s methods, or route by
+/// peer identity inside the delegate's `didAcceptPeer`.
 public protocol XPCRootActor: XPCExportableActor,
   XPCDistributedTargetMetadataProviding
 {
   init(actorSystem: XPCDistributedActorSystem)
+
+  /// The process-wide singleton root. Prefer the default implementation;
+  /// override with a computed property over a file-scoped constant when
+  /// construction needs dependencies — a `static let` stored on the actor
+  /// itself cannot call `init(actorSystem:)` under Swift 6 strict
+  /// concurrency:
+  ///
+  ///     private let sharedRoot = ServiceRoot(actorSystem: .serviceHost)
+  ///     extension ServiceRoot: XPCRootActor {
+  ///       static var shared: ServiceRoot { sharedRoot }
+  ///     }
+  ///
+  /// Materializing `shared` before the first connection is safe: the host
+  /// system reserves the `.root` identity at creation, so the singleton
+  /// keeps that identity regardless of creation order. Its registry entry
+  /// is never reclaimed.
+  static var shared: Self { get }
 }
 
-@available(macOS 15, *)
-public final class XPCRootActorServer<Root>: Sendable
-where Root: XPCRootActor {
-  private final class Session: @unchecked Sendable {
-    /// Per-session systems exist only for plain (non-`XPCServiceExit`)
-    /// roots; singleton sessions carry no system of their own.
-    let system: XPCDistributedActorSystem?
-    /// Keeps the per-session root alive for the session's lifetime; its
-    /// release drives the system's actor-reclamation cascade.
-    let root: Root?
-    let peerConnection: XPCConnection
+/// Cache behind the default `shared`. A `~Copyable` struct over a `Mutex`:
+/// protocols cannot hold static stored properties, and a noncopyable
+/// registry cannot be aliased into a second mutable copy.
+private struct SharedRootRegistry: Sendable, ~Copyable {
+  private let roots = Mutex<[ObjectIdentifier: any XPCRootActor]>([:])
+  /// Serializes first construction. Creating outside a lock can build two
+  /// instances under a concurrent first access: both consume identities on
+  /// the service host (one wins `.root`, the other gets a stray ID and is
+  /// pinned in the registry by `actorReady`), and only one can be cached —
+  /// if the cached one is not the `.root` instance, every subsequent peer's
+  /// identity check fails permanently. The lock is held only across
+  /// construction, and the cache is re-checked inside it, so `init` that
+  /// re-enters the registry for a different root type stays correct. The
+  /// conformer's `init(actorSystem:)` must not re-enter `shared` for the
+  /// same type.
+  private let creation = Mutex<Void>(())
 
-    init(
-      peerConnection: XPCConnection,
-      system: XPCDistributedActorSystem?,
-      root: Root?
-    ) {
-      self.peerConnection = peerConnection
-      self.system = system
-      self.root = root
+  func root<R: XPCRootActor>(for rootType: R.Type) -> R {
+    let key = ObjectIdentifier(rootType)
+    if let existing = roots.withLock({ $0[key] }) {
+      return existing as! R
+    }
+    return creation.withLock { _ in
+      if let existing = roots.withLock({ $0[key] }) {
+        return existing as! R
+      }
+      let created = R(actorSystem: .serviceHost)
+      roots.withLock {
+        $0[key] = created
+      }
+      return created
     }
   }
+}
 
-  private struct State {
-    var sessions: [UUID: Session] = [:]
-    var cancelled = false
-    var shutdownRequested = false
-    /// Arms the `XPCServiceExit` idle-exit check: a service that never
-    /// accepted a session never exits.
-    var everAccepted = false
+private let sharedRootRegistry = SharedRootRegistry()
+
+extension XPCRootActor {
+  /// The process-wide singleton root, lazily created and cached on the
+  /// long-lived service host system. Concurrent first accesses are
+  /// serialized: exactly one instance is created and cached.
+  public static var shared: Self {
+    sharedRootRegistry.root(for: Self.self)
   }
-  private let state = Mutex(State())
-  private let peerCodeSigningRequirement: String?
-  private let shouldAccept: @Sendable (XPCConnection) throws -> Bool
-  private let onPeerAccept: @Sendable (XPCConnection) -> Void
-  private let onPeerEnd: @Sendable (XPCConnection) -> Void
-  private let onPeerReject: @Sendable (XPCConnection, (any Error)?) -> Void
-  private let onShutdown: @Sendable () -> Void
+}
 
+extension XPCServiceHost {
+  /// Serves `rootType`'s process-wide singleton on every accepted peer:
+  /// the installed peer handler binds each connection to `Root.shared`
+  /// under `XPCActorID.root`. This is the in-process root-actor host used
+  /// by `xpcMain`/`XPCApp.main()`, and it is available directly to
+  /// embedders and tests that drive `accept(_:)` themselves.
+  ///
   /// - Parameters:
-  ///   - rootType: the concrete root actor type served on every accepted peer.
-  ///   - peerCodeSigningRequirement: kernel-enforced code signing requirement
-  ///     installed on every peer *before activation* (see
-  ///     `XPCConnection.setPeerCodeSigningRequirement`). Peers whose signature
-  ///     fails it are dropped by XPC; server-side the failure surfaces as a
-  ///     peer end. A requirement that cannot be installed (malformed string,
-  ///     unsupported platform) rejects the peer and reports the error to
-  ///     `onPeerReject`: enforcement never silently degrades to none.
-  ///   - shouldAccept: invoked with each incoming peer connection after the
-  ///     requirement is installed, still *before activation* — this is the
-  ///     audit window for `connection.pid`/`connection.euid` checks. Peers
-  ///     arriving after `requestShutdown()` are rejected before this hook
-  ///     runs. It may
-  ///     install a requirement via the `setPeer*Requirement` family, but a
-  ///     connection accepts at most one member of that family (libxpc traps
-  ///     on a second install), so when `peerCodeSigningRequirement` is set
-  ///     the hook must not install another. Returning `false` rejects the
-  ///     peer; throwing rejects the peer and reports the error to
-  ///     `onPeerReject`.
-  ///   - onPeerAccept: invoked once a peer is bound to a fresh root session
-  ///     (before activation). Useful for audit logging via `connection.pid`.
-  ///   - onPeerEnd: invoked when an accepted peer disconnects — including
-  ///     peers dropped by XPC for failing a code signing requirement at
-  ///     activation. The connection object is already invalid at this point;
-  ///     only identity inspection is meaningful.
-  ///   - onPeerReject: invoked when a peer is rejected before ever being
-  ///     accepted: `shouldAccept` returned `false` (error is `nil`),
-  ///     `shouldAccept` threw, the code signing requirement could not be
-  ///     installed, or the server already shut down (error is `nil`). The
-  ///     connection is already cancelled; only identity inspection is
-  ///     meaningful.
-  ///   - onShutdown: invoked exactly once after `requestShutdown()` finished
-  ///     tearing every session down, on the caller's thread. Under launchd's
-  ///     on-demand reaping, closing the last client connection is what
-  ///     retires the process, so `.xpc` services need nothing here; a
-  ///     long-lived agent that must exit explicitly can do so from this hook
-  ///     (e.g. `onShutdown: { exit(0) }`).
-  public init(
+  ///   - rootType: the concrete root actor type served on every accepted
+  ///     peer; only its `shared` singleton is ever constructed.
+  ///   - delegate: the connection-lifecycle customization; see
+  ///     `XPCServiceDelegate` for the per-hook semantics. Defaults to a
+  ///     plain `XPCServiceConfiguration`.
+  ///   - eventLog: when non-nil, the host records every delegate-hook
+  ///     invocation into it, in invocation order.
+  public convenience init<Root: XPCRootActor>(
     _ rootType: Root.Type = Root.self,
-    peerCodeSigningRequirement: String? = nil,
-    shouldAccept: (@Sendable (XPCConnection) throws -> Bool)? = nil,
-    onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil,
-    onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil,
-    onShutdown: (@Sendable () -> Void)? = nil
+    _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
+    eventLog: XPCServiceEventLog? = nil
   ) {
-    self.peerCodeSigningRequirement = peerCodeSigningRequirement
-    self.shouldAccept = shouldAccept ?? { _ in true }
-    self.onPeerAccept = onPeerAccept ?? { _ in }
-    self.onPeerEnd = onPeerEnd ?? { _ in }
-    self.onPeerReject = onPeerReject ?? { _, _ in }
-    self.onShutdown = onShutdown ?? {}
-  }
-
-  deinit { cancel() }
-
-  /// Immediately tears every live session down and closes the service to new
-  /// peers. In-flight invocations are not drained: peers observe their
-  /// channels going down (root proxies report `.disconnected` or thrown
-  /// `.invalid`), which is what launchd's on-demand reaping needs to retire
-  /// the process. Idempotent: later calls return without re-cancelling or
-  /// re-firing `onShutdown`.
-  ///
-  /// Hosted by `distributedXPCMain` (default `exitOnShutdown: true`), this is
-  /// the cooperative *process* shutdown path: `onShutdown` runs and the
-  /// process exits. A standalone server only tears its sessions down; the
-  /// caller owns the process.
-  ///
-  /// For a drain-with-grace variant, gate the call on your own in-flight
-  /// accounting before invoking this.
-  public func requestShutdown() {
-    let first = state.withLock { state -> Bool in
-      if state.shutdownRequested { return false }
-      state.shutdownRequested = true
-      return true
-    }
-    guard first else { return }
-    cancel()
-    onShutdown()
-  }
-
-  public func cancel() {
-    let sessions = state.withLock { state in
-      state.cancelled = true
-      let sessions = state.sessions
-      state.sessions.removeAll()
-      return sessions
-    }
-    for session in sessions.values {
-      session.peerConnection.cancel()
-      if let system = session.system {
-        system.connection.cancel()
-        system.invalidate()
+    self.init(delegate, eventLog: eventLog)
+    setPeerHandler { [weak self] connection in
+      let serviceHost = XPCDistributedActorSystem.serviceHost
+      // Reserve before the first `shared` access so lazy creation assigns
+      // the reserved identity (one root actor type per process).
+      serviceHost.reserveRootID()
+      // Actors of the singleton reach the cooperative shutdown path through
+      // the host system; a weak reference avoids a server <-> system cycle.
+      serviceHost.setServiceShutdownHandler { [weak self] in self?.requestShutdown() }
+      let root = Root.shared
+      // Programming-error guard: if anything else on the service host
+      // consumed the `.root` identity before the singleton was created,
+      // refuse the peer instead of silently misrouting every call
+      // addressed to `.root`. Throwing rejects the peer through the host's
+      // standard rejection path.
+      guard root.id == .root else {
+        // Do not leave this peer's reservation pending: it would hand
+        // `.root` to the next unrelated actor created on the host.
+        serviceHost.clearRootReservation()
+        throw XPCDispatchError.unknownActor(.root)
       }
+      serviceHost.bind(connection, to: root)
     }
-  }
-
-  public func accept(_ connection: XPCConnection) {
-    // xpcMain forwards every listener event, including error objects for the
-    // listener itself; only real peer connections bootstrap a root session.
-    guard connection.isConnectionObject else { return }
-
-    func reject(_ error: (any Error)?) {
-      // Reject without releasing an inactive connection (libxpc misuse):
-      // activate first, then cancel so the peer observes invalidation.
-      connection.setEventHandler { _ in }
-      connection.activate()
-      connection.cancel()
-      onPeerReject(connection, error)
-    }
-
-    if state.withLock({ $0.shutdownRequested }) {
-      return reject(nil)
-    }
-
-    if let requirement = peerCodeSigningRequirement {
-      do {
-        try connection.setPeerCodeSigningRequirement(requirement)
-      } catch {
-        return reject(error)
-      }
-    }
-    do {
-      guard try shouldAccept(connection) else { return reject(nil) }
-    } catch {
-      return reject(error)
-    }
-    if let exitType = Root.self as? any XPCServiceExit.Type {
-      return acceptExitSession(connection, exitType: exitType)
-    }
-    let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
-    // Actors of this session reach the cooperative shutdown path through
-    // their own system; a weak reference avoids a server <-> system cycle.
-    system.setServiceShutdownHandler { [weak self] in self?.requestShutdown() }
-    system.reserveRootID()
-    let root = Root(actorSystem: system)
-    system.bind(connection, to: root)
-
-    let key = UUID()
-    let session = Session(peerConnection: connection, system: system, root: root)
-    self.onPeerAccept(connection)
-    connection.addInvalidationHandler { [weak self] in
-      self?.onPeerEnd(connection)
-      let removed = self?.state.withLock { $0.sessions.removeValue(forKey: key) }
-      withExtendedLifetime(removed) {}
-    }
-    // A peer that activates but then fails the kernel-level requirement
-    // delivers XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT. bind() has replaced
-    // the generic event handler, so without this dedicated handler the error
-    // object would be swallowed by the message pump and the dead connection
-    // would linger; cancel drives the invalidation chain above.
-    connection.addPeerCodeSigningErrorHandler {
-      connection.cancel()
-    }
-    let accepted = state.withLock { state in
-      guard !state.cancelled else { return false }
-      state.sessions[key] = session
-      return true
-    }
-    connection.activate()
-    if !accepted {
-      connection.cancel()
-      system.invalidate()
-    }
-  }
-
-  /// Bootstraps a peer for `XPCServiceExit` roots: every peer binds to the
-  /// process-wide singleton hosted on the long-lived service host system;
-  /// there is no per-session system.
-  private func acceptExitSession<E: XPCServiceExit>(
-    _ connection: XPCConnection,
-    exitType: E.Type
-  ) {
-    let host = XPCDistributedActorSystem.serviceHost
-    // The singleton rides `.root`: reserve it before the first `shared`
-    // access so its lazy creation assigns the reserved identity (one
-    // `XPCServiceExit` root type per process).
-    host.reserveRootID()
-    host.setServiceShutdownHandler { [weak self] in self?.requestShutdown() }
-    host.setExportDrainHandler { [weak self] in self?.maybeIdleExit() }
-    // Programming-error guard: if anything else on the service host consumed
-    // the `.root` identity before the singleton was created, refuse the peer
-    // instead of silently misrouting every call addressed to `.root`.
-    let root = exitType.shared
-    guard root.id == .root else {
-      connection.setEventHandler { _ in }
-      connection.activate()
-      connection.cancel()
-      onPeerReject(connection, XPCDispatchError.unknownActor(.root))
-      return
-    }
-
-    let key = UUID()
-    let session = Session(peerConnection: connection, system: nil, root: nil)
-    self.onPeerAccept(connection)
-    connection.addInvalidationHandler { [weak self] in
-      self?.onPeerEnd(connection)
-      let idleCandidate =
-        self?.state.withLock { state -> Bool in
-          state.sessions.removeValue(forKey: key)
-          return state.everAccepted && state.sessions.isEmpty && !state.shutdownRequested
-        } ?? false
-      if idleCandidate {
-        self?.maybeIdleExit()
-      }
-    }
-    // A peer that activates but then fails the kernel-level requirement
-    // delivers XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT; cancel drives the
-    // invalidation chain above.
-    connection.addPeerCodeSigningErrorHandler {
-      connection.cancel()
-    }
-    let accepted = state.withLock { state in
-      guard !state.cancelled else { return false }
-      state.everAccepted = true
-      state.sessions[key] = session
-      return true
-    }
-    host.bind(connection, to: root)
-    connection.activate()
-    if !accepted {
-      connection.cancel()
-    }
-  }
-
-  /// Idle exit for `XPCServiceExit` roots: once the first connection armed
-  /// the check, zero accepted sessions and zero live exported child channels
-  /// mean zero remote references — run the cooperative shutdown pipeline
-  /// (`onShutdown`, and the process exit under a hosted `distributedXPCMain`).
-  ///
-  /// Handed-out-but-never-dialed export sessions count as live (they are
-  /// in-flight references), so they block the exit; the only residual race is
-  /// the session-registration micro-window inside `mintExportSession`, where
-  /// an in-flight export fails cleanly via the registration guard.
-  /// Idempotent, and never fires on an explicitly cancelled server.
-  private func maybeIdleExit() {
-    guard Root.self is any XPCServiceExit.Type else { return }
-    guard !XPCDistributedActorSystem.serviceHost.hasLiveExportPeers else { return }
-    let reserved = state.withLock { state -> Bool in
-      guard state.everAccepted, state.sessions.isEmpty,
-        !state.shutdownRequested, !state.cancelled
-      else { return false }
-      state.shutdownRequested = true
-      return true
-    }
-    guard reserved else { return }
-    cancel()
-    onShutdown()
   }
 }
 
-/// Runs the XPC service event loop, serving `rootType` on every accepted
-/// peer connection. Never returns. Must run on the main thread.
+/// The SwiftUI-`App`-style entry point: a type carrying both the service's
+/// root actor and its delegate customization, marked `@main` directly.
 ///
-/// A cooperative shutdown (`XPCRootActorServer.requestShutdown()`, or
-/// `XPCDistributedActorSystem.requestServiceShutdown()` from actor code) ends
-/// the process: peers observe clean disconnects, `onShutdown` runs, and the
-/// process exits. Together with every client channel going down, that is
-/// exactly the state launchd's on-demand reaping and any supervisor expect of
-/// a retired service.
+///     @main
+///     struct AgentService: XPCApp {
+///       typealias Root = ServiceRoot
 ///
-/// The hook parameters mirror `XPCRootActorServer`'s initializer; see there
-/// for the pre-activation audit window and the fail-closed semantics of
-/// `peerCodeSigningRequirement`.
+///       var peerCodeSigningRequirement: String? { "identifier \"com.example.agent\"" }
+///       func shouldAcceptPeer(_ connection: XPCConnection) throws -> Bool {
+///         connection.euid == 501
+///       }
+///     }
 ///
-/// - Parameters:
-///   - exitOnShutdown: ends the process with `exit(0)` after a cooperative
-///     shutdown. This is what makes the shutdown a *process* shutdown —
-///     without it a `-> Never` `xpcMain` host would keep running forever.
-///     Pass `false` for in-process hosts and tests, where exiting the
-///     process is not acceptable and the caller owns the process lifetime.
-@available(macOS 15, *)
+/// The type must be constructible with no arguments: the library-provided
+/// `main()` hosts a fresh instance as the delegate of an `XPCServiceHost`
+/// serving `Root.shared`, and exits the process after a cooperative
+/// shutdown. All customization lives in the conformer's own requirement
+/// implementations, exactly as in `xpcMain`.
+public protocol XPCApp: XPCServiceDelegate {
+  /// The singleton root actor type served by the app.
+  associatedtype Root: XPCRootActor
+
+  /// Creates the delegate for hosting.
+  init()
+
+  /// Runs the XPC service event loop with `Self` as the delegate. Never
+  /// returns. Provided by the library; this is the `@main` entry point.
+  @MainActor static func main()
+}
+
+extension XPCApp {
+  @MainActor
+  public static func main() {
+    xpcMain(Self.Root.self, Self())
+  }
+}
+
+/// Runs the XPC service event loop with default service behavior, serving
+/// `rootType`'s singleton on every accepted peer connection. Never returns.
+/// Must run on the main thread.
+///
+/// Equivalent to `xpcMain(rootType, XPCServiceConfiguration())`: peers are
+/// accepted unconditionally unless gated by a `peerCodeSigningRequirement`.
+/// Customize via the delegate overload, or mark a delegate type `@main`
+/// via `XPCApp`.
+///
+/// The hosted entry point only ever runs as a launchd-managed standalone
+/// service process (`xpc_main` aborts anywhere else), so a cooperative
+/// shutdown unconditionally ends the process: see the delegate overload.
+/// For in-process hosting — tests and embedders — use `xpcTest(_:_:)` or a
+/// standalone `XPCServiceHost(rootType, delegate)`, neither of which ever
+/// exits the process.
 @MainActor
-public func distributedXPCMain<Root>(
+public func xpcMain<Root>(
   _ rootType: Root.Type,
-  peerCodeSigningRequirement: String? = nil,
-  shouldAccept: (@Sendable (XPCConnection) throws -> Bool)? = nil,
-  onPeerAccept: (@Sendable (XPCConnection) -> Void)? = nil,
-  onPeerEnd: (@Sendable (XPCConnection) -> Void)? = nil,
-  onPeerReject: (@Sendable (XPCConnection, (any Error)?) -> Void)? = nil,
-  onShutdown: (@Sendable () -> Void)? = nil,
-  exitOnShutdown: Bool = true
+  _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
 ) -> Never where Root: XPCRootActor {
-  let server = XPCRootActorServer(
-    rootType,
-    peerCodeSigningRequirement: peerCodeSigningRequirement,
-    shouldAccept: shouldAccept,
-    onPeerAccept: onPeerAccept,
-    onPeerEnd: onPeerEnd,
-    onPeerReject: onPeerReject,
-    onShutdown: {
-      onShutdown?()
-      if exitOnShutdown { exit(0) }
-    })
-  return xpcMain { connection in server.accept(connection) }
+  let server = XPCServiceHost(rootType, delegate)
+  // The hosted service *is* the process: retire it right after the
+  // delegate's shutdown hook has run.
+  server.setShutdownCompletion { exit(0) }
+  delegate.serviceWillStart(host: server)
+  return SwiftXPC.xpcMain { connection in server.accept(connection) }
 }
 
-@available(macOS 15, *)
 extension XPCRootActor {
   /// Connects to a launchd-managed XPC service by mach service name and
   /// resolves its root actor.
@@ -392,7 +244,6 @@ extension XPCRootActor {
   }
 }
 
-@available(macOS 15, *)
 extension XPCConnection {
   /// Installs `requirement` on this connection when non-nil. Must run before
   /// activation; an install failure propagates so callers can fail closed.

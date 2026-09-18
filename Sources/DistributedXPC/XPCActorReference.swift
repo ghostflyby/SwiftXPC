@@ -6,7 +6,6 @@ import SwiftXPC
 import Synchronization
 import XPC
 
-@available(macOS 15, *)
 @XPCMarshal
 struct XPCActorReferenceWire {
   let version: UInt64
@@ -18,11 +17,9 @@ struct XPCActorReferenceWire {
 /// reference. Applied automatically by `@XPCService`; provides default
 /// `marshal()` (export on a fresh channel) and `unmarshal(from:)` (dial the
 /// embedded endpoint, resolve a proxy) implementations.
-@available(macOS 15, *)
-public protocol XPCExportableActor: DistributedActor, XPCMarshal
+public protocol XPCExportableActor: DistributedActor, XPCMarshal, Sendable, SendableMetatype
 where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {}
 
-@available(macOS 15, *)
 extension XPCExportableActor {
   /// Exports this local actor as a self-contained XPC actor reference:
   /// `{ version, actorID, endpoint }` on a freshly minted channel.
@@ -57,19 +54,14 @@ extension XPCExportableActor {
 
 /// The retained wire of an imported actor proxy, kept so the proxy can be
 /// forwarded to other processes without involving its owning process.
-@available(macOS 15, *)
-final class StoredActorReference: @unchecked Sendable {
+struct StoredActorReference: Sendable {
   let actorID: XPCActorID
-  private let endpointObject: xpc_object_t
+  let endpoint: XPCObject
 
   init(actorID: XPCActorID, endpoint: XPCObject) {
     self.actorID = actorID
-    self.endpointObject = xpc_retain(endpoint.xpc_object)
+    self.endpoint = endpoint
   }
-
-  deinit { xpc_release(endpointObject) }
-
-  var endpoint: XPCObject { XPCObject(xpc_object: endpointObject) }
 }
 
 /// One exported-actor endpoint: a fresh anonymous listener plus the peers
@@ -79,8 +71,7 @@ final class StoredActorReference: @unchecked Sendable {
 /// already have been handed to a receiver that has not dialed yet, and an
 /// anonymous listener occupies no launchd client connection, so it cannot
 /// block on-demand reaping.
-@available(macOS 15, *)
-final class XPCActorExportSession: @unchecked Sendable {
+final class XPCActorExportSession: Sendable {
   let id: UUID
   let actorID: XPCActorID
   let listener: XPCConnection
@@ -162,8 +153,7 @@ final class XPCActorExportSession: @unchecked Sendable {
 /// releases its imported proxy, its owned system tears the connection down,
 /// and this end must close symmetrically instead of lingering half-open.
 /// Cancelling an already-dead connection is a no-op.
-@available(macOS 15, *)
-final class PeerBox: @unchecked Sendable {
+final class PeerBox: Sendable {
   let id = UUID()
   let connection: XPCConnection
 
@@ -174,7 +164,6 @@ final class PeerBox: @unchecked Sendable {
   deinit { connection.cancel() }
 }
 
-@available(macOS 15, *)
 extension XPCDistributedActorSystem {
   func export<Act>(_ actor: Act) throws(XPCMarshalError) -> XPCObject
   where Act: XPCExportableActor {
@@ -278,5 +267,8 @@ extension XPCDistributedActorSystem {
   private func removeExportSession(_ id: UUID) {
     let session = exportSessionsLock.withLock { $0.removeValue(forKey: id) }
     session?.cancel()
+    // Removing a session bypasses `exportSessionDrained`; a drain waiter
+    // may now be quiescent.
+    notifyDrainIfQuiescent()
   }
 }

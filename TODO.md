@@ -294,7 +294,7 @@
 - 一条入站 XPC connection 只绑定一个 actor；请求中的 `actorID` 降级为身份校验与诊断字段，
   不再承担 channel 内多 actor 路由。
 - 初始 Mach service connection 固定绑定用户 root actor（`XPCRootActor` 协议 +
-  `distributedXPCMain(Root.self)`），root 固定使用 `XPCActorID.root == 0`；
+  `xpcMain(Root.self)` / `XPCApp`），root 固定使用 `XPCActorID.root == 0`；
   普通本地 actor ID 仍从 1 开始。
 - 客户端通过 `Root.connect(toService:)` / `connect(using:)` 以 `.root` 解析远端 root proxy；
   bootstrap 不引入额外的框架内置 actor 或握手 RPC。
@@ -462,7 +462,7 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
 - [x] 内核级强制路径一等公民 API（2026-09-10）：`XPCRootActorServer(peerCodeSigningRequirement:)`
   在 activate 前逐 peer 设字符串 requirement（`setPeerCodeSigningRequirement`），setup 失败
   → 拒绝并报 `onPeerReject`（fail-closed，不降级）；`shouldAccept` 改 `throws`（throw = 拒绝），
-  与 pid/euid 审计同处激活前窗口，亦可逐 peer 设 entitlement requirement；`distributedXPCMain`
+  与 pid/euid 审计同处激活前窗口，亦可逐 peer 设 entitlement requirement；`XPCServiceDelegate`
   透传全部钩子。客户端对称能力：`connect(toService:/using:peerCodeSigningRequirement:)` 鉴别服务端。
   `XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT` 会走 reply 路径，由新增
   `ConnectionError.peerCodeSigningRequirement` 类型化；服务端 accept 时注册专用 handler

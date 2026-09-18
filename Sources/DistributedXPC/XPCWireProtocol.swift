@@ -7,7 +7,6 @@ enum XPCWireProtocol {
   public static let currentVersion: UInt64 = 1
 }
 
-@available(macOS 13.0, *)
 @XPCMarshal
 struct XPCInvocationMessage {
   public let version: UInt64
@@ -31,7 +30,6 @@ struct XPCInvocationMessage {
   }
 }
 
-@available(macOS 13.0, *)
 @XPCMarshal
 public enum XPCReplyKind: Sendable, Hashable, Equatable {
   /// The reply carries a return value.
@@ -40,7 +38,6 @@ public enum XPCReplyKind: Sendable, Hashable, Equatable {
   case throwError
 }
 
-@available(macOS 13.0, *)
 struct XPCReplyEnvelope: Sendable {
   public let version: UInt64
   public let kind: XPCReplyKind
@@ -61,7 +58,7 @@ struct XPCReplyEnvelope: Sendable {
 // 无载荷(`.returnVoid`)、载荷为 null(返回值为 `Optional.none`)与普通载荷;
 // 宏生成的可选属性解码把"present-but-null"折叠成 nil,使任何 nil Optional
 // 返回值在客户端表现为 `missingPayload(.returnValue)`。
-@available(macOS 13.0, *)
+
 extension XPCReplyEnvelope: XPCMarshal {
   func write(to dictionary: inout XPCDictionary) throws(XPCMarshalError) {
     dictionary["version"] = try version.marshal()
@@ -93,6 +90,9 @@ extension XPCReplyEnvelope: XPCMarshal {
       throw XPCMarshalError.missingKey("version")
     }
     let version = try UInt64.unmarshal(from: versionObject)
+    guard version == XPCWireProtocol.currentVersion else {
+      throw .unsupportedProtocolVersion(expected: XPCWireProtocol.currentVersion, actual: version)
+    }
     guard let kindObject = dictionary["kind"] else {
       throw XPCMarshalError.missingKey("kind")
     }
@@ -110,7 +110,6 @@ extension XPCReplyEnvelope: XPCMarshal {
   }
 }
 
-@available(macOS 15, *)
 extension XPCReplyEnvelope {
   func decodeReturnValue<Res, Err>(
     throwing errorType: Err.Type,
@@ -169,7 +168,6 @@ extension XPCReplyEnvelope {
   }
 }
 
-@available(macOS 13.0, *)
 extension RemoteCallTarget: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try identifier.marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {

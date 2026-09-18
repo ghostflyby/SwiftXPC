@@ -3,7 +3,6 @@
 import Distributed
 import SwiftXPC
 
-@available(macOS 15, *)
 public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandler {
   public typealias SerializationRequirement = XPCMarshal
   private let sendEnvelope: @Sendable (XPCReplyEnvelope) throws -> Void

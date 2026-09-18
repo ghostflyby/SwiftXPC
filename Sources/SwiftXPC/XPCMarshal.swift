@@ -33,6 +33,7 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
     case unknownEnumCase(String, enumName: String)
     case typeMismatch(expected: String, actual: String)
     case outOfBounds(index: Int, count: Int)
+    case integerOutOfRange(type: String, value: String)
     case invalidActorReference(String)
     case remoteActorExportUnsupported(String)
     case actorResolutionFailed(String)
@@ -58,6 +59,10 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
 
   public static func outOfBounds(index: Int, count: Int) -> Self {
     .init(kind: .outOfBounds(index: index, count: count))
+  }
+
+  public static func integerOutOfRange(type: String, value: String) -> Self {
+    .init(kind: .integerOutOfRange(type: type, value: value))
   }
 
   public static func invalidActorReference(_ reason: String) -> Self {
@@ -86,6 +91,8 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
       return "Expected \(expected) but found \(actual)"
     case .outOfBounds(let index, let count):
       return "Index \(index) out of bounds for array of count \(count)"
+    case .integerOutOfRange(let type, let value):
+      return "Value \(value) out of range for \(type)"
     case .invalidActorReference(let reason):
       return "Invalid actor reference: \(reason)"
     case .remoteActorExportUnsupported(let actorType):
@@ -100,8 +107,12 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
 
 extension FileHandle: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
-    let xpcObject = xpc_fd_create(self.fileDescriptor)!
-    return XPCObject(xpc_object: xpcObject)
+    guard let object = xpc_fd_create(self.fileDescriptor) else {
+      // xpc_fd_create returns NULL for an invalid descriptor (e.g. closed).
+      throw .typeMismatch(
+        expected: "valid file descriptor", actual: "invalid fd \(self.fileDescriptor)")
+    }
+    return XPCObject(xpc_object: object)
   }
 
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
@@ -195,7 +206,10 @@ extension Int: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     let v = try Int64.unmarshal(from: object)
-    return Int(v)
+    guard let converted = Int(exactly: v) else {
+      throw .integerOutOfRange(type: "Int", value: String(v))
+    }
+    return converted
   }
 }
 
@@ -203,49 +217,76 @@ extension UInt: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     let v = try UInt64.unmarshal(from: object)
-    return UInt(v)
+    guard let converted = UInt(exactly: v) else {
+      throw .integerOutOfRange(type: "UInt", value: String(v))
+    }
+    return converted
   }
 }
 
 extension Int8: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
-    Self(try Int64.unmarshal(from: object))
+    let v = try Int64.unmarshal(from: object)
+    guard let converted = Int8(exactly: v) else {
+      throw .integerOutOfRange(type: "Int8", value: String(v))
+    }
+    return converted
   }
 }
 
 extension Int16: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
-    Self(try Int64.unmarshal(from: object))
+    let v = try Int64.unmarshal(from: object)
+    guard let converted = Int16(exactly: v) else {
+      throw .integerOutOfRange(type: "Int16", value: String(v))
+    }
+    return converted
   }
 }
 
 extension Int32: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
-    Self(try Int64.unmarshal(from: object))
+    let v = try Int64.unmarshal(from: object)
+    guard let converted = Int32(exactly: v) else {
+      throw .integerOutOfRange(type: "Int32", value: String(v))
+    }
+    return converted
   }
 }
 
 extension UInt8: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
-    Self(try UInt64.unmarshal(from: object))
+    let v = try UInt64.unmarshal(from: object)
+    guard let converted = UInt8(exactly: v) else {
+      throw .integerOutOfRange(type: "UInt8", value: String(v))
+    }
+    return converted
   }
 }
 
 extension UInt16: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
-    Self(try UInt64.unmarshal(from: object))
+    let v = try UInt64.unmarshal(from: object)
+    guard let converted = UInt16(exactly: v) else {
+      throw .integerOutOfRange(type: "UInt16", value: String(v))
+    }
+    return converted
   }
 }
 
 extension UInt32: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
-    Self(try UInt64.unmarshal(from: object))
+    let v = try UInt64.unmarshal(from: object)
+    guard let converted = UInt32(exactly: v) else {
+      throw .integerOutOfRange(type: "UInt32", value: String(v))
+    }
+    return converted
   }
 }
 
@@ -260,7 +301,12 @@ extension Data: XPCMarshal {
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DATA)
     let length = xpc_data_get_length(object.xpc_object)
-    let pointer = xpc_data_get_bytes_ptr(object.xpc_object)!
+    // xpc_data_get_bytes_ptr returns NULL for zero-length data; the empty
+    // Data case must not dereference it.
+    if length == 0 { return Data() }
+    guard let pointer = xpc_data_get_bytes_ptr(object.xpc_object) else {
+      throw .typeMismatch(expected: "data bytes", actual: "null pointer")
+    }
     return Data(bytes: pointer, count: length)
   }
 }

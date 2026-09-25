@@ -85,7 +85,7 @@ extension XPCDictionary: @retroactive Sequence {
     init(dictionary: XPCDictionary) {
       var items: [Element] = []
       dictionary.withUnsafeUnderlyingDictionary { raw in
-        xpc_dictionary_apply(raw) { key, value in
+        _ = xpc_dictionary_apply(raw) { key, value in
           items.append((String(cString: key), value))
           return true
         }

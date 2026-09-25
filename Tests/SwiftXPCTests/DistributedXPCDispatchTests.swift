@@ -40,7 +40,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
-  var arguments = XPCWireArray()
+  var arguments = XPCArray()
   arguments.append(try "world".marshal())
 
   let reply = try await system.dispatchInvocation(
@@ -66,7 +66,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
       method: "ping()",
       actorID: actor.id,
       target: RemoteCallTarget(samplePingTargetIdentifier),
-      arguments: XPCWireArray()
+      arguments: XPCArray()
     ),
     on: actor
   )
@@ -85,7 +85,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
         method: "missing",
         actorID: actor.id,
         target: RemoteCallTarget("missing"),
-        arguments: XPCWireArray()
+        arguments: XPCArray()
       ),
       on: actor
     )
@@ -108,7 +108,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
       method: "ping()",
       actorID: actor.id,
       target: RemoteCallTarget(sampleActorWithoutMetadataPingTargetIdentifier),
-      arguments: XPCWireArray()
+      arguments: XPCArray()
     ),
     on: actor
   )
@@ -126,7 +126,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
         method: "greet(name:)",
         actorID: XPCActorID(id: actor.id.id + 500),
         target: RemoteCallTarget(sampleGreetTargetIdentifier),
-        arguments: XPCWireArray()
+        arguments: XPCArray()
       ),
       on: actor
     )
@@ -142,7 +142,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
-  var arguments = XPCWireArray()
+  var arguments = XPCArray()
   arguments.append(try "inbox".marshal())
 
   let message = XPCInvocationMessage(
@@ -163,7 +163,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
     method: "missing",
     actorID: actor.id,
     target: RemoteCallTarget("missing"),
-    arguments: XPCWireArray()
+    arguments: XPCArray()
   )
 
   try await system.handleIncomingMessage(try message.marshal(), on: actor)
@@ -173,7 +173,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
   let system = makeSystem()
   let actor = SampleDispatchActor(actorSystem: system)
 
-  var arguments = XPCWireArray()
+  var arguments = XPCArray()
   arguments.append(try Int(42).marshal())
 
   let reply = try await system.dispatchInvocation(
@@ -200,7 +200,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
       method: "greet(name:)",
       actorID: actor.id,
       target: RemoteCallTarget(sampleGreetTargetIdentifier),
-      arguments: XPCWireArray()
+      arguments: XPCArray()
     ),
     on: actor
   )

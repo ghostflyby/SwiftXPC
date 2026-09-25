@@ -142,7 +142,7 @@ distributed actor ChannelRoot: XPCRootActor {
   let wire = XPCActorReferenceWire(
     version: XPCWireProtocol.currentVersion + 1,
     actorID: .root,
-    endpoint: try listener.marshal()
+    endpoint: SendableXPCObject(try listener.marshal())
   )
 
   do {
@@ -184,8 +184,8 @@ private func makeExportPair() throws -> ExportPair {
   let accepted = DispatchSemaphore(value: 0)
 
   listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    let server = XPCConnection(xpc_object: object.xpc_object)
+    guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+    let server = XPCConnection(xpc_object: object)
     let serverSystem = XPCDistributedActorSystem(connection: server)
     serverSystem.reserveRootID()
     let root = ChannelRoot(actorSystem: serverSystem)
@@ -199,7 +199,7 @@ private func makeExportPair() throws -> ExportPair {
   let client = try XPCConnection.unmarshal(from: listener.marshal())
   let clientSystem = XPCDistributedActorSystem(connection: client)
   client.activate()
-  client.sendAndForget(message: XPCWireDictionary())
+  client.sendAndForget(message: XPCDictionary())
 
   guard accepted.wait(timeout: .now() + 5) == .success,
     let (serverSystem, _) = captured.withLock({ $0 })

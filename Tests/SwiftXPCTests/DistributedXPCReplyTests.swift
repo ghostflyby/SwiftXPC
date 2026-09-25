@@ -158,7 +158,7 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func ReplyEnvelopeWritesIntoDictionary() throws {
-  var dictionary = XPCWireDictionary()
+  var dictionary = XPCDictionary()
   let envelope = XPCReplyEnvelope(
     kind: .returnValue,
     payload: try "payload".marshal()
@@ -176,12 +176,12 @@ distributed actor SampleReplyActorWithoutMetadata {
   // "有载荷且为 null",不得折叠成"无载荷"(否则客户端报 missingPayload)。
   let envelope = XPCReplyEnvelope(
     kind: .returnValue,
-    payload: XPCObject(xpc_object: SwiftXPC.xpcNullCreate()))
+    payload: SwiftXPC.xpcNullCreate())
 
   let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
   #expect(decoded.kind == .returnValue)
   #expect(decoded.payload != nil)
-  #expect(SwiftXPC.xpcGetType(decoded.payload!.xpc_object) == SwiftXPC.xpcTypeNull)
+  #expect(SwiftXPC.xpcGetType(decoded.payload!) == SwiftXPC.xpcTypeNull)
 }
 
 @Test func ReplyEnvelopeRoundTripsAbsentPayload() throws {

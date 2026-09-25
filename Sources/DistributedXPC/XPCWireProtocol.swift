@@ -13,14 +13,14 @@ struct XPCInvocationMessage {
   public let method: String
   public let actorID: XPCActorID
   public let target: RemoteCallTarget
-  public let arguments: XPCWireArray
+  public let arguments: XPCArray
 
   init(
     version: UInt64 = XPCWireProtocol.currentVersion,
     method: String,
     actorID: XPCActorID,
     target: RemoteCallTarget,
-    arguments: XPCWireArray
+    arguments: XPCArray
   ) {
     self.version = version
     self.method = method
@@ -38,15 +38,15 @@ public enum XPCReplyKind: Sendable, Hashable, Equatable {
   case throwError
 }
 
-struct XPCReplyEnvelope: Sendable {
+struct XPCReplyEnvelope: @unchecked Sendable {
   public let version: UInt64
   public let kind: XPCReplyKind
-  public let payload: XPCObject?
+  public let payload: xpc_object_t?
 
   init(
     version: UInt64 = XPCWireProtocol.currentVersion,
     kind: XPCReplyKind,
-    payload: XPCObject? = nil
+    payload: xpc_object_t? = nil
   ) {
     self.version = version
     self.kind = kind
@@ -54,13 +54,13 @@ struct XPCReplyEnvelope: Sendable {
   }
 }
 
-// 手写线缆编解码而非 `@XPCMarshal`:`payload: XPCObject?` 必须区分三态——
+// 手写线缆编解码而非 `@XPCMarshal`:`payload: xpc_object_t?` 必须区分三态——
 // 无载荷(`.returnVoid`)、载荷为 null(返回值为 `Optional.none`)与普通载荷;
 // 宏生成的可选属性解码把"present-but-null"折叠成 nil,使任何 nil Optional
 // 返回值在客户端表现为 `missingPayload(.returnValue)`。
 
 extension XPCReplyEnvelope: XPCMarshal {
-  func write(to dictionary: inout XPCWireDictionary) throws(XPCMarshalError) {
+  func write(to dictionary: inout XPCDictionary) throws(XPCMarshalError) {
     dictionary["version"] = try version.marshal()
     dictionary["kind"] = try kind.marshal()
     dictionary["hasPayload"] = try (payload != nil).marshal()
@@ -71,41 +71,41 @@ extension XPCReplyEnvelope: XPCMarshal {
     }
   }
 
-  func marshal() throws(XPCMarshalError) -> XPCObject {
-    var dictionary = XPCWireDictionary()
+  func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    var dictionary = XPCDictionary()
     try write(to: &dictionary)
-    return XPCObject(xpc_object: dictionary.xpc_object)
+    return dictionary.xpcObject
   }
 
-  static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCReplyEnvelope {
-    let kindType = SwiftXPC.xpcGetType(object.xpc_object)
+  static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> XPCReplyEnvelope {
+    let kindType = SwiftXPC.xpcGetType(object)
     guard kindType == SwiftXPC.xpcTypeDictionary else {
       throw XPCMarshalError.typeMismatch(
         expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeDictionary)),
         actual: String(cString: SwiftXPC.xpcTypeGetName(kindType))
       )
     }
-    let dictionary = XPCWireDictionary(xpc_object: object.xpc_object)
-    guard let versionObject = dictionary["version"] else {
+    let dictionary = XPCDictionary(object)
+    guard let versionObject = dictionary["version", as: xpc_object_t.self] else {
       throw XPCMarshalError.missingKey("version")
     }
     let version = try UInt64.unmarshal(from: versionObject)
     guard version == XPCWireProtocol.currentVersion else {
       throw .unsupportedProtocolVersion(expected: XPCWireProtocol.currentVersion, actual: version)
     }
-    guard let kindObject = dictionary["kind"] else {
+    guard let kindObject = dictionary["kind", as: xpc_object_t.self] else {
       throw XPCMarshalError.missingKey("kind")
     }
     let kind = try XPCReplyKind.unmarshal(from: kindObject)
 
     let hasPayload: Bool
-    if let hasPayloadObject = dictionary["hasPayload"] {
+    if let hasPayloadObject = dictionary["hasPayload", as: xpc_object_t.self] {
       hasPayload = try Bool.unmarshal(from: hasPayloadObject)
     } else {
       // 旧格式(无 hasPayload 标记):payload 键存在与否即载荷有无。
-      hasPayload = dictionary["payload"] != nil
+      hasPayload = dictionary["payload", as: xpc_object_t.self] != nil
     }
-    let payload = hasPayload ? dictionary["payload"] : nil
+    let payload = hasPayload ? dictionary["payload", as: xpc_object_t.self] : nil
     return XPCReplyEnvelope(version: version, kind: kind, payload: payload)
   }
 }
@@ -152,7 +152,7 @@ extension XPCReplyEnvelope {
   }
 
   private func decodeThrownError<Err: Error>(
-    _ object: XPCObject,
+    _ object: xpc_object_t,
     as errorType: Err.Type,
     fallback fallbackErrorType: (any ErrorXPCMarshal.Type)?
   ) throws -> Error {
@@ -169,8 +169,8 @@ extension XPCReplyEnvelope {
 }
 
 extension RemoteCallTarget: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try identifier.marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> RemoteCallTarget {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try identifier.marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> RemoteCallTarget {
     .init(try .unmarshal(from: object))
   }
 }

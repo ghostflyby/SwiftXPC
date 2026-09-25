@@ -308,8 +308,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   where Act: DistributedActor, Act.ID == ActorID {
     connection.setEventHandler { [weak self, weak actor] object in
       guard let self, let actor else { return }
+      let object = SendableXPCObject(object)
       self.runIncomingHandler {
-        try await self.handleIncomingMessage(object, on: actor)
+        try await self.handleIncomingMessage(object.raw, on: actor)
       }
     }
   }
@@ -370,9 +371,9 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       .thrownErrorType
   }
 
-  func handleIncomingMessage<Act>(_ object: XPCObject, on actor: Act) async throws
+  func handleIncomingMessage<Act>(_ object: xpc_object_t, on actor: Act) async throws
   where Act: DistributedActor, Act.ID == ActorID {
-    let received = try XPCWireDictionary.unmarshal(from: object)
+    let received = try XPCDictionary.unmarshal(from: object)
     let resultHandler = XPCInvocationResultHandler(received: received)
     do {
       let invocation = try XPCInvocationMessage.unmarshal(from: object)
@@ -432,7 +433,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let message = XPCInvocationMessage(
       method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
-    let xpcDict = XPCWireDictionary(xpc_object: payload.xpc_object)
+    let xpcDict = XPCDictionary(payload)
     let result = try await connection.send(message: xpcDict)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
     return try decodeRemoteCallReply(
@@ -453,7 +454,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let message = XPCInvocationMessage(
       method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
-    let xpcDict = XPCWireDictionary(xpc_object: payload.xpc_object)
+    let xpcDict = XPCDictionary(payload)
     let result = try await connection.send(message: xpcDict)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
     try decodeRemoteCallVoidReply(

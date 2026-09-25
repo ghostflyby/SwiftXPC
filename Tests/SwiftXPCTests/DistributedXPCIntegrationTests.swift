@@ -13,10 +13,10 @@ import XPC
 enum IntegrationError: Error, Equatable, XPCMarshal {
   case rejected
 
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try "rejected".marshal()
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> IntegrationError {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> IntegrationError {
     switch try String.unmarshal(from: object) {
     case "rejected": return .rejected
     case let value: throw XPCMarshalError.unknownEnumCase(value, enumName: "IntegrationError")
@@ -64,7 +64,7 @@ private let integrationGreetTargetIdentifier =
 private func sendRawInvocation(
   _ message: XPCInvocationMessage, over pair: IntegrationConnectionPair
 ) async throws -> XPCReplyEnvelope {
-  let wire = try XPCWireDictionary.unmarshal(from: message.marshal())
+  let wire = try XPCDictionary.unmarshal(from: message.marshal())
   let reply = try await pair.client.send(message: wire)
   return try XPCReplyEnvelope.unmarshal(from: reply)
 }
@@ -96,8 +96,8 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   let accepted = DispatchSemaphore(value: 0)
 
   listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    let server = XPCConnection(xpc_object: object.xpc_object)
+    guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+    let server = XPCConnection(xpc_object: object)
     let serverSystem = XPCDistributedActorSystem(connection: server)
     serverSystem.reserveRootID()
     let root = IntegrationGreeter(actorSystem: serverSystem)
@@ -114,7 +114,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   let client = try XPCConnection.unmarshal(from: endpoint)
   let clientSystem = XPCDistributedActorSystem(connection: client)
   client.activate()
-  client.sendAndForget(message: XPCWireDictionary())
+  client.sendAndForget(message: XPCDictionary())
 
   guard accepted.wait(timeout: .now() + 5) == .success,
     let peer = acceptedPeer.withLock({ $0 })
@@ -200,7 +200,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
       method: "greet(name:)",
       actorID: XPCActorID(id: 999),
       target: RemoteCallTarget("unknown"),
-      arguments: SwiftXPC.XPCWireArray()
+      arguments: SwiftXPC.XPCArray()
     ), over: pair)
 
   #expect(reply.kind == .throwError)
@@ -216,7 +216,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
       method: "missing",
       actorID: .root,
       target: RemoteCallTarget("missing"),
-      arguments: SwiftXPC.XPCWireArray()
+      arguments: SwiftXPC.XPCArray()
     ), over: pair)
 
   #expect(reply.kind == .throwError)
@@ -226,7 +226,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 
 @Test func RemoteCallSurfacesArgumentDecodeError() async throws {
   let pair = try makeConnectionPair()
-  var arguments = SwiftXPC.XPCWireArray()
+  var arguments = SwiftXPC.XPCArray()
   arguments.append(try Int(42).marshal())
 
   let reply = try await sendRawInvocation(
@@ -247,7 +247,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   pair.client.cancel()
 
   do {
-    _ = try await pair.client.send(message: XPCWireDictionary())
+    _ = try await pair.client.send(message: XPCDictionary())
     Issue.record("Expected send on invalidated connection to throw")
   } catch XPCConnection.ConnectionError.invalid {
     // expected

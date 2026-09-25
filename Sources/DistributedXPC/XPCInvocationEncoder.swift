@@ -8,7 +8,7 @@ import SwiftXPC
 public struct XPCInvocationEncoder: DistributedTargetInvocationEncoder {
   public typealias SerializationRequirement = XPCMarshal
 
-  var array = XPCWireArray()
+  var array = XPCArray()
 
   public mutating func recordArgument<Value: SerializationRequirement>(
     _ argument: RemoteCallArgument<Value>

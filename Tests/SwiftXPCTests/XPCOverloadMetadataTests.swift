@@ -37,11 +37,11 @@ distributed actor OverloadActor {
 public struct SaveIntError: Error, XPCMarshal, Equatable {
   public init() {}
 
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try "save-int".marshal()
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     switch try String.unmarshal(from: object) {
     case "save-int": return .init()
     case let value: throw .unknownEnumCase(value, enumName: "SaveIntError")
@@ -52,11 +52,11 @@ public struct SaveIntError: Error, XPCMarshal, Equatable {
 public struct SaveStringError: Error, XPCMarshal, Equatable {
   public init() {}
 
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try "save-string".marshal()
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     switch try String.unmarshal(from: object) {
     case "save-string": return .init()
     case let value: throw .unknownEnumCase(value, enumName: "SaveStringError")

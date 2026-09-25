@@ -8,7 +8,7 @@ Two products ship from this package:
 
 | Product | Contents |
 |---|---|
-| `SwiftXPC` | Swift wrapper vocabulary for the XPC C API: `XPCObject`/`XPCArray`/`XPCDictionary`, the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
+| `SwiftXPC` | Swift vocabulary over Apple's XPC: the `XPCDictionary`/`XPCArray` containers (re-exported from Apple's `XPC` module, extended with reply, endpoint, and element accessors), `xpc_object_t` as the marshal currency behind the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
 | `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCApp` `@main`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
 
 ## Requirements

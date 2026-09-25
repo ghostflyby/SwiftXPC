@@ -88,15 +88,15 @@ struct XPCServiceDelegateTests {
     let host = XPCServiceHost(XPCServiceConfiguration())
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object.xpc_object))
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object))
     }
     listener.activate()
     let client = try XPCConnection.unmarshal(from: listener.marshal())
     client.setEventHandler { _ in }
     client.activate()
 
-    client.sendAndForget(message: XPCWireDictionary())
+    client.sendAndForget(message: XPCDictionary())
     host.requestShutdown()  // Reaching this point proves the process survived.
     listener.cancel()
   }
@@ -123,15 +123,15 @@ struct XPCServiceDelegateTests {
 
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object.xpc_object))
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object))
     }
     listener.activate()
 
     let client = try XPCConnection.unmarshal(from: listener.marshal())
     client.setEventHandler { _ in }
     client.activate()
-    client.sendAndForget(message: XPCWireDictionary())
+    client.sendAndForget(message: XPCDictionary())
 
     let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
     #expect(rejection != nil)
@@ -264,15 +264,15 @@ struct XPCServiceDelegateTests {
     // The throw must reject through didRejectPeer — not trap and not accept.
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object.xpc_object))
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object))
     }
     listener.activate()
 
     let client = try XPCConnection.unmarshal(from: listener.marshal())
     client.setEventHandler { _ in }
     client.activate()
-    client.sendAndForget(message: XPCWireDictionary())
+    client.sendAndForget(message: XPCDictionary())
 
     let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
     #expect(rejection != nil)

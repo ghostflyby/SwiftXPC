@@ -23,11 +23,11 @@ distributed actor RetrofittedActor {
 public enum RetroError: Error, XPCMarshal, Equatable {
   case boom
 
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try "boom".marshal()
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     switch try String.unmarshal(from: object) {
     case "boom": return .boom
     case let value: throw .unknownEnumCase(value, enumName: "RetroError")
@@ -39,7 +39,7 @@ public enum RetroError: Error, XPCMarshal, Equatable {
   let system = makeIdleSystem()
   let actor = RetrofittedActor(actorSystem: system)
 
-  var arguments = SwiftXPC.XPCWireArray()
+  var arguments = SwiftXPC.XPCArray()
   arguments.append(try "x".marshal())
   let reply = try await system.dispatchInvocation(
     XPCInvocationMessage(
@@ -64,7 +64,7 @@ public enum RetroError: Error, XPCMarshal, Equatable {
       method: "fail()",
       actorID: actor.id,
       target: RemoteCallTarget(retroFailTargetIdentifier),
-      arguments: SwiftXPC.XPCWireArray()
+      arguments: SwiftXPC.XPCArray()
     ),
     on: actor
   )
@@ -83,7 +83,7 @@ public enum RetroError: Error, XPCMarshal, Equatable {
         method: "missing()",
         actorID: actor.id,
         target: RemoteCallTarget("missing"),
-        arguments: SwiftXPC.XPCWireArray()
+        arguments: SwiftXPC.XPCArray()
       ),
       on: actor
     )

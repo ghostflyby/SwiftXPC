@@ -8,6 +8,45 @@ import XPC
 // subscripts on macOS 27) are intentionally not mirrored here to avoid
 // same-signature ambiguity once those become available.
 
+/// Asserts what libxpc guarantees for raw handles: XPC objects are
+/// immutable after creation and safe to use from any thread, so a handle may
+/// cross isolation boundaries even though the type itself is not `Sendable`.
+package struct SendableXPCObject: @unchecked Sendable {
+  package let raw: xpc_object_t
+  package init(_ raw: xpc_object_t) {
+    self.raw = raw
+  }
+}
+
+extension SendableXPCObject: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    raw
+  }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
+    Self(object)
+  }
+}
+
+extension XPCDictionary: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpcObject
+  }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
+    try ensureType(object, is: XPC_TYPE_DICTIONARY)
+    return Self(object)
+  }
+}
+
+extension XPCArray: XPCMarshal {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpcObject
+  }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
+    try ensureType(object, is: XPC_TYPE_ARRAY)
+    return Self(object)
+  }
+}
+
 extension XPCDictionary {
   /// Handle-style access to the underlying XPC object. The wrapper is a
   /// non-owning view: lifetime remains governed by ARC on the underlying
@@ -82,30 +121,29 @@ extension XPCArray {
   }
 }
 
-extension XPCArray: @retroactive RandomAccessCollection, @retroactive MutableCollection {
+extension XPCArray: @retroactive Sequence {
   public typealias Element = xpc_object_t
-  public typealias Indices = Range<Int>
 
-  public var startIndex: Int { 0 }
-  public var endIndex: Int { withUnsafeUnderlyingArray { Int(xpc_array_get_count($0)) } }
+  /// An iterator over elements in XPC's storage order. The values are
+  /// non-owning views: finish iterating while the array is alive.
+  public struct Iterator: IteratorProtocol {
+    private let array: XPCArray
+    private var index = 0
 
-  /// Accesses the element at `position`. Like `Array`, an out-of-range index
-  /// is a programming error and traps.
-  public subscript(position: Int) -> xpc_object_t {
-    get {
-      withUnsafeUnderlyingArray { raw in
-        precondition(
-          position >= startIndex && position < endIndex, "XPCArray index out of range")
-        return xpc_array_get_value(raw, position)
-      }
+    init(array: XPCArray) {
+      self.array = array
     }
-    set {
-      withUnsafeUnderlyingArray { raw in
-        precondition(
-          position >= startIndex && position < endIndex, "XPCArray index out of range")
-        xpc_array_set_value(raw, position, newValue)
-      }
+
+    public mutating func next() -> xpc_object_t? {
+      let current = index
+      guard current < array.count else { return nil }
+      index += 1
+      return array.withUnsafeUnderlyingArray { xpc_array_get_value($0, current) }
     }
+  }
+
+  public func makeIterator() -> Iterator {
+    Iterator(array: self)
   }
 }
 

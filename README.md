@@ -144,6 +144,14 @@ their side — the package never needs to declare other platforms:
   #endif
   ```
 
+### Build strictness
+
+The manifest never forces `-warnings-as-errors` onto consumers: xcodebuild's
+package integration injects `-suppress-warnings` into remote dependencies, and
+swiftc rejects the combination. The flag is opt-in via
+`SWIFTXPC_WARNINGS_AS_ERRORS=1 swift build` (set only by this repo's CI), which
+reproduces the strict CI build locally.
+
 ## Status
 
 Pre-1.0: the wire protocol and API surface may still change. Known limits are

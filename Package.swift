@@ -9,7 +9,7 @@ import PackageDescription
 
 // Keep `-warnings-as-errors` opt-in: xcodebuild's package integration injects
 // `-suppress-warnings` into remote dependency targets, and swiftc rejects the
-// combination with "Conflicting options" (swift-package-manager#10192).
+// combination with "Conflicting options" (swiftlang/swift-package-manager#10192).
 let warningsAsErrors =
   ProcessInfo.processInfo.environment["SWIFTXPC_WARNINGS_AS_ERRORS"].map {
     $0 == "1" || $0.lowercased() == "true"

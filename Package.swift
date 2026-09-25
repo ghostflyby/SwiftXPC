@@ -4,7 +4,18 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import CompilerPluginSupport
+import Foundation
 import PackageDescription
+
+// Keep `-warnings-as-errors` opt-in: xcodebuild's package integration injects
+// `-suppress-warnings` into remote dependency targets, and swiftc rejects the
+// combination with "Conflicting options" (swift-package-manager#10192).
+let warningsAsErrors =
+  ProcessInfo.processInfo.environment["SWIFTXPC_WARNINGS_AS_ERRORS"].map {
+    $0 == "1" || $0.lowercased() == "true"
+  } ?? false
+let warningSettings: [SwiftSetting] =
+  warningsAsErrors ? [.treatAllWarnings(as: .error)] : []
 
 let package = Package(
   name: "SwiftXPC",
@@ -31,7 +42,7 @@ let package = Package(
       dependencies: [
         "SwiftXPCMacros"
       ],
-      swiftSettings: [.treatAllWarnings(as: .error)]
+      swiftSettings: warningSettings
     ),
     .macro(
       name: "SwiftXPCMacros",
@@ -44,7 +55,7 @@ let package = Package(
     .target(
       name: "DistributedXPC",
       dependencies: ["SwiftXPC"],
-      swiftSettings: [.treatAllWarnings(as: .error)]
+      swiftSettings: warningSettings
     ),
     .testTarget(
       name: "SwiftXPCTests",

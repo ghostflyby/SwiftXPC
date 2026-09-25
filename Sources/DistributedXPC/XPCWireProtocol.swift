@@ -170,7 +170,9 @@ extension XPCReplyEnvelope {
 
 extension RemoteCallTarget: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> xpc_object_t { try identifier.marshal() }
-  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> RemoteCallTarget {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError)
+    -> RemoteCallTarget
+  {
     .init(try .unmarshal(from: object))
   }
 }

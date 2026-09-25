@@ -16,7 +16,9 @@ enum IntegrationError: Error, Equatable, XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try "rejected".marshal()
   }
-  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> IntegrationError {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError)
+    -> IntegrationError
+  {
     switch try String.unmarshal(from: object) {
     case "rejected": return .rejected
     case let value: throw XPCMarshalError.unknownEnumCase(value, enumName: "IntegrationError")

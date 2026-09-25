@@ -26,7 +26,7 @@ extension XPCMarshalMacro {
         payloadEncoding = payloadAssignments
       } else {
         payloadEncoding = """
-            var payload = SwiftXPC.XPCArray()
+            var payload = SwiftXPC.XPCWireArray()
           \(payloadAssignments)
             array.append(SwiftXPC.XPCObject(xpc_object: payload.xpc_object))
           """
@@ -41,7 +41,7 @@ extension XPCMarshalMacro {
 
     return """
       \(access)func marshal() throws(SwiftXPC.XPCMarshalError) -> XPCObject {
-        var array = SwiftXPC.XPCArray()
+        var array = SwiftXPC.XPCWireArray()
         switch self {
         \(caseBranches)
         }
@@ -82,7 +82,7 @@ extension XPCMarshalMacro {
       }.joined(separator: ", ")
       return """
         case \"\(enumCase.name)\":
-          \(allUnlabeled ? "" : "  let payloadPtr = array[1]\n  let payloadType = SwiftXPC.xpcGetType(payloadPtr.xpc_object)\n  guard payloadType == SwiftXPC.xpcTypeArray else {\n    throw SwiftXPC.XPCMarshalError.typeMismatch(\n      expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeArray)),\n      actual: String(cString: SwiftXPC.xpcTypeGetName(payloadType))\n    )\n  }\n  let payloadArray = SwiftXPC.XPCArray(xpc_object: payloadPtr.xpc_object)\n")
+          \(allUnlabeled ? "" : "  let payloadPtr = array[1]\n  let payloadType = SwiftXPC.xpcGetType(payloadPtr.xpc_object)\n  guard payloadType == SwiftXPC.xpcTypeArray else {\n    throw SwiftXPC.XPCMarshalError.typeMismatch(\n      expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeArray)),\n      actual: String(cString: SwiftXPC.xpcTypeGetName(payloadType))\n    )\n  }\n  let payloadArray = SwiftXPC.XPCWireArray(xpc_object: payloadPtr.xpc_object)\n")
           \(valuesDecoding)
           return .\(enumCase.name)(\(argumentList))
         """
@@ -97,7 +97,7 @@ extension XPCMarshalMacro {
             actual: String(cString: SwiftXPC.xpcTypeGetName(type))
           )
         }
-        let array = SwiftXPC.XPCArray(xpc_object: object.xpc_object)
+        let array = SwiftXPC.XPCWireArray(xpc_object: object.xpc_object)
         let casePtr = array[0]
         let caseName = try String.unmarshal(from: casePtr)
 

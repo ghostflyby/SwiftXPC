@@ -11,9 +11,9 @@ public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandl
     self.sendEnvelope = sendEnvelope
   }
 
-  init(received: SwiftXPC.XPCDictionary) {
+  init(received: SwiftXPC.XPCWireDictionary) {
     self.sendEnvelope = { envelope in
-      guard var reply = XPCDictionary(replyTo: received),
+      guard var reply = XPCWireDictionary(replyTo: received),
         let connection = received.remoteConnection
       else { return }
       try envelope.write(to: &reply)

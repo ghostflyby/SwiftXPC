@@ -199,7 +199,7 @@ private func makeExportPair() throws -> ExportPair {
   let client = try XPCConnection.unmarshal(from: listener.marshal())
   let clientSystem = XPCDistributedActorSystem(connection: client)
   client.activate()
-  client.sendAndForget(message: XPCDictionary())
+  client.sendAndForget(message: XPCWireDictionary())
 
   guard accepted.wait(timeout: .now() + 5) == .success,
     let (serverSystem, _) = captured.withLock({ $0 })

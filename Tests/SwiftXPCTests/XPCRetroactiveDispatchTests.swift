@@ -39,7 +39,7 @@ public enum RetroError: Error, XPCMarshal, Equatable {
   let system = makeIdleSystem()
   let actor = RetrofittedActor(actorSystem: system)
 
-  var arguments = SwiftXPC.XPCArray()
+  var arguments = SwiftXPC.XPCWireArray()
   arguments.append(try "x".marshal())
   let reply = try await system.dispatchInvocation(
     XPCInvocationMessage(
@@ -64,7 +64,7 @@ public enum RetroError: Error, XPCMarshal, Equatable {
       method: "fail()",
       actorID: actor.id,
       target: RemoteCallTarget(retroFailTargetIdentifier),
-      arguments: SwiftXPC.XPCArray()
+      arguments: SwiftXPC.XPCWireArray()
     ),
     on: actor
   )
@@ -83,7 +83,7 @@ public enum RetroError: Error, XPCMarshal, Equatable {
         method: "missing()",
         actorID: actor.id,
         target: RemoteCallTarget("missing"),
-        arguments: SwiftXPC.XPCArray()
+        arguments: SwiftXPC.XPCWireArray()
       ),
       on: actor
     )

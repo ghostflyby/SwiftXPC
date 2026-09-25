@@ -158,7 +158,7 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func ReplyEnvelopeWritesIntoDictionary() throws {
-  var dictionary = XPCDictionary()
+  var dictionary = XPCWireDictionary()
   let envelope = XPCReplyEnvelope(
     kind: .returnValue,
     payload: try "payload".marshal()

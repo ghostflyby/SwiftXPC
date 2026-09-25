@@ -4,24 +4,24 @@ import XPC
 /// share the underlying XPC array, so mutations through any copy are
 /// visible through all of them.
 @frozen
-public struct XPCArray: @unchecked Sendable {
+public struct XPCWireArray: @unchecked Sendable {
   public let xpc_object: xpc_object_t
   public init(xpc_object: xpc_object_t) {
     self.xpc_object = xpc_object
   }
 }
 
-extension XPCArray: XPCMarshal {
+extension XPCWireArray: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
     XPCObject(xpc_object: xpc_object)
   }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_ARRAY)
-    return XPCArray(xpc_object: object.xpc_object)
+    return XPCWireArray(xpc_object: object.xpc_object)
   }
 }
 
-extension XPCArray: RandomAccessCollection {
+extension XPCWireArray: RandomAccessCollection {
 
   public var startIndex: Int {
     0
@@ -37,32 +37,32 @@ extension XPCArray: RandomAccessCollection {
 
 }
 
-extension XPCArray: MutableCollection {
+extension XPCWireArray: MutableCollection {
   public typealias Element = XPCObject
 
   /// Accesses the element at `position`. Like `Array`, an out-of-range index
   /// is a programming error and traps.
   public subscript(position: Int) -> XPCObject {
     get {
-      precondition(position >= startIndex && position < endIndex, "XPCArray index out of range")
+      precondition(position >= startIndex && position < endIndex, "XPCWireArray index out of range")
       let item = xpc_array_get_value(xpc_object, position)
       return .init(xpc_object: item)
     }
     set {
-      precondition(position >= startIndex && position < endIndex, "XPCArray index out of range")
+      precondition(position >= startIndex && position < endIndex, "XPCWireArray index out of range")
       xpc_array_set_value(xpc_object, position, newValue.xpc_object)
     }
   }
 
 }
 
-extension XPCArray {
+extension XPCWireArray {
   public mutating func append(_ obj: XPCObject) {
     xpc_array_append_value(xpc_object, obj.xpc_object)
   }
 }
 
-extension XPCArray {
+extension XPCWireArray {
   public init() {
     self.init(xpc_object: xpc_array_create_empty())
   }
@@ -70,12 +70,12 @@ extension XPCArray {
 
 /// A dictionary mapping string keys to XPC objects.
 ///
-/// `XPCDictionary` has *handle semantics*: copying a value shares the
+/// `XPCWireDictionary` has *handle semantics*: copying a value shares the
 /// underlying XPC object, so mutations through any copy are visible through
 /// all of them. This differs from `Dictionary` value semantics and matches
 /// libxpc's own object model.
 @frozen
-public struct XPCDictionary: @unchecked Sendable {
+public struct XPCWireDictionary: @unchecked Sendable {
   public let xpc_object: xpc_object_t
 
   /// Wraps a raw XPC dictionary object without retaining it.
@@ -89,20 +89,20 @@ public struct XPCDictionary: @unchecked Sendable {
   }
 }
 
-extension XPCDictionary: XPCMarshal {
+extension XPCWireDictionary: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
     XPCObject(xpc_object: xpc_object)
   }
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DICTIONARY)
-    return XPCDictionary(xpc_object: object.xpc_object)
+    return XPCWireDictionary(xpc_object: object.xpc_object)
   }
 }
 
-extension XPCDictionary {
+extension XPCWireDictionary {
   /// Creates a reply dictionary addressed back to the sender of `message`.
   /// Returns nil when `message` does not expect a reply.
-  public init?(replyTo message: XPCDictionary) {
+  public init?(replyTo message: XPCWireDictionary) {
     if let reply = xpc_dictionary_create_reply(message.xpc_object) {
       self.xpc_object = reply
     } else {
@@ -140,12 +140,12 @@ extension XPCDictionary {
   }
 }
 
-extension XPCDictionary: Sequence {
+extension XPCWireDictionary: Sequence {
   /// An iterator over `(key, value)` pairs.
   public struct Iterator: IteratorProtocol {
     private var remaining: [(key: String, value: XPCObject)]
 
-    init(dictionary: XPCDictionary) {
+    init(dictionary: XPCWireDictionary) {
       var items: [(key: String, value: XPCObject)] = []
       xpc_dictionary_apply(dictionary.xpc_object) { key, value in
         items.append((String(cString: key), XPCObject(xpc_object: value)))
@@ -167,7 +167,7 @@ extension XPCDictionary: Sequence {
   }
 }
 
-extension XPCDictionary {
+extension XPCWireDictionary {
 
   /// Accesses the value stored under `key`.
   ///

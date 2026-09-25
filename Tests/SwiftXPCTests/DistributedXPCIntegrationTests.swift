@@ -64,7 +64,7 @@ private let integrationGreetTargetIdentifier =
 private func sendRawInvocation(
   _ message: XPCInvocationMessage, over pair: IntegrationConnectionPair
 ) async throws -> XPCReplyEnvelope {
-  let wire = try XPCDictionary.unmarshal(from: message.marshal())
+  let wire = try XPCWireDictionary.unmarshal(from: message.marshal())
   let reply = try await pair.client.send(message: wire)
   return try XPCReplyEnvelope.unmarshal(from: reply)
 }
@@ -114,7 +114,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   let client = try XPCConnection.unmarshal(from: endpoint)
   let clientSystem = XPCDistributedActorSystem(connection: client)
   client.activate()
-  client.sendAndForget(message: XPCDictionary())
+  client.sendAndForget(message: XPCWireDictionary())
 
   guard accepted.wait(timeout: .now() + 5) == .success,
     let peer = acceptedPeer.withLock({ $0 })
@@ -200,7 +200,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
       method: "greet(name:)",
       actorID: XPCActorID(id: 999),
       target: RemoteCallTarget("unknown"),
-      arguments: SwiftXPC.XPCArray()
+      arguments: SwiftXPC.XPCWireArray()
     ), over: pair)
 
   #expect(reply.kind == .throwError)
@@ -216,7 +216,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
       method: "missing",
       actorID: .root,
       target: RemoteCallTarget("missing"),
-      arguments: SwiftXPC.XPCArray()
+      arguments: SwiftXPC.XPCWireArray()
     ), over: pair)
 
   #expect(reply.kind == .throwError)
@@ -226,7 +226,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 
 @Test func RemoteCallSurfacesArgumentDecodeError() async throws {
   let pair = try makeConnectionPair()
-  var arguments = SwiftXPC.XPCArray()
+  var arguments = SwiftXPC.XPCWireArray()
   arguments.append(try Int(42).marshal())
 
   let reply = try await sendRawInvocation(
@@ -247,7 +247,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   pair.client.cancel()
 
   do {
-    _ = try await pair.client.send(message: XPCDictionary())
+    _ = try await pair.client.send(message: XPCWireDictionary())
     Issue.record("Expected send on invalidated connection to throw")
   } catch XPCConnection.ConnectionError.invalid {
     // expected

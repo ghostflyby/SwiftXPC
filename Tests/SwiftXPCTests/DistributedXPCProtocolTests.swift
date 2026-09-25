@@ -6,7 +6,7 @@ import SwiftXPC
 import Testing
 
 @Test func InvocationMessageRoundTrip() throws {
-  var arguments = XPCArray()
+  var arguments = XPCWireArray()
   arguments.append(try 42.marshal())
   arguments.append(try "hello".marshal())
 

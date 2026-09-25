@@ -282,7 +282,7 @@ extension XPCConnection {
     case peerCodeSigningRequirement
   }
 
-  public func sendAndForget(message: XPCDictionary) {
+  public func sendAndForget(message: XPCWireDictionary) {
     xpc_connection_send_message(xpc_object, message.xpc_object)
   }
 
@@ -299,7 +299,7 @@ extension XPCConnection {
     return nil
   }
 
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
+  public func send(message: XPCWireDictionary, replyQueue: DispatchQueue? = nil)
     async throws(ConnectionError)
     -> XPCObject
   {
@@ -320,7 +320,7 @@ extension XPCConnection {
   }
 
   @available(*, noasync)
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
+  public func send(message: XPCWireDictionary, replyQueue: DispatchQueue? = nil)
     throws(ConnectionError)
     -> XPCObject
   {

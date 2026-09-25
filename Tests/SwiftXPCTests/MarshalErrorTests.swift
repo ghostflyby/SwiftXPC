@@ -7,7 +7,7 @@ import XPC
 @testable import SwiftXPC
 
 @Test func DecodeMissingRequiredKey() throws {
-  var dict = SwiftXPC.XPCDictionary()
+  var dict = SwiftXPC.XPCWireDictionary()
   // Set "id" but not the required "message" key.
   dict["id"] = try 1.marshal()
   #expect(throws: XPCMarshalError.self) {
@@ -23,7 +23,7 @@ import XPC
 }
 
 @Test func DecodeUnknownEnumCase() throws {
-  var dict = SwiftXPC.XPCDictionary()
+  var dict = SwiftXPC.XPCWireDictionary()
   dict["case"] = XPCObject(xpc_object: xpc_string_create("bogus"))
   #expect(throws: XPCMarshalError.self) {
     let _: JobState = try JobState.unmarshal(from: dict.marshal())

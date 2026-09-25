@@ -47,7 +47,7 @@ extension XPCMarshalMacro {
             actual: String(cString: SwiftXPC.xpcTypeGetName(type))
           )
         }
-        let dict = SwiftXPC.XPCDictionary(xpc_object: object.xpc_object)
+        let dict = SwiftXPC.XPCWireDictionary(xpc_object: object.xpc_object)
         \(bindings)
         return Self.init(\(arguments))
       }
@@ -92,7 +92,7 @@ extension XPCMarshalMacro {
             actual: String(cString: SwiftXPC.xpcTypeGetName(type))
           )
         }
-        let array = SwiftXPC.XPCArray(xpc_object: object.xpc_object)
+        let array = SwiftXPC.XPCWireArray(xpc_object: object.xpc_object)
         let count = array.count
         guard count >= \(properties.count) else {
           throw SwiftXPC.XPCMarshalError.outOfBounds(
@@ -123,7 +123,7 @@ extension XPCMarshalMacro {
 
     return """
       \(access)func marshal() throws(SwiftXPC.XPCMarshalError) -> XPCObject {
-        var array = SwiftXPC.XPCArray()
+        var array = SwiftXPC.XPCWireArray()
       \(assignments)
         return SwiftXPC.XPCObject(xpc_object: array.xpc_object)
       }
@@ -149,7 +149,7 @@ extension XPCMarshalMacro {
 
     return """
       \(access)func marshal() throws(SwiftXPC.XPCMarshalError) -> XPCObject {
-        var dict = SwiftXPC.XPCDictionary()
+        var dict = SwiftXPC.XPCWireDictionary()
       \(assignments)
         return SwiftXPC.XPCObject(xpc_object: dict.xpc_object)
       }

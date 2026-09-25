@@ -172,7 +172,7 @@ private func ownSigningIdentifier() -> String? {
   channel.client.activate()
 
   #expect(throws: XPCConnection.ConnectionError.interrupted) {
-    _ = try channel.client.send(message: XPCDictionary())
+    _ = try channel.client.send(message: XPCWireDictionary())
   }
 }
 

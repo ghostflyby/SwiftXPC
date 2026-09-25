@@ -354,7 +354,7 @@ extension Optional: XPCMarshal where Wrapped: XPCMarshal {
 
 extension Array: XPCMarshal where Element: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
-    var array = XPCArray()
+    var array = XPCWireArray()
     for item in self {
       array.append(try item.marshal())
     }
@@ -363,7 +363,7 @@ extension Array: XPCMarshal where Element: XPCMarshal {
 
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_ARRAY)
-    let raw = XPCArray(xpc_object: object.xpc_object)
+    let raw = XPCWireArray(xpc_object: object.xpc_object)
     var array = [Element]()
     let count = raw.count
     array.reserveCapacity(count)
@@ -377,7 +377,7 @@ extension Array: XPCMarshal where Element: XPCMarshal {
 
 extension Dictionary: XPCMarshal where Key == String, Value: XPCMarshal {
   public func marshal() throws(XPCMarshalError) -> XPCObject {
-    var dict = XPCDictionary()
+    var dict = XPCWireDictionary()
     for (k, v) in self {
       dict[k] = try v.marshal()
     }
@@ -386,7 +386,7 @@ extension Dictionary: XPCMarshal where Key == String, Value: XPCMarshal {
 
   public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DICTIONARY)
-    let xpcDict = XPCDictionary(xpc_object: object.xpc_object)
+    let xpcDict = XPCWireDictionary(xpc_object: object.xpc_object)
     var result: [String: Value] = [:]
     let count = xpcDict.keys.count
     result.reserveCapacity(count)

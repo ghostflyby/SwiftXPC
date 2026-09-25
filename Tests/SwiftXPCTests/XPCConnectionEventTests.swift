@@ -168,7 +168,7 @@ private func assertRouting(
   let client = try XPCConnection.unmarshal(from: listener.marshal())
   client.setEventHandler { _ in }
   client.activate()
-  client.sendAndForget(message: XPCDictionary())
+  client.sendAndForget(message: XPCWireDictionary())
 
   let deadline = ContinuousClock.now + .seconds(2)
   while ContinuousClock.now < deadline, accepted.withLock({ $0 }) == nil {

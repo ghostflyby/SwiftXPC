@@ -4,7 +4,7 @@ import XPC
 
 // Implementation support for macro-generated code, which expands in user
 // modules and therefore needs public symbols. Do not build on these
-// directly; prefer the XPCObject/XPCArray/XPCDictionary wrappers.
+// directly; prefer the XPCObject/XPCWireArray/XPCWireDictionary wrappers.
 
 nonisolated(unsafe) public let xpcTypeNull = XPC.XPC_TYPE_NULL
 nonisolated(unsafe) public let xpcTypeDictionary = XPC.XPC_TYPE_DICTIONARY

@@ -96,7 +96,7 @@ struct XPCServiceDelegateTests {
     client.setEventHandler { _ in }
     client.activate()
 
-    client.sendAndForget(message: XPCDictionary())
+    client.sendAndForget(message: XPCWireDictionary())
     host.requestShutdown()  // Reaching this point proves the process survived.
     listener.cancel()
   }
@@ -131,7 +131,7 @@ struct XPCServiceDelegateTests {
     let client = try XPCConnection.unmarshal(from: listener.marshal())
     client.setEventHandler { _ in }
     client.activate()
-    client.sendAndForget(message: XPCDictionary())
+    client.sendAndForget(message: XPCWireDictionary())
 
     let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
     #expect(rejection != nil)
@@ -272,7 +272,7 @@ struct XPCServiceDelegateTests {
     let client = try XPCConnection.unmarshal(from: listener.marshal())
     client.setEventHandler { _ in }
     client.activate()
-    client.sendAndForget(message: XPCDictionary())
+    client.sendAndForget(message: XPCWireDictionary())
 
     let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
     #expect(rejection != nil)

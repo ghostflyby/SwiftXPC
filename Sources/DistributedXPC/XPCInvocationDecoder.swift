@@ -9,7 +9,7 @@ public struct XPCInvocationDecoder: DistributedTargetInvocationDecoder {
 
   public typealias SerializationRequirement = XPCMarshal
 
-  let array: XPCArray
+  let array: XPCWireArray
   var currentIndex: Int = 0
 
   public func decodeGenericSubstitutions() throws -> [Any.Type] {

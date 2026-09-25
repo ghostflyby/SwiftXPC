@@ -13,14 +13,14 @@ struct XPCInvocationMessage {
   public let method: String
   public let actorID: XPCActorID
   public let target: RemoteCallTarget
-  public let arguments: XPCArray
+  public let arguments: XPCWireArray
 
   init(
     version: UInt64 = XPCWireProtocol.currentVersion,
     method: String,
     actorID: XPCActorID,
     target: RemoteCallTarget,
-    arguments: XPCArray
+    arguments: XPCWireArray
   ) {
     self.version = version
     self.method = method
@@ -60,7 +60,7 @@ struct XPCReplyEnvelope: Sendable {
 // 返回值在客户端表现为 `missingPayload(.returnValue)`。
 
 extension XPCReplyEnvelope: XPCMarshal {
-  func write(to dictionary: inout XPCDictionary) throws(XPCMarshalError) {
+  func write(to dictionary: inout XPCWireDictionary) throws(XPCMarshalError) {
     dictionary["version"] = try version.marshal()
     dictionary["kind"] = try kind.marshal()
     dictionary["hasPayload"] = try (payload != nil).marshal()
@@ -72,7 +72,7 @@ extension XPCReplyEnvelope: XPCMarshal {
   }
 
   func marshal() throws(XPCMarshalError) -> XPCObject {
-    var dictionary = XPCDictionary()
+    var dictionary = XPCWireDictionary()
     try write(to: &dictionary)
     return XPCObject(xpc_object: dictionary.xpc_object)
   }
@@ -85,7 +85,7 @@ extension XPCReplyEnvelope: XPCMarshal {
         actual: String(cString: SwiftXPC.xpcTypeGetName(kindType))
       )
     }
-    let dictionary = XPCDictionary(xpc_object: object.xpc_object)
+    let dictionary = XPCWireDictionary(xpc_object: object.xpc_object)
     guard let versionObject = dictionary["version"] else {
       throw XPCMarshalError.missingKey("version")
     }

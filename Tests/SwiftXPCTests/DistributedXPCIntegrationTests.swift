@@ -13,10 +13,12 @@ import XPC
 enum IntegrationError: Error, Equatable, XPCMarshal {
   case rejected
 
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try "rejected".marshal()
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> IntegrationError {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError)
+    -> IntegrationError
+  {
     switch try String.unmarshal(from: object) {
     case "rejected": return .rejected
     case let value: throw XPCMarshalError.unknownEnumCase(value, enumName: "IntegrationError")
@@ -96,8 +98,8 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   let accepted = DispatchSemaphore(value: 0)
 
   listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    let server = XPCConnection(xpc_object: object.xpc_object)
+    guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+    let server = XPCConnection(xpc_object: object)
     let serverSystem = XPCDistributedActorSystem(connection: server)
     serverSystem.reserveRootID()
     let root = IntegrationGreeter(actorSystem: serverSystem)

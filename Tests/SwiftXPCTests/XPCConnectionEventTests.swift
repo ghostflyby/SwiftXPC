@@ -19,7 +19,7 @@ private final class EventLog: Sendable {
 }
 
 private func assertRouting(
-  _ object: XPCObject,
+  _ object: xpc_object_t,
   configured: @Sendable (_ConnectionHandlerState, EventLog) -> Void = { _, _ in },
   expected: [String],
   sourceLocation: SourceLocation = #_sourceLocation
@@ -36,19 +36,19 @@ private func assertRouting(
 
 @Test func RoutingSendsInvalidToInvalidationHandler() async throws {
   assertRouting(
-    XPCObject(xpc_object: XPC_ERROR_CONNECTION_INVALID),
+    XPC_ERROR_CONNECTION_INVALID,
     expected: ["invalid"])
 }
 
 @Test func RoutingSendsInterruptedToInterruptionHandler() async throws {
   assertRouting(
-    XPCObject(xpc_object: XPC_ERROR_CONNECTION_INTERRUPTED),
+    XPC_ERROR_CONNECTION_INTERRUPTED,
     expected: ["interrupted"])
 }
 
 @Test func RoutingSendsTerminationImminentToDedicatedHandler() async throws {
   assertRouting(
-    XPCObject(xpc_object: XPC_ERROR_TERMINATION_IMMINENT),
+    XPC_ERROR_TERMINATION_IMMINENT,
     configured: { state, log in
       state.chain(\.terminationImminent, { log.record("termination") })
     },
@@ -57,13 +57,13 @@ private func assertRouting(
 
 @Test func RoutingFallsBackToGenericWithoutTerminationHandler() async throws {
   assertRouting(
-    XPCObject(xpc_object: XPC_ERROR_TERMINATION_IMMINENT),
+    XPC_ERROR_TERMINATION_IMMINENT,
     expected: ["generic"])
 }
 
 @Test func RoutingSendsPeerCodeSigningErrorToDedicatedHandler() async throws {
   assertRouting(
-    XPCObject(xpc_object: XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
+    XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT,
     configured: { state, log in
       state.chain(\.peerCodeSigningError, { log.record("peer-error") })
     },
@@ -72,7 +72,7 @@ private func assertRouting(
 
 @Test func RoutingFallsBackToGenericWithoutPeerCodeSigningHandler() async throws {
   assertRouting(
-    XPCObject(xpc_object: XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT),
+    XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT,
     expected: ["generic"])
 }
 
@@ -88,7 +88,7 @@ private func assertRouting(
   // on an already-activated channel). `chainInvalidation` reports the
   // already-delivered case so the caller invokes the handler itself.
   let state = _ConnectionHandlerState()
-  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INVALID))
+  state.route(XPC_ERROR_CONNECTION_INVALID)
 
   #expect(state.chainInvalidation {} == true)
 }
@@ -103,7 +103,7 @@ private func assertRouting(
     }
   }
   try await Task.sleep(for: .milliseconds(50))
-  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INTERRUPTED))
+  state.route(XPC_ERROR_CONNECTION_INTERRUPTED)
 
   let resumed = await withTaskGroup(of: Bool.self) { group in
     group.addTask {
@@ -129,7 +129,7 @@ private func assertRouting(
     }
   }
   try await Task.sleep(for: .milliseconds(50))
-  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INVALID))
+  state.route(XPC_ERROR_CONNECTION_INVALID)
 
   let resumed = await withTaskGroup(of: Bool.self) { group in
     group.addTask {
@@ -149,7 +149,7 @@ private func assertRouting(
 
 @Test func WaitForDisconnectionResumesImmediatelyAfterDelivery() async throws {
   let state = _ConnectionHandlerState()
-  state.route(XPCObject(xpc_object: XPC_ERROR_CONNECTION_INTERRUPTED))
+  state.route(XPC_ERROR_CONNECTION_INTERRUPTED)
   // Already down: the wait must not suspend.
   await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
     state.waitForDisconnection(continuation: cont)
@@ -160,8 +160,8 @@ private func assertRouting(
   let listener = XPCConnection(name: nil)
   let accepted = Mutex<XPCConnection?>(nil)
   listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    accepted.withLock { $0 = XPCConnection(xpc_object: object.xpc_object) }
+    guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+    accepted.withLock { $0 = XPCConnection(xpc_object: object) }
   }
   listener.activate()
 
@@ -178,7 +178,7 @@ private func assertRouting(
   #expect(peer.pid == getpid())
   #expect(!client.debugDescription.isEmpty)
   let payload = try "payload".marshal()
-  #expect(!payload.debugDescription.isEmpty)
+  #expect(!xpcCopyDescription(payload).isEmpty)
 
   // A never-activated connection traps on release; retire the accepted peer
   // through the safe activate-then-cancel sequence.

@@ -29,7 +29,7 @@ public struct XPCConnection: @unchecked Sendable {
 /// already delivered (it is terminal and never repeats).
 final class _ConnectionHandlerState: Sendable {
   struct Handlers: Sendable {
-    var generic: (@Sendable (XPCObject) -> Void)?
+    var generic: (@Sendable (xpc_object_t) -> Void)?
     var invalidation: (@Sendable () -> Void)?
     var interruption: (@Sendable () -> Void)?
     var terminationImminent: (@Sendable () -> Void)?
@@ -51,7 +51,7 @@ final class _ConnectionHandlerState: Sendable {
     }
   }
 
-  func setGenericHandler(_ handler: @escaping @Sendable (XPCObject) -> Void) {
+  func setGenericHandler(_ handler: @escaping @Sendable (xpc_object_t) -> Void) {
     withHandlers { $0.generic = handler }
   }
 
@@ -104,9 +104,9 @@ final class _ConnectionHandlerState: Sendable {
   /// dedicated chain (even when empty, matching historical behavior);
   /// termination-imminent and peer-code-signing errors fall through to the
   /// generic handler when their dedicated handler was never registered.
-  func route(_ object: XPCObject) {
+  func route(_ object: xpc_object_t) {
     let snapshot = withHandlers { $0 }
-    let raw = object.xpc_object
+    let raw = object
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
       let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
         state.invalidationDelivered = true
@@ -191,12 +191,12 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  public func setEventHandler(_ handler: @escaping @Sendable (XPCObject) -> Void) {
+  public func setEventHandler(_ handler: @escaping @Sendable (xpc_object_t) -> Void) {
     _handlerState.setGenericHandler(handler)
     xpc_connection_set_event_handler(
       xpc_object,
       { [state = _handlerState] xpc_object in
-        state.route(XPCObject(xpc_object: xpc_object))
+        state.route(xpc_object)
       }
     )
   }
@@ -283,7 +283,7 @@ extension XPCConnection {
   }
 
   public func sendAndForget(message: XPCDictionary) {
-    xpc_connection_send_message(xpc_object, message.xpc_object)
+    xpc_connection_send_message(xpc_object, message.xpcObject)
   }
 
   private static func connectionError(forReply raw: xpc_object_t) -> ConnectionError? {
@@ -301,34 +301,33 @@ extension XPCConnection {
 
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
     async throws(ConnectionError)
-    -> XPCObject
+    -> xpc_object_t
   {
-    let r = await withCheckedContinuation { continuation in
+    let boxed = await withCheckedContinuation { continuation in
       xpc_connection_send_message_with_reply(
         xpc_object,
-        message.xpc_object,
+        message.xpcObject,
         replyQueue,
-        { xpc_object in
-          continuation.resume(returning: XPCObject(xpc_object: xpc_object))
-        }
+        { continuation.resume(returning: SendableXPCObject($0)) }
       )
-    }.xpc_object
+    }
+    let r = boxed.raw
     if let error = Self.connectionError(forReply: r) {
       throw error
     }
-    return XPCObject(xpc_object: r)
+    return r
   }
 
   @available(*, noasync)
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
     throws(ConnectionError)
-    -> XPCObject
+    -> xpc_object_t
   {
-    let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpc_object)
+    let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpcObject)
     if let error = Self.connectionError(forReply: r) {
       throw error
     }
-    return XPCObject(xpc_object: r)
+    return r
   }
 
 }
@@ -449,11 +448,11 @@ extension XPCConnection {
   }
 
   private func setPeerLightweightCodeRequirement(
-    _ requirement: XPCObject
+    _ requirement: xpc_object_t
   ) throws(PeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_lightweight_code_requirement(
-        xpc_object, requirement.xpc_object))
+        xpc_object, requirement))
   }
 
   public func setPeerPlatformIdentityRequirement(
@@ -472,15 +471,15 @@ extension XPCConnection {
 }
 
 extension XPCConnection: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: xpc_endpoint_create(xpc_object))
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpc_endpoint_create(xpc_object)
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> XPCConnection {
-    let type = xpc_get_type(object.xpc_object)
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> XPCConnection {
+    let type = xpc_get_type(object)
     guard type == XPC_TYPE_ENDPOINT else {
       throw typeMismatch(expected: XPC_TYPE_ENDPOINT, actual: type)
     }
-    return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object.xpc_object))
+    return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object))
   }
 }

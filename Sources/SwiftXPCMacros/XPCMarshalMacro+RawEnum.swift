@@ -5,7 +5,7 @@ import SwiftSyntax
 extension XPCMarshalMacro {
   static func encodeRawEnumFunction(for _: TypeSyntax, access: String) -> String {
     """
-    \(access)func marshal() throws(SwiftXPC.XPCMarshalError) -> XPCObject {
+    \(access)func marshal() throws(SwiftXPC.XPCMarshalError) -> xpc_object_t {
       try self.rawValue.marshal()
     }
     """
@@ -17,7 +17,7 @@ extension XPCMarshalMacro {
     access: String
   ) -> String {
     """
-    \(access)static func unmarshal(from object: XPCObject) throws(SwiftXPC.XPCMarshalError) -> Self {
+    \(access)static func unmarshal(from object: xpc_object_t) throws(SwiftXPC.XPCMarshalError) -> Self {
       let rawValue = try \(rawType).unmarshal(from: object)
       guard let value = Self(rawValue: rawValue) else {
         throw SwiftXPC.XPCMarshalError.unknownEnumCase(

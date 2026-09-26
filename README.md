@@ -8,8 +8,43 @@ Two products ship from this package:
 
 | Product | Contents |
 |---|---|
-| `SwiftXPC` | Swift wrapper vocabulary for the XPC C API: `XPCObject`/`XPCArray`/`XPCDictionary`, the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
+| `SwiftXPC` | Swift vocabulary over Apple's XPC: the `XPCDictionary`/`XPCArray` containers (re-exported from Apple's `XPC` module, extended with reply, endpoint, and element accessors), `xpc_object_t` as the marshal currency behind the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
 | `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCApp` `@main`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
+
+## Raw handles and Sendability
+
+The public currency at every API boundary is the raw `xpc_object_t` handle —
+the same type Apple's `XPC` module exposes — with no library-owned wrapper
+type. This is deliberate:
+
+- **Interop is zero-cost.** Handles move between SwiftXPC, Apple APIs, and
+  libxpc's C entry points without conversion.
+- **Single vocabulary.** There is no second handle type to pick between at
+  call sites.
+
+`xpc_object_t` is deliberately *not* `Sendable` (Apple's overlay leaves it
+that way: `xpc_dictionary` objects are mutable after creation, so a blanket
+assertion would be false in general). The asymmetry you might want —
+"`Sendable` inside the library, strict outside" — is not expressible in
+Swift: conformance declarations cannot be scoped (an `internal`/`package`
+refinement would still be globally visible), and retroactively refining a
+foreign *protocol* to `Sendable` is a compile error (`extension of protocol
+'OS_xpc_object' cannot declare inheritance relationship`; verified against
+the macOS 27 SDK). The package crosses isolation boundaries internally
+through a package-private unchecked-`Sendable` box, asserted at each
+crossing site.
+
+If your code needs to carry a handle across an isolation boundary, assert
+the same thing locally — libxpc objects are safe to use from any thread:
+
+```swift
+struct SendableHandle: @unchecked Sendable {
+  let raw: xpc_object_t
+}
+```
+
+Equality, hashing, and description are available as free functions:
+`xpc_equal`/`xpc_hash` (C API) and `SwiftXPC.xpcCopyDescription(_:)`.
 
 ## Requirements
 

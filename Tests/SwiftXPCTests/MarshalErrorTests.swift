@@ -24,14 +24,14 @@ import XPC
 
 @Test func DecodeUnknownEnumCase() throws {
   var dict = SwiftXPC.XPCDictionary()
-  dict["case"] = XPCObject(xpc_object: xpc_string_create("bogus"))
+  dict["case"] = xpc_string_create("bogus")
   #expect(throws: XPCMarshalError.self) {
     let _: JobState = try JobState.unmarshal(from: dict.marshal())
   }
 }
 
 @Test func DecodeNullForNonOptionalType() throws {
-  let nullObj = XPCObject(xpc_object: xpc_null_create())
+  let nullObj = xpc_null_create()
   #expect(throws: XPCMarshalError.self) {
     let _: String = try String.unmarshal(from: nullObj)
   }

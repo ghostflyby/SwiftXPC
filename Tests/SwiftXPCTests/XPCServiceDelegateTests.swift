@@ -88,8 +88,8 @@ struct XPCServiceDelegateTests {
     let host = XPCServiceHost(XPCServiceConfiguration())
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object.xpc_object))
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object))
     }
     listener.activate()
     let client = try XPCConnection.unmarshal(from: listener.marshal())
@@ -123,8 +123,8 @@ struct XPCServiceDelegateTests {
 
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object.xpc_object))
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object))
     }
     listener.activate()
 
@@ -264,8 +264,8 @@ struct XPCServiceDelegateTests {
     // The throw must reject through didRejectPeer — not trap and not accept.
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object.xpc_object))
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      host.accept(XPCConnection(xpc_object: object))
     }
     listener.activate()
 

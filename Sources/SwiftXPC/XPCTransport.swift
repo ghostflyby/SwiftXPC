@@ -171,20 +171,21 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
   /// Creates an anonymous acceptor.
   public init() {
     listener = XPCConnection(name: nil)
+    installListenerHandler()
   }
 
   /// Creates a launchd-named acceptor serving `serviceName`
   /// (a `MachServices` entry in the job's launchd configuration).
   public init(serviceName: String) {
     listener = XPCConnection(name: serviceName)
+    installListenerHandler()
   }
 
-  public var wireEndpoint: xpc_object_t {
-    xpc_endpoint_create(listener.xpc_object)
-  }
-
-  public func setAcceptHandler(_ handler: @escaping @Sendable (any XPCMessageChannel) -> Void) {
-    state.handler.withLock { $0 = handler }
+  /// libxpc traps with `_xpc_api_misuse` ("Activation of a connection
+  /// without an event handler.") when a connection is activated before an
+  /// event handler was installed, so the handler is installed eagerly here
+  /// and `setAcceptHandler` only swaps the boxed closure.
+  private func installListenerHandler() {
     listener.setEventHandler { [state] object in
       let peer = XPCConnection(xpc_object: object)
       guard peer.isConnectionObject else {
@@ -193,6 +194,14 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
       guard let handler = state.handler.withLock({ $0 }) else { return }
       handler(peer)
     }
+  }
+
+  public var wireEndpoint: xpc_object_t {
+    xpc_endpoint_create(listener.xpc_object)
+  }
+
+  public func setAcceptHandler(_ handler: @escaping @Sendable (any XPCMessageChannel) -> Void) {
+    state.handler.withLock { $0 = handler }
   }
 
   public func activate() {
@@ -206,6 +215,18 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
   }
 
   public func cancel() {
+    listener.cancel()
+  }
+
+  /// libxpc requires a connection to reach the activated+cancelled state
+  /// before its last reference is released: dropping a live connection traps
+  /// at _xpc_connection_last_xref_cancel, and so does dropping an
+  /// unactivated one (probed on macOS 26). XPCConnection.activate()
+  /// installs a handler if none was set, so activating here is safe.
+  deinit {
+    if !activated.withLock({ $0 }) {
+      listener.activate()
+    }
     listener.cancel()
   }
 }

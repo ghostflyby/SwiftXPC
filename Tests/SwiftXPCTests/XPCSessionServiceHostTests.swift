@@ -53,7 +53,7 @@ import Testing
   /// session down ("Underlying connection interrupted", then "canceled
   /// session"). Requires a focused session-handshake investigation — see the
   /// dual-transport PR notes.
-  @Test(.disabled("session teardown after fire-and-forget dial message — under investigation"))
+  @Test
   func HostAcceptsEchoesAndShutsDownCooperatively() async throws {
     let host = XPCSessionServiceHost()
     let shutdown = ShutdownBox()
@@ -69,7 +69,7 @@ import Testing
         if XPCDictionary(message.payload)["wake"] != nil { return }
         var response = XPCDictionary()
         response["echo"] = XPCDictionary(message.payload)["ping", as: xpc_object_t.self]
-        channel.sendAndForget(response.xpcObject)
+        message.reply(response.xpcObject)
       }
     }
     host.setShutdownCompletion { shutdown.fire() }

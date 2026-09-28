@@ -105,8 +105,11 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
       return true
     }
     guard first else { return }
+    manualCancel.withLock { $0 = true }
     session.withLock { $0 }?.cancel(reason: "channel canceled")
   }
+
+  private let manualCancel = Mutex(false)
 
   /// Session channels carry no peer validation: a non-nil requirement fails
   /// closed with `ENOTSUP`, so privileged services never run unvalidated.
@@ -119,7 +122,21 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   }
 
   public func sendAndForget(_ message: xpc_object_t) {
-    session.withLock { $0 }?.send(message: XPCDictionary(message), replyHandler: { _ in })
+    guard let current = session.withLock({ $0 }) else { return }
+    // The replyHandler overload registers a reply expectation: when the peer's
+    // handler returns no reply, the runtime tears the session down
+    // ("Underlying connection interrupted" then "canceled session"). Use the
+    // true fire-and-forget overload.
+    do {
+      try current.send(message: XPCDictionary(message))
+    } catch {
+      let rich = error as? XPCRichError
+      if rich?.canRetry ?? true {
+        interruption.withLock { $0 }?()
+      } else {
+        invalidation.withLock { $0 }?()
+      }
+    }
   }
 
   public func send(_ message: xpc_object_t, replyQueue: DispatchQueue?) async throws
@@ -148,7 +165,10 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
       guard let self else { return }
       // A retryable loss maps to the interruption chain; everything else
       // (manual cancel, terminal invalidation) is terminal for a session.
-      if error.canRetry {
+      if self.manualCancel.withLock({ $0 }) {
+        // A channel-initiated cancel is terminal by construction.
+        self.invalidation.withLock { $0 }?()
+      } else if error.canRetry {
         self.interruption.withLock { $0 }?()
       } else {
         self.invalidation.withLock { $0 }?()

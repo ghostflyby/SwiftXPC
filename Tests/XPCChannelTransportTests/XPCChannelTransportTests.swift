@@ -38,9 +38,7 @@ struct XPCBackendPair: CustomStringConvertible, Sendable {
 /// process's very first XPC activation — while byte-identical code in a
 /// standalone binary works. The session backend passes everywhere. Scenario
 /// inventory is complete; re-enable by removing the trait.
-@Suite(
-  .serialized,
-  .disabled("XPCConnectionAcceptor.activate traps under package test-bundle config — see PR #10"))
+@Suite(.serialized)
 struct XPCChannelTransportTests {
 
   private final class MessageBox: @unchecked Sendable {
@@ -71,17 +69,22 @@ struct XPCChannelTransportTests {
     Dictionary(uniqueKeysWithValues: XPCChannelTransport.allCases.map { ($0, $0.makeAcceptor()) })
 
   private func acceptor(for transport: XPCChannelTransport) -> any XPCChannelAcceptor {
-    Self.sharedAcceptors[transport]!
+    transport.makeAcceptor()  // fresh per test: no shared-listener churn
   }
 
   /// Sets up `transport`'s acceptor with an echo-over-reply-sink handler and
   /// activates it. Returns the acceptor.
+  /// Session-backend delivered channels are RAII owners of their session:
+  /// dropping one cancels the session. Retain what we deliver to handlers.
+  private static let retainedChannels = Mutex<[any XPCMessageChannel]>([])
+
   private func makeEchoAcceptor(
     _ transport: XPCChannelTransport,
     incoming: MessageBox? = nil
   ) -> any XPCChannelAcceptor {
     let acceptor = acceptor(for: transport)
     acceptor.setAcceptHandler { channel in
+      Self.retainedChannels.withLock { $0.append(channel) }
       channel.setIncomingHandler { message in
         incoming?.store(message.payload)
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.02) {
@@ -98,8 +101,7 @@ struct XPCChannelTransportTests {
 
   @Test(arguments: XPCBackendPair.all)
   func RoundTripThroughDeferredReplySink(pair: XPCBackendPair) async throws {
-    let acceptor = acceptor(for: pair.server)
-    acceptor.activate()
+    let acceptor = makeEchoAcceptor(pair.server)
     let client = try pair.client.channel(dialing: acceptor.wireEndpoint)
     client.activate()
 
@@ -115,6 +117,7 @@ struct XPCChannelTransportTests {
     let incoming = MessageBox()
     let acceptor = acceptor(for: pair.server)
     acceptor.setAcceptHandler { channel in
+      Self.retainedChannels.withLock { $0.append(channel) }
       channel.setIncomingHandler { message in
         incoming.store(message.payload)
         // Replying to a fire-and-forget message is dropped by the transport
@@ -189,6 +192,7 @@ struct XPCChannelTransportTests {
     let invalidated = DispatchSemaphore(value: 0)
     let acceptor = acceptor(for: pair.server)
     acceptor.setAcceptHandler { channel in
+      Self.retainedChannels.withLock { $0.append(channel) }
       channel.activate()
     }
     acceptor.activate()
@@ -196,8 +200,10 @@ struct XPCChannelTransportTests {
     let client = try pair.client.channel(dialing: acceptor.wireEndpoint)
     client.setIncomingHandler { _ in }
     // Manual cancel is terminal: route to the invalidation chain.
+    client.addInvalidationHandler { print("NOTE | client invalidated") }
     client.addInvalidationHandler { invalidated.signal() }
     client.addInterruptionHandler {
+      print("NOTE | client interruption fired")
       Issue.record("interruption chain must not fire on cancel")
     }
     client.activate()

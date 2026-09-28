@@ -334,6 +334,14 @@ extension XPCConnection {
 
 extension XPCConnection {
   public func activate() {
+    // libxpc traps (_xpc_api_misuse, "Activation of a connection without an
+    // event handler.") when a connection is activated before any event
+    // handler was installed. Install the routing handler eagerly; a later
+    // setEventHandler replaces it with no state loss (both capture the same
+    // handler-state box).
+    xpc_connection_set_event_handler(xpc_object) { [state = _handlerState] object in
+      state.route(object)
+    }
     xpc_connection_activate(xpc_object)
   }
 

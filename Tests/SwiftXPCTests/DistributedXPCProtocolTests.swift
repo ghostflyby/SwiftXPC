@@ -24,8 +24,8 @@ import Testing
   #expect(decoded.actorID == message.actorID)
   #expect(decoded.target == message.target)
   #expect(decoded.arguments.count == 2)
-  #expect(try Int.unmarshal(from: decoded.arguments[0]) == 42)
-  #expect(try String.unmarshal(from: decoded.arguments[1]) == "hello")
+  #expect(try Int.unmarshal(from: decoded.arguments[0, as: xpc_object_t.self]!) == 42)
+  #expect(try String.unmarshal(from: decoded.arguments[1, as: xpc_object_t.self]!) == "hello")
 }
 
 @Test func ReplyEnvelopeRoundTripWithPayload() throws {

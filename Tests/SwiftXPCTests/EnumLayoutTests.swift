@@ -7,25 +7,25 @@ import XPC
 
 @Test func EnumLayoutNoPayload() async throws {
   let encoded = try JobState.idle.marshal()
-  let object = encoded.xpc_object
+  let object = encoded
   let type = xpc_get_type(object)
   #expect(type == XPC_TYPE_ARRAY)
   #expect(xpc_array_get_count(object) == 1)
 
   let casePtr = xpc_array_get_value(object, 0)
-  let caseName = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: casePtr))
+  let caseName = try String.unmarshal(from: casePtr)
   #expect(caseName == "idle")
 }
 
 @Test func EnumLayoutWithPayload() async throws {
   let encoded = try JobState.compound(title: "retry", retries: 3).marshal()
-  let object = encoded.xpc_object
+  let object = encoded
   let type = xpc_get_type(object)
   #expect(type == XPC_TYPE_ARRAY)
   #expect(xpc_array_get_count(object) == 2)
 
   let casePtr = xpc_array_get_value(object, 0)
-  let caseName = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: casePtr))
+  let caseName = try String.unmarshal(from: casePtr)
   #expect(caseName == "compound")
 
   let payloadPtr = xpc_array_get_value(object, 1)
@@ -34,40 +34,40 @@ import XPC
   #expect(xpc_array_get_count(payloadPtr) == 2)
 
   let titlePtr = xpc_array_get_value(payloadPtr, 0)
-  let title = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: titlePtr))
+  let title = try String.unmarshal(from: titlePtr)
   #expect(title == "retry")
 
   let retriesPtr = xpc_array_get_value(payloadPtr, 1)
-  let retries = try Int.unmarshal(from: SwiftXPC.XPCObject(xpc_object: retriesPtr))
+  let retries = try Int.unmarshal(from: retriesPtr)
   #expect(retries == 3)
 }
 
 @Test func EnumLayoutUnlabeledPayload() async throws {
   let encoded = try JobState.tuple("pair", 2).marshal()
-  let object = encoded.xpc_object
+  let object = encoded
   let type = xpc_get_type(object)
   #expect(type == XPC_TYPE_ARRAY)
   #expect(xpc_array_get_count(object) == 3)
 
   let casePtr = xpc_array_get_value(object, 0)
-  let caseName = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: casePtr))
+  let caseName = try String.unmarshal(from: casePtr)
   #expect(caseName == "tuple")
 
   let firstPtr = xpc_array_get_value(object, 1)
-  let first = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: firstPtr))
+  let first = try String.unmarshal(from: firstPtr)
   #expect(first == "pair")
 
   let secondPtr = xpc_array_get_value(object, 2)
-  let second = try Int.unmarshal(from: SwiftXPC.XPCObject(xpc_object: secondPtr))
+  let second = try Int.unmarshal(from: secondPtr)
   #expect(second == 2)
 }
 
 @Test func RawEnumLayout() async throws {
   let encoded = try RawMode.on.marshal()
-  let object = encoded.xpc_object
+  let object = encoded
   let type = xpc_get_type(object)
   #expect(type == XPC_TYPE_STRING)
 
-  let value = try String.unmarshal(from: SwiftXPC.XPCObject(xpc_object: object))
+  let value = try String.unmarshal(from: object)
   #expect(value == "on")
 }

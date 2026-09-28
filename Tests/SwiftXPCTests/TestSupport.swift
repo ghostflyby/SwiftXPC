@@ -93,8 +93,8 @@ final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
     let listener = XPCConnection(name: nil)
     let server = XPCServiceHost(rootType, delegate, eventLog: eventLog)
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      server.accept(XPCConnection(xpc_object: object.xpc_object))
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      server.accept(XPCConnection(xpc_object: object))
     }
     listener.activate()
 

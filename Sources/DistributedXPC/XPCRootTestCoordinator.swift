@@ -101,8 +101,8 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     let listener = XPCConnection(name: nil)
     let serverPeer = ServerPeerBox()
     listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      let peer = XPCConnection(xpc_object: object.xpc_object)
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      let peer = XPCConnection(xpc_object: object)
       serverPeer.peer.withLock { $0 = peer }
       host.accept(peer)
     }

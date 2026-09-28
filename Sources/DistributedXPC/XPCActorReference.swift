@@ -10,7 +10,7 @@ import XPC
 struct XPCActorReferenceWire {
   let version: UInt64
   let actorID: XPCActorID
-  let endpoint: XPCObject
+  let endpoint: SendableXPCObject
 }
 
 /// A distributed actor that can cross process boundaries as an XPC actor
@@ -23,20 +23,20 @@ where ActorSystem == XPCDistributedActorSystem, ID == XPCActorID {}
 extension XPCExportableActor {
   /// Exports this local actor as a self-contained XPC actor reference:
   /// `{ version, actorID, endpoint }` on a freshly minted channel.
-  public nonisolated func marshal() throws(XPCMarshalError) -> XPCObject {
+  public nonisolated func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try actorSystem.export(self)
   }
 
   /// Imports an actor reference by dialing the embedded endpoint and resolving
   /// the actor against the fresh channel, yielding a remote proxy.
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let reference = try XPCActorReferenceWire.unmarshal(from: object)
     guard reference.version == XPCWireProtocol.currentVersion else {
       throw .unsupportedProtocolVersion(
         expected: XPCWireProtocol.currentVersion, actual: reference.version)
     }
 
-    let connection = try XPCConnection.unmarshal(from: reference.endpoint)
+    let connection = try XPCConnection.unmarshal(from: reference.endpoint.raw)
     let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
     // Remember the wire so this proxy can be forwarded later: re-exporting
     // re-emits the stored endpoint, giving the next receiver its own direct
@@ -56,9 +56,9 @@ extension XPCExportableActor {
 /// forwarded to other processes without involving its owning process.
 struct StoredActorReference: Sendable {
   let actorID: XPCActorID
-  let endpoint: XPCObject
+  let endpoint: SendableXPCObject
 
-  init(actorID: XPCActorID, endpoint: XPCObject) {
+  init(actorID: XPCActorID, endpoint: SendableXPCObject) {
     self.actorID = actorID
     self.endpoint = endpoint
   }
@@ -165,7 +165,7 @@ final class PeerBox: Sendable {
 }
 
 extension XPCDistributedActorSystem {
-  func export<Act>(_ actor: Act) throws(XPCMarshalError) -> XPCObject
+  func export<Act>(_ actor: Act) throws(XPCMarshalError) -> xpc_object_t
   where Act: XPCExportableActor {
     let isLocal = activeActorsLock.withLock { actors in
       guard let registered = actors[actor.id] as? Act else { return false }
@@ -203,7 +203,7 @@ extension XPCDistributedActorSystem {
     return try mintExportSession(for: actor)
   }
 
-  private func mintExportSession<Act>(for actor: Act) throws(XPCMarshalError) -> XPCObject
+  private func mintExportSession<Act>(for actor: Act) throws(XPCMarshalError) -> xpc_object_t
   where Act: XPCExportableActor {
     let listener = XPCConnection(name: nil)
     let sessionID = UUID()
@@ -215,8 +215,8 @@ extension XPCDistributedActorSystem {
       onDrained: { [weak self] in self?.exportSessionDrained(actorID) }
     )
     listener.setEventHandler { [weak self, weak actor, weak session] object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      let peer = XPCConnection(xpc_object: object.xpc_object)
+      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+      let peer = XPCConnection(xpc_object: object)
       // A forwarded reference is consumed once per receiver, so the listener
       // serves every peer. Rejections never touch the session: the peer's
       // invalidation handler is installed only after a successful accept.
@@ -255,7 +255,7 @@ extension XPCDistributedActorSystem {
       let reference = XPCActorReferenceWire(
         version: XPCWireProtocol.currentVersion,
         actorID: actor.id,
-        endpoint: try listener.marshal()
+        endpoint: SendableXPCObject(try listener.marshal())
       )
       return try reference.marshal()
     } catch {

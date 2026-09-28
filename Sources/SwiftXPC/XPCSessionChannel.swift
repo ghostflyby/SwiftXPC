@@ -54,6 +54,9 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     session = Mutex(nil)
   }
 
+  /// - Important: invoke during the accept callback only — after the accept
+  ///   decision returned, installing handlers traps
+  ///   (`xpc_session_set_cancel_handler` misuse).
   package init(accepted session: XPCSession) {
     source = .accepted(session)
     self.session = Mutex(session)

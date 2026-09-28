@@ -254,8 +254,16 @@ public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable 
   }
 
   public func activate() {
+    let first = activatedFlag.withLock { current -> Bool in
+      if current { return false }
+      current = true
+      return true
+    }
+    guard first else { return }
     try? listener.activate()
   }
+
+  private let activatedFlag = Mutex(false)
 
   public func cancel() {
     listener.cancel()

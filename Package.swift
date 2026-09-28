@@ -61,5 +61,12 @@ let package = Package(
       name: "SwiftXPCTests",
       dependencies: ["SwiftXPC", "DistributedXPC", "SwiftXPCMacros"]
     ),
+    // Own test process: the parameterized backend-matrix suite churns many
+    // anonymous listeners, and each test bundle runs in a fresh process with
+    // its own launchd listener budget.
+    .testTarget(
+      name: "XPCChannelTransportTests",
+      dependencies: ["SwiftXPC"]
+    ),
   ]
 )

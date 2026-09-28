@@ -5,7 +5,7 @@ import Synchronization
 import XPC
 
 /// The transport backend that carries a channel.
-public enum XPCChannelTransport: Sendable {
+public enum XPCChannelTransport: CaseIterable, Sendable {
   /// The C-API connection backend (`XPCConnection`): full feature set —
   /// peer validation, bundled-service hosting, peer identity, transactions.
   case cConnection
@@ -18,6 +18,24 @@ public enum XPCChannelTransport: Sendable {
     switch self {
     case .cConnection: return XPCConnection(name: serviceName)
     case .session: return XPCSessionChannel(machServiceName: serviceName)
+    }
+  }
+
+  /// Creates this transport's anonymous channel acceptor.
+  public func makeAcceptor() -> any XPCChannelAcceptor {
+    switch self {
+    case .cConnection: return XPCConnectionAcceptor()
+    case .session: return try! XPCListenerAcceptor()
+    }
+  }
+
+  /// Dials `endpoint` (a `wireEndpoint` token, `XPC_TYPE_ENDPOINT`) over this
+  /// transport. Endpoints are backend-agnostic: either transport can dial an
+  /// endpoint minted by the other.
+  public func channel(dialing endpoint: xpc_object_t) throws -> any XPCMessageChannel {
+    switch self {
+    case .cConnection: return try XPCConnection.unmarshal(from: endpoint)
+    case .session: return XPCSessionChannel(dialing: XPCEndpoint(endpoint))
     }
   }
 }
@@ -148,6 +166,7 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
 
   private let listener: XPCConnection
   private let state = AcceptHandlerBox()
+  private let activated = Mutex(false)
 
   /// Creates an anonymous acceptor.
   public init() {
@@ -177,6 +196,12 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
   }
 
   public func activate() {
+    let first = activated.withLock { current -> Bool in
+      if current { return false }
+      current = true
+      return true
+    }
+    guard first else { return }
     listener.activate()
   }
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
-import SwiftXPC
+@testable import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
@@ -152,7 +152,8 @@ private func makeSystem() -> XPCDistributedActorSystem {
     arguments: arguments
   )
 
-  try await system.handleIncomingMessage(try message.marshal(), on: actor)
+  let incoming = XPCIncomingMessage(payload: try message.marshal(), replyer: { _ in })
+  try await system.handleIncomingMessage(incoming, on: actor)
 }
 
 @Test func HandleIncomingMessageEncodesDispatchErrors() async throws {
@@ -166,7 +167,8 @@ private func makeSystem() -> XPCDistributedActorSystem {
     arguments: XPCArray()
   )
 
-  try await system.handleIncomingMessage(try message.marshal(), on: actor)
+  let incoming = XPCIncomingMessage(payload: try message.marshal(), replyer: { _ in })
+  try await system.handleIncomingMessage(incoming, on: actor)
 }
 
 @Test func DispatchInvocationRejectsWrongArgumentType() async throws {

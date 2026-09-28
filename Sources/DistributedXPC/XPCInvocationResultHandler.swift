@@ -11,16 +11,6 @@ public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandl
     self.sendEnvelope = sendEnvelope
   }
 
-  init(received: SwiftXPC.XPCDictionary) {
-    self.sendEnvelope = { envelope in
-      guard var reply = XPCDictionary(replyTo: received),
-        let connection = received.remoteConnection
-      else { return }
-      try envelope.write(to: &reply)
-      connection.sendAndForget(message: reply)
-    }
-  }
-
   func send(_ envelope: XPCReplyEnvelope) throws { try sendEnvelope(envelope) }
 
   public func onReturn<Success: SerializationRequirement>(value: Success) async throws {

@@ -105,6 +105,16 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     session.withLock { $0 }?.cancel(reason: "channel canceled")
   }
 
+  /// Session channels carry no peer validation: a non-nil requirement fails
+  /// closed with `ENOTSUP`, so privileged services never run unvalidated.
+  public func applyPeerCodeSigningRequirement(
+    _ requirement: String?
+  ) throws(XPCPeerRequirementError) {
+    if requirement != nil {
+      throw XPCPeerRequirementError(status: ENOTSUP)
+    }
+  }
+
   public func sendAndForget(_ message: xpc_object_t) {
     session.withLock { $0 }?.send(message: XPCDictionary(message), replyHandler: { _ in })
   }

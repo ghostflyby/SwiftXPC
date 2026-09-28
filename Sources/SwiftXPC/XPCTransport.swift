@@ -4,6 +4,33 @@ import Foundation
 import Synchronization
 import XPC
 
+/// The transport backend that carries a channel.
+public enum XPCChannelTransport: Sendable {
+  /// The C-API connection backend (`XPCConnection`): full feature set —
+  /// peer validation, bundled-service hosting, peer identity, transactions.
+  case cConnection
+  /// Apple's `XPCSession` backend: non-privileged scenarios only (no peer
+  /// validation below macOS 26, no bundled-`.xpc` hosting, no peer identity).
+  case session
+
+  /// Dials a launchd-advertised mach service over this transport.
+  public func channel(toService serviceName: String) throws -> any XPCMessageChannel {
+    switch self {
+    case .cConnection: return XPCConnection(name: serviceName)
+    case .session: return XPCSessionChannel(machServiceName: serviceName)
+    }
+  }
+}
+
+/// A peer code signing requirement install failure (errno-style `status`,
+/// e.g. `ENOTSUP` on backends without peer validation support).
+public struct XPCPeerRequirementError: Error, Sendable {
+  public let status: Int32
+  public init(status: Int32) {
+    self.status = status
+  }
+}
+
 /// Transport-level failure model shared by every channel backend.
 ///
 /// `XPCConnection.ConnectionError` remains the C backend's native error type;
@@ -77,6 +104,11 @@ public protocol XPCMessageChannel: Sendable {
   /// - Returns: The reply payload (a dictionary).
   func send(_ message: xpc_object_t, replyQueue: DispatchQueue?) async throws
     -> xpc_object_t
+
+  /// Installs a kernel-enforced peer code signing requirement on a
+  /// not-yet-activated channel. No-op for nil; backends without peer
+  /// validation throw for non-nil requirements (fail-closed).
+  func applyPeerCodeSigningRequirement(_ requirement: String?) throws(XPCPeerRequirementError)
 }
 
 /// A listener that mints dialable endpoint tokens and delivers accepted
@@ -153,19 +185,34 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
   }
 }
 
+extension XPCConnection {
+  public func applyPeerCodeSigningRequirement(
+    _ requirement: String?
+  ) throws(XPCPeerRequirementError) {
+    guard let requirement else { return }
+    try setPeerCodeSigningRequirement(requirement)
+  }
+}
+
 extension XPCConnection: XPCMessageChannel {
   public func setIncomingHandler(_ handler: @escaping @Sendable (XPCIncomingMessage) -> Void) {
     setEventHandler { object in
       guard xpc_get_type(object) == XPC_TYPE_DICTIONARY else { return }
-      let received = XPCDictionary(object)
+      // libxpc handles are thread-safe: the box carries the raw handle
+      // across the reply closure's isolation boundary.
+      let box = SendableXPCObject(object)
       handler(
         XPCIncomingMessage(
-          payload: object,
+          payload: box.raw,
           replyer: { replyPayload in
-            guard let reply = XPCDictionary(replyTo: received),
+            let received = XPCDictionary(box.raw)
+            guard var reply = XPCDictionary(replyTo: XPCDictionary(box.raw)),
               let remote = received.remoteConnection
-            else {
-              return
+            else { return }
+            // create_reply only binds the destination; merge the envelope
+            // payload keys into it before sending.
+            XPCDictionary(replyPayload).forEach { key, value in
+              reply[key] = value
             }
             remote.sendAndForget(message: reply)
           }))

@@ -390,15 +390,11 @@ extension XPCConnection {
 
 extension XPCConnection {
   /// The reason a peer requirement could not be installed on this connection.
-  public struct PeerRequirementError: Error, Sendable {
-    /// The raw status returned by XPC (errno-style, e.g. `ENOTSUP` on
-    /// platforms without code signing requirement support).
-    public let status: Int32
-  }
+  public typealias PeerRequirementError = XPCPeerRequirementError
 
   private func checkPeerRequirementStatus(
     _ status: Int32
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     if status != 0 {
       throw PeerRequirementError(status: status)
     }

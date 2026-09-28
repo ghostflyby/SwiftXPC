@@ -38,7 +38,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// pin. Enabled only on the service host system; per-session systems
   /// reclaim through their own invalidation cascade instead.
   private let allowsChildReclamation: Bool
-  public let connection: XPCConnection
+  public let connection: any XPCMessageChannel
 
   private static let _serviceHost: XPCDistributedActorSystem = {
     let connection = XPCConnection(name: nil)
@@ -62,11 +62,14 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// exported or imported actor's own channel.
   public static var serviceHost: XPCDistributedActorSystem { _serviceHost }
 
-  public convenience init(connection: XPCConnection) {
+  public convenience init(connection: any XPCMessageChannel) {
     self.init(connection: connection, ownsConnection: false)
   }
 
-  init(connection: XPCConnection, ownsConnection: Bool, allowsChildReclamation: Bool = false) {
+  init(
+    connection: any XPCMessageChannel, ownsConnection: Bool,
+    allowsChildReclamation: Bool = false
+  ) {
     self.connection = connection
     self.ownsConnection = ownsConnection
     self.allowsChildReclamation = allowsChildReclamation
@@ -292,7 +295,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// lifecycle error objects here (there is no actor to dispatch messages to);
   /// channels serving an actor overwrite this handler via `bind`.
   func installEventHandler() {
-    connection.setEventHandler { _ in }
+    // Unbound systems only ever see lifecycle events (there is no actor to
+    // dispatch messages to); channels serving an actor overwrite this
+    // handler via `bind`.
+    connection.setIncomingHandler { _ in }
   }
 
   private func runIncomingHandler(_ operation: @escaping @Sendable () async throws -> Void) {
@@ -304,13 +310,12 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     done.wait()
   }
 
-  func bind<Act>(_ connection: XPCConnection, to actor: Act)
+  func bind<Act>(_ connection: any XPCMessageChannel, to actor: Act)
   where Act: DistributedActor, Act.ID == ActorID {
-    connection.setEventHandler { [weak self, weak actor] object in
+    connection.setIncomingHandler { [weak self, weak actor] message in
       guard let self, let actor else { return }
-      let object = SendableXPCObject(object)
       self.runIncomingHandler {
-        try await self.handleIncomingMessage(object.raw, on: actor)
+        try await self.handleIncomingMessage(message, on: actor)
       }
     }
   }
@@ -371,12 +376,13 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       .thrownErrorType
   }
 
-  func handleIncomingMessage<Act>(_ object: xpc_object_t, on actor: Act) async throws
+  func handleIncomingMessage<Act>(_ message: XPCIncomingMessage, on actor: Act) async throws
   where Act: DistributedActor, Act.ID == ActorID {
-    let received = try XPCDictionary.unmarshal(from: object)
-    let resultHandler = XPCInvocationResultHandler(received: received)
+    let resultHandler = XPCInvocationResultHandler { envelope in
+      message.reply(try envelope.marshal())
+    }
     do {
-      let invocation = try XPCInvocationMessage.unmarshal(from: object)
+      let invocation = try XPCInvocationMessage.unmarshal(from: message.payload)
       let envelope = try await dispatchInvocation(invocation, on: actor)
       try resultHandler.send(envelope)
     } catch let error as any ErrorXPCMarshal {
@@ -434,7 +440,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
     let xpcDict = XPCDictionary(payload)
-    let result = try await connection.send(message: xpcDict)
+    let result = try await connection.send(xpcDict.xpcObject, replyQueue: nil)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
     return try decodeRemoteCallReply(
       envelope, for: Act.self, target: target, method: method,
@@ -455,7 +461,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
     let xpcDict = XPCDictionary(payload)
-    let result = try await connection.send(message: xpcDict)
+    let result = try await connection.send(xpcDict.xpcObject, replyQueue: nil)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
     try decodeRemoteCallVoidReply(
       envelope, for: Act.self, target: target, method: method, throwing: errorType)

@@ -201,8 +201,27 @@ public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable 
   /// nil.
   public init(service: String?) throws {
     let handlerBox = AcceptHandlerBox()
-    let makeAcceptClosure = {
-      (req: XPCListener.IncomingSessionRequest) -> XPCListener.IncomingSessionRequest.Decision in
+    if let service {
+      listener = try XPCListener(
+        service: service, targetQueue: nil, options: [.inactive],
+        incomingSessionHandler: Self.makeAcceptClosure(handlerBox))
+    } else {
+      listener = XPCListener(
+        targetQueue: nil, options: [.inactive],
+        incomingSessionHandler: Self.makeAcceptClosure(handlerBox))
+    }
+    acceptHandlerBox = handlerBox
+  }
+
+  private final class AcceptHandlerBox: Sendable {
+    let handler = Mutex<(@Sendable (any XPCMessageChannel) -> Void)?>(nil)
+  }
+
+  private static func makeAcceptClosure(
+    _ handlerBox: AcceptHandlerBox
+  ) -> @Sendable (XPCListener.IncomingSessionRequest) -> XPCListener.IncomingSessionRequest.Decision
+  {
+    { req in
       let (decision, session) = req.accept(
         incomingMessageHandler: { (_: XPCDictionary) -> XPCDictionary? in return nil },
         cancellationHandler: nil)
@@ -214,20 +233,6 @@ public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable 
       }
       return decision
     }
-    if let service {
-      listener = try XPCListener(
-        service: service, targetQueue: nil, options: [.inactive],
-        incomingSessionHandler: makeAcceptClosure)
-    } else {
-      listener = XPCListener(
-        targetQueue: nil, options: [.inactive],
-        incomingSessionHandler: makeAcceptClosure)
-    }
-    acceptHandlerBox = handlerBox
-  }
-
-  private final class AcceptHandlerBox: Sendable {
-    let handler = Mutex<(@Sendable (any XPCMessageChannel) -> Void)?>(nil)
   }
 
   private let acceptHandlerBox: AcceptHandlerBox

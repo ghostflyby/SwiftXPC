@@ -33,6 +33,10 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   private let activated = Mutex(false)
   private let cancelled = Mutex(false)
 
+  deinit {
+    cancel()
+  }
+
   /// Creates a channel dialing `endpoint` (for example the wire endpoint of
   /// an `XPCListenerAcceptor`).
   public init(dialing endpoint: XPCEndpoint, targetQueue: DispatchQueue? = nil) {
@@ -127,6 +131,16 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   }
 
   private func installSessionHandler(_ session: XPCSession) {
+    session.setCancellationHandler { [weak self] error in
+      guard let self else { return }
+      // A retryable loss maps to the interruption chain; everything else
+      // (manual cancel, terminal invalidation) is terminal for a session.
+      if error.canRetry {
+        self.interruption.withLock { $0 }?()
+      } else {
+        self.invalidation.withLock { $0 }?()
+      }
+    }
     session.setIncomingMessageHandler { [incoming] payload in
       let message = XPCIncomingMessage(
         payload: payload.xpcObject,
@@ -204,6 +218,14 @@ public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable 
   }
 
   private let acceptHandlerBox: AcceptHandlerBox
+
+  /// An activated listener traps on deallocation in two ways: dealloc while
+  /// active, and dispose-after-cancel racing a pending accept delivery. The
+  /// object is tiny — retain it permanently so it never deallocates.
+  deinit {
+    listener.cancel()
+    _ = Unmanaged.passRetained(listener)
+  }
 
   public var wireEndpoint: xpc_object_t {
     listener.endpoint._endpoint

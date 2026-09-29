@@ -241,7 +241,11 @@ extension XPCDistributedActorSystem {
       self.bind(peer, to: actor)
       peer.activate()
     }
-    acceptor.activate()
+    do {
+      try acceptor.activate()
+    } catch {
+      throw XPCMarshalError.actorResolutionFailed(String(describing: error))
+    }
 
     let registered = invalidated.withLock { invalidated in
       guard !invalidated else { return false }

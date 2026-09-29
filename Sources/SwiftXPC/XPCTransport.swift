@@ -13,22 +13,6 @@ public enum XPCChannelTransport: CaseIterable, Sendable {
   /// validation below macOS 26, no bundled-`.xpc` hosting, no peer identity).
   case session
 
-  /// Dials a launchd-advertised mach service over this transport.
-  public func channel(toService serviceName: String) throws -> any XPCMessageChannel {
-    switch self {
-    case .cConnection: return XPCConnection(name: serviceName)
-    case .session: return XPCSessionChannel(machServiceName: serviceName)
-    }
-  }
-
-  /// Creates this transport's anonymous channel acceptor.
-  public func makeAcceptor() -> any XPCChannelAcceptor {
-    switch self {
-    case .cConnection: return XPCConnectionAcceptor()
-    case .session: return try! XPCListenerAcceptor()
-    }
-  }
-
   /// Dials `endpoint` (a `wireEndpoint` token, `XPC_TYPE_ENDPOINT`) over this
   /// transport. Endpoints are backend-agnostic: either transport can dial an
   /// endpoint minted by the other.
@@ -147,7 +131,7 @@ public protocol XPCChannelAcceptor: AnyObject, Sendable {
   /// backend-specific; see the conforming type's documentation.
   func setAcceptHandler(_ handler: @escaping @Sendable (Channel) -> Void)
 
-  func activate()
+  func activate() throws
   func cancel()
 }
 
@@ -163,13 +147,13 @@ public struct XPCExportAcceptorBox: Sendable {
     ) -> Void
 
   public let setAcceptHandler: AcceptHandler
-  public let activate: @Sendable () -> Void
+  public let activate: @Sendable () throws -> Void
   public let cancel: @Sendable () -> Void
 
   public init(
     wireEndpoint: xpc_object_t,
     setAcceptHandler: @escaping AcceptHandler,
-    activate: @escaping @Sendable () -> Void,
+    activate: @escaping @Sendable () throws -> Void,
     cancel: @escaping @Sendable () -> Void
   ) {
     self.wireEndpoint = wireEndpoint
@@ -185,7 +169,7 @@ extension XPCConnectionAcceptor {
     XPCExportAcceptorBox(
       wireEndpoint: wireEndpoint,
       setAcceptHandler: { [self] handler in setAcceptHandler { handler($0) } },
-      activate: { [self] in activate() },
+      activate: { [self] in try activate() },
       cancel: { [self] in cancel() })
   }
 }
@@ -196,7 +180,7 @@ extension XPCListenerAcceptor {
     XPCExportAcceptorBox(
       wireEndpoint: wireEndpoint,
       setAcceptHandler: { [self] handler in setAcceptHandler { handler($0) } },
-      activate: { [self] in activate() },
+      activate: { [self] in try activate() },
       cancel: { [self] in cancel() })
   }
 }
@@ -232,9 +216,10 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
   }
 
   /// Creates a launchd-named acceptor serving `serviceName`
-  /// (a `MachServices` entry in the job's launchd configuration).
+  /// (a `MachServices` entry in the job's launchd configuration): a
+  /// *listener* connection, not a client dial to that service.
   public init(serviceName: String) {
-    listener = XPCConnection(name: serviceName)
+    listener = XPCConnection(machServiceName: serviceName, options: [.listener])
     installListenerHandler()
   }
 
@@ -264,7 +249,7 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
   /// Startup contract: the listener event handler is installed at
   /// initialization, so `activate()` may be called any time after
   /// `setAcceptHandler`. Idempotent.
-  public func activate() {
+  public func activate() throws {
     let first = activated.withLock { current -> Bool in
       if current { return false }
       current = true

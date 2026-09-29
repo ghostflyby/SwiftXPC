@@ -57,7 +57,12 @@ public final class XPCSessionServiceHost: Sendable {
 
   /// Admits an accepted channel: runs the peer handler, registers the
   /// channel, and activates it. Throw from the peer handler to decline.
+  /// Channels arriving after a shutdown are declined.
   public func accept(_ channel: any XPCMessageChannel) {
+    guard !shutdownRequested.withLock({ $0 }) else {
+      channel.cancel()
+      return
+    }
     do {
       try peerHandler.withLock({ $0 })?(channel)
     } catch {
@@ -67,18 +72,14 @@ public final class XPCSessionServiceHost: Sendable {
     let id = UUID()
     channels.withLock { channels in
       channels[id] = channel
+      // peerDidEnd fires when the channel actually ends, not on accept.
       channel.addInvalidationHandler { [weak self] in
         guard let self else { return }
         _ = self.channels.withLock { $0.removeValue(forKey: id) }
-        self.didEnd(channel)
+        self.peerDidEndHook.withLock { $0 }?(channel)
       }
     }
-    didEnd(channel)
     channel.activate()
-  }
-
-  private func didEnd(_ channel: any XPCMessageChannel) {
-    peerDidEndHook.withLock { $0 }?(channel)
   }
 
   private let peerDidEndHook = Mutex<(@Sendable (any XPCMessageChannel) -> Void)?>(nil)
@@ -86,6 +87,14 @@ public final class XPCSessionServiceHost: Sendable {
   /// Registers the `peerDidEnd` notification hook.
   public func onPeerDidEnd(_ handler: @escaping @Sendable (any XPCMessageChannel) -> Void) {
     peerDidEndHook.withLock { $0 = handler }
+  }
+
+  private let willShutdownHook = Mutex<(@Sendable () -> Void)?>(nil)
+
+  /// Registers the `serviceWillShutdown` hook, run before channels are
+  /// cancelled by `requestShutdown()`.
+  public func onServiceWillShutdown(_ handler: @escaping @Sendable () -> Void) {
+    willShutdownHook.withLock { $0 = handler }
   }
 
   /// Cooperatively shuts down: cancels every accepted channel and runs the
@@ -97,6 +106,7 @@ public final class XPCSessionServiceHost: Sendable {
       return true
     }
     guard first else { return }
+    willShutdownHook.withLock { $0 }?()
     let channels = self.channels.withLock { channels -> [any XPCMessageChannel] in
       let values = Array(channels.values)
       channels.removeAll()
@@ -113,6 +123,10 @@ extension XPCSessionServiceHost {
   /// `Root.shared` under `XPCActorID.root`, mirroring the C host's
   /// `XPCServiceHost(rootType, delegate)` integration. Actor-initiated
   /// `requestServiceShutdown()` routes to `requestShutdown()`.
+  /// - Note: actor-reference *export* from a session-hosted service still
+  ///   mints C-backend listeners today (`makeExportAcceptor` default); the
+  ///   import path dials with `XPCConnection.unmarshal`. End-to-end session
+  ///   export/import wiring is a follow-up.
   public func serve<Root: XPCRootActor>(_ rootType: Root.Type) {
     setPeerHandler { [weak self] channel in
       let serviceHost = XPCDistributedActorSystem.serviceHost
@@ -144,19 +158,28 @@ public func xpcSessionMain<Root: XPCRootActor>(
 ) -> Never {
   let host = XPCSessionServiceHost()
   host.serve(rootType)
+  host.onPeerDidEnd { delegate.peerDidEnd($0) }
+  host.onServiceWillShutdown { delegate.serviceWillShutdown() }
   host.setShutdownCompletion { exit(0) }
   delegate.serviceWillStart(host: host)
+  let acceptor: XPCListenerAcceptor
   do {
-    let acceptor = try XPCListenerAcceptor(service: service)
-    acceptor.setAcceptHandler { channel in
-      if delegate.shouldAcceptPeer(channel) {
-        host.accept(channel)
-        delegate.didAcceptPeer(channel)
-      } else {
-        channel.cancel()
-      }
+    acceptor = try XPCListenerAcceptor(service: service)
+  } catch {
+    FileHandle.standardError.write(
+      Data("xpcSessionMain: cannot create listener for \(service): \(error)\n".utf8))
+    exit(1)
+  }
+  acceptor.setAcceptHandler { channel in
+    if delegate.shouldAcceptPeer(channel) {
+      host.accept(channel)
+      delegate.didAcceptPeer(channel)
+    } else {
+      channel.cancel()
     }
-    acceptor.activate()
+  }
+  do {
+    try acceptor.activate()
   } catch {
     FileHandle.standardError.write(
       Data("xpcSessionMain: cannot activate listener for \(service): \(error)\n".utf8))

@@ -25,13 +25,75 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     case dialed(() throws -> XPCSession)
   }
 
-  private let session: Mutex<XPCSession?>
+  private struct Control {
+    var activated = false
+    var cancelled = false
+    var session: XPCSession?
+  }
+
+  /// Chained lifecycle handlers, mirroring `XPCConnection`'s semantics:
+  /// registrations chain (previous runs first), invalidation is delivered
+  /// exactly once, and a handler registered after invalidation runs
+  /// immediately. Handlers are cleared on delivery so captured references
+  /// (including channels) do not form permanent retain cycles.
+  private final class LifecycleBox: Sendable {
+    private struct State {
+      var invalidation: (@Sendable () -> Void)?
+      var interruption: (@Sendable () -> Void)?
+      var invalidationDelivered = false
+    }
+
+    private let state = Mutex(State())
+
+    /// Registers `handler`; returns true when invalidation already happened
+    /// and the caller must invoke it now.
+    func addInvalidation(_ handler: @escaping @Sendable () -> Void) -> Bool {
+      state.withLock { state in
+        if state.invalidationDelivered { return true }
+        let previous = state.invalidation
+        state.invalidation = {
+          previous?()
+          handler()
+        }
+        return false
+      }
+    }
+
+    func addInterruption(_ handler: @escaping @Sendable () -> Void) {
+      state.withLock { state in
+        let previous = state.interruption
+        state.interruption = {
+          previous?()
+          handler()
+        }
+      }
+    }
+
+    /// Marks invalidation delivered and returns the chained handler to run
+    /// (already cleared from storage).
+    func takeInvalidation() -> @Sendable () -> Void {
+      state.withLock { state in
+        state.invalidationDelivered = true
+        let handler = state.invalidation
+        state.invalidation = nil
+        state.interruption = nil
+        return handler ?? {}
+      }
+    }
+
+    func takeInterruption() -> @Sendable () -> Void {
+      state.withLock { state in
+        let handler = state.interruption
+        state.interruption = nil
+        return handler ?? {}
+      }
+    }
+  }
+
+  private let control = Mutex(Control())
   private let source: Session
   private let incoming = IncomingBox()
-  private let invalidation = Mutex<(@Sendable () -> Void)?>(nil)
-  private let interruption = Mutex<(@Sendable () -> Void)?>(nil)
-  private let activated = Mutex(false)
-  private let cancelled = Mutex(false)
+  private let lifecycle = LifecycleBox()
 
   deinit {
     cancel()
@@ -43,7 +105,7 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     source = .dialed({
       try XPCSession(endpoint: endpoint, targetQueue: targetQueue, options: [.inactive])
     })
-    session = Mutex(nil)
+    control.withLock { $0.session = nil }
   }
 
   /// Creates a channel dialing a launchd-advertised mach service.
@@ -51,7 +113,7 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     source = .dialed({
       try XPCSession(machService: machServiceName, targetQueue: targetQueue, options: [.inactive])
     })
-    session = Mutex(nil)
+    control.withLock { $0.session = nil }
   }
 
   /// - Important: invoke during the accept callback only — after the accept
@@ -59,7 +121,7 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   ///   (`xpc_session_set_cancel_handler` misuse).
   package init(accepted session: XPCSession) {
     source = .accepted(session)
-    self.session = Mutex(session)
+    control.withLock { $0.session = session }
     installSessionHandler(session)
   }
 
@@ -69,47 +131,54 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   }
 
   public func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
-    invalidation.withLock { $0 = handler }
+    if lifecycle.addInvalidation(handler) {
+      handler()
+    }
   }
 
   public func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
-    interruption.withLock { $0 = handler }
+    lifecycle.addInterruption(handler)
   }
 
   public func activate() {
-    let already = activated.withLock { current -> Bool in
-      if current { return true }
-      current = true
-      return false
-    }
-    guard !already else { return }
-    switch source {
-    case .accepted:
-      break  // accepted sessions are live once the accept decision returned
-    case .dialed(let make):
-      do {
-        let dialed = try make()
-        installSessionHandler(dialed)
-        session.withLock { $0 = dialed }
-        try dialed.activate()
-      } catch {
-        invalidation.withLock { $0 }?()
+    var dialFailed = false
+    control.withLock { st in
+      // A cancelled channel never dials, and a cancel racing this activation
+      // cannot slip between dial and store: both run under the same lock, so
+      // the session always has an owner that will cancel it.
+      guard !st.activated, !st.cancelled else { return }
+      st.activated = true
+      switch source {
+      case .accepted:
+        break  // accepted sessions are live once the accept decision returned
+      case .dialed(let make):
+        do {
+          let dialed = try make()
+          installSessionHandler(dialed)
+          st.session = dialed
+          try dialed.activate()
+        } catch {
+          // A session whose activation failed is auto-cancelled by the
+          // runtime; terminal for this channel.
+          st.session = nil
+          st.cancelled = true
+          dialFailed = true
+        }
       }
+    }
+    if dialFailed {
+      lifecycle.takeInvalidation()()
     }
   }
 
   public func cancel() {
-    let first = cancelled.withLock { current -> Bool in
-      if current { return false }
-      current = true
-      return true
+    let session = control.withLock { st -> XPCSession? in
+      if st.cancelled { return nil }
+      st.cancelled = true
+      return st.session
     }
-    guard first else { return }
-    manualCancel.withLock { $0 = true }
-    session.withLock { $0 }?.cancel(reason: "channel canceled")
+    session?.cancel(reason: "channel canceled")
   }
-
-  private let manualCancel = Mutex(false)
 
   /// Session channels carry no peer validation: a non-nil requirement fails
   /// closed with `ENOTSUP`, so privileged services never run unvalidated.
@@ -122,7 +191,7 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   }
 
   public func sendAndForget(_ message: xpc_object_t) {
-    guard let current = session.withLock({ $0 }) else { return }
+    guard let current = control.withLock({ $0.session }) else { return }
     // The replyHandler overload registers a reply expectation: when the peer's
     // handler returns no reply, the runtime tears the session down
     // ("Underlying connection interrupted" then "canceled session"). Use the
@@ -130,19 +199,23 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     do {
       try current.send(message: XPCDictionary(message))
     } catch {
-      let rich = error as? XPCRichError
-      if rich?.canRetry ?? true {
-        interruption.withLock { $0 }?()
-      } else {
-        invalidation.withLock { $0 }?()
-      }
+      routeSendFailure(error)
+    }
+  }
+
+  private func routeSendFailure(_ error: any Error) {
+    let rich = error as? XPCRichError
+    if rich?.canRetry ?? true {
+      lifecycle.takeInterruption()()
+    } else {
+      lifecycle.takeInvalidation()()
     }
   }
 
   public func send(_ message: xpc_object_t, replyQueue: DispatchQueue?) async throws
     -> xpc_object_t
   {
-    let current = session.withLock { $0 }
+    let current = control.withLock { $0.session }
     guard let current else {
       throw XPCChannelError.invalid
     }
@@ -165,13 +238,10 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
       guard let self else { return }
       // A retryable loss maps to the interruption chain; everything else
       // (manual cancel, terminal invalidation) is terminal for a session.
-      if self.manualCancel.withLock({ $0 }) {
-        // A channel-initiated cancel is terminal by construction.
-        self.invalidation.withLock { $0 }?()
-      } else if error.canRetry {
-        self.interruption.withLock { $0 }?()
+      if error.canRetry {
+        self.lifecycle.takeInterruption()()
       } else {
-        self.invalidation.withLock { $0 }?()
+        self.lifecycle.takeInvalidation()()
       }
     }
     session.setIncomingMessageHandler { [incoming] payload in
@@ -280,14 +350,14 @@ public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable 
     acceptHandlerBox.handler.withLock { $0 = handler }
   }
 
-  public func activate() {
+  public func activate() throws {
     let first = activatedFlag.withLock { current -> Bool in
       if current { return false }
       current = true
       return true
     }
     guard first else { return }
-    try? listener.activate()
+    try listener.activate()
   }
 
   private let activatedFlag = Mutex(false)

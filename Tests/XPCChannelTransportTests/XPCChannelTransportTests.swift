@@ -74,7 +74,9 @@ struct XPCChannelTransportTests {
   ) async throws {
     let acceptor = try makeAcceptor()
     let incoming = MessageBox()
+    let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
+      retained.withLock { $0 = channel }
       channel.setIncomingHandler { message in
         incoming.store(message.payload)
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.02) {
@@ -85,7 +87,7 @@ struct XPCChannelTransportTests {
       }
       channel.activate()
     }
-    acceptor.activate()
+    try acceptor.activate()
 
     let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
     client.activate()
@@ -104,7 +106,9 @@ struct XPCChannelTransportTests {
   ) throws {
     let acceptor = try makeAcceptor()
     let incoming = MessageBox()
+    let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
+      retained.withLock { $0 = channel }
       channel.setIncomingHandler { message in
         incoming.store(message.payload)
         // Replying to a fire-and-forget message is dropped by the transport
@@ -116,7 +120,7 @@ struct XPCChannelTransportTests {
       }
       channel.activate()
     }
-    acceptor.activate()
+    try acceptor.activate()
 
     let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
     client.activate()
@@ -138,7 +142,7 @@ struct XPCChannelTransportTests {
   ) async throws {
     let acceptor = try makeAcceptor()
     let incoming = MessageBox()
-    let pushed = MessageBox()
+    let pushedByClient = MessageBox()
     let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
       retained.withLock { $0 = channel }
@@ -147,9 +151,8 @@ struct XPCChannelTransportTests {
       }
       channel.activate()
     }
-    acceptor.activate()
+    try acceptor.activate()
 
-    let pushedByClient = MessageBox()
     let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
     client.setIncomingHandler { message in
       pushedByClient.store(message.payload)
@@ -169,9 +172,10 @@ struct XPCChannelTransportTests {
     var push = XPCDictionary()
     push["pushed"] = true
     serverChannel.sendAndForget(push.xpcObject)
-    let got = pushed.wait(5)
-    #expect(got != nil)
-    #expect(XPCDictionary(got!)["pushed"] == true)
+    let got = pushedByClient.wait(5)
+    let pushedDecoded = got.map { XPCDictionary($0) }
+    #expect(pushedDecoded != nil)
+    #expect(pushedDecoded?["pushed"] == true)
     client.cancel()
     acceptor.cancel()
   }
@@ -182,10 +186,12 @@ struct XPCChannelTransportTests {
   ) throws {
     let invalidated = DispatchSemaphore(value: 0)
     let acceptor = try makeAcceptor()
+    let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
+      retained.withLock { $0 = channel }
       channel.activate()
     }
-    acceptor.activate()
+    try acceptor.activate()
 
     let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
     client.setIncomingHandler { _ in }

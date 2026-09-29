@@ -76,12 +76,11 @@ import Testing
 
     let acceptor = try XPCListenerAcceptor()
     acceptor.setAcceptHandler { channel in
-      print("NOTE | accept handler: storing+host.accept")
       accepted.store(channel)
       host.accept(channel)
       acceptedFlag.withLock { $0 = true }
     }
-    acceptor.activate()
+    try acceptor.activate()
 
     let client = XPCSessionChannel(dialing: acceptor.listenerEndpoint)
     client.setIncomingHandler { _ in }

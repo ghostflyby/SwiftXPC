@@ -208,6 +208,8 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
 /// the accept handler only after the accept decision returned — sending from
 /// inside the accept callback would trap.
 public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable {
+  /// The session backend delivers accepted peers as session channels.
+  public typealias Channel = XPCSessionChannel
 
   private let listener: XPCListener
 
@@ -234,7 +236,7 @@ public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable 
   }
 
   private final class AcceptHandlerBox: Sendable {
-    let handler = Mutex<(@Sendable (any XPCMessageChannel) -> Void)?>(nil)
+    let handler = Mutex<(@Sendable (XPCSessionChannel) -> Void)?>(nil)
   }
 
   private static func makeAcceptClosure(
@@ -274,7 +276,7 @@ public final class XPCListenerAcceptor: XPCChannelAcceptor, @unchecked Sendable 
     listener.endpoint
   }
 
-  public func setAcceptHandler(_ handler: @escaping @Sendable (any XPCMessageChannel) -> Void) {
+  public func setAcceptHandler(_ handler: @escaping @Sendable (XPCSessionChannel) -> Void) {
     acceptHandlerBox.handler.withLock { $0 = handler }
   }
 

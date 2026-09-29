@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Synchronization
-import XPC
+@preconcurrency import XPC
 
 /// The transport backend that carries a channel.
 public enum XPCChannelTransport: CaseIterable, Sendable {
@@ -135,17 +135,70 @@ public protocol XPCMessageChannel: Sendable {
 /// The `wireEndpoint` is the wire token embedded in payloads (for example the
 /// actor-reference format); it is an `XPC_TYPE_ENDPOINT` object, so endpoints
 /// minted by one backend can be dialed by the other.
-public protocol XPCChannelAcceptor: Sendable {
+public protocol XPCChannelAcceptor: AnyObject, Sendable {
+  /// The channel type delivered by this acceptor.
+  associatedtype Channel: XPCMessageChannel
+
   /// The dialable endpoint token for this acceptor.
   var wireEndpoint: xpc_object_t { get }
 
-  /// Installs the handler invoked for every accepted channel. Delivered
-  /// channels require configuration and `activate()`; see the concrete
-  /// backend for its activation window.
-  func setAcceptHandler(_ handler: @escaping @Sendable (any XPCMessageChannel) -> Void)
+  /// Installs the handler invoked for every accepted channel. The delivered
+  /// channel type and the configuration/activation window are
+  /// backend-specific; see the conforming type's documentation.
+  func setAcceptHandler(_ handler: @escaping @Sendable (Channel) -> Void)
 
   func activate()
   func cancel()
+}
+
+/// Transport-neutral acceptor seam for consumers that must stay
+/// backend-agnostic (for example the actor-reference export path): the
+/// operations an export needs from any acceptor, injected as closures so
+/// backends keep their native listener levels.
+public struct XPCExportAcceptorBox: Sendable {
+  public let wireEndpoint: xpc_object_t
+  public typealias AcceptHandler =
+    @Sendable (
+      _ handler: @escaping @Sendable (any XPCMessageChannel) -> Void
+    ) -> Void
+
+  public let setAcceptHandler: AcceptHandler
+  public let activate: @Sendable () -> Void
+  public let cancel: @Sendable () -> Void
+
+  public init(
+    wireEndpoint: xpc_object_t,
+    setAcceptHandler: @escaping AcceptHandler,
+    activate: @escaping @Sendable () -> Void,
+    cancel: @escaping @Sendable () -> Void
+  ) {
+    self.wireEndpoint = wireEndpoint
+    self.setAcceptHandler = setAcceptHandler
+    self.activate = activate
+    self.cancel = cancel
+  }
+}
+
+extension XPCConnectionAcceptor {
+  /// The transport-neutral seam over this acceptor.
+  public var exportBox: XPCExportAcceptorBox {
+    XPCExportAcceptorBox(
+      wireEndpoint: wireEndpoint,
+      setAcceptHandler: { [self] handler in setAcceptHandler { handler($0) } },
+      activate: { [self] in activate() },
+      cancel: { [self] in cancel() })
+  }
+}
+
+extension XPCListenerAcceptor {
+  /// The transport-neutral seam over this acceptor.
+  public var exportBox: XPCExportAcceptorBox {
+    XPCExportAcceptorBox(
+      wireEndpoint: wireEndpoint,
+      setAcceptHandler: { [self] handler in setAcceptHandler { handler($0) } },
+      activate: { [self] in activate() },
+      cancel: { [self] in cancel() })
+  }
 }
 
 // MARK: - C backend
@@ -158,10 +211,14 @@ public protocol XPCChannelAcceptor: Sendable {
 /// contract). Listener-level error events are dropped; peer validation is the
 /// acceptor consumer's responsibility on the delivered channel.
 public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendable {
+  /// The C backend delivers accepted peers as C connections: the peer channel
+  /// type of this acceptor.
+  public typealias Channel = XPCConnection
+
   /// Reference-type storage so the accept handler can be swapped from any
   /// queue after the listener's event handler captured it.
   private final class AcceptHandlerBox: Sendable {
-    let handler: Mutex<(@Sendable (any XPCMessageChannel) -> Void)?> = Mutex(nil)
+    let handler: Mutex<(@Sendable (XPCConnection) -> Void)?> = Mutex(nil)
   }
 
   private let listener: XPCConnection
@@ -200,10 +257,13 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
     xpc_endpoint_create(listener.xpc_object)
   }
 
-  public func setAcceptHandler(_ handler: @escaping @Sendable (any XPCMessageChannel) -> Void) {
+  public func setAcceptHandler(_ handler: @escaping @Sendable (XPCConnection) -> Void) {
     state.handler.withLock { $0 = handler }
   }
 
+  /// Startup contract: the listener event handler is installed at
+  /// initialization, so `activate()` may be called any time after
+  /// `setAcceptHandler`. Idempotent.
   public func activate() {
     let first = activated.withLock { current -> Bool in
       if current { return false }

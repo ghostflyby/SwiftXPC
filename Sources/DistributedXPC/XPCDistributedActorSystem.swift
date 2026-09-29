@@ -38,6 +38,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// pin. Enabled only on the service host system; per-session systems
   /// reclaim through their own invalidation cascade instead.
   private let allowsChildReclamation: Bool
+  /// Backend seam for actor-reference export: each exported actor mints a
+  /// fresh acceptor (anonymous listener) through this factory. Defaults to
+  /// the C backend; session-backed export requires the session factory.
+  package let makeExportAcceptor: @Sendable () throws -> XPCExportAcceptorBox
   public let connection: any XPCMessageChannel
 
   private static let _serviceHost: XPCDistributedActorSystem = {
@@ -68,11 +72,15 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
 
   init(
     connection: any XPCMessageChannel, ownsConnection: Bool,
-    allowsChildReclamation: Bool = false
+    allowsChildReclamation: Bool = false,
+    makeExportAcceptor: @escaping @Sendable () throws -> XPCExportAcceptorBox = {
+      XPCConnectionAcceptor().exportBox
+    }
   ) {
     self.connection = connection
     self.ownsConnection = ownsConnection
     self.allowsChildReclamation = allowsChildReclamation
+    self.makeExportAcceptor = makeExportAcceptor
     self.connection.addInvalidationHandler { [weak self] in
       self?.invalidate()
     }

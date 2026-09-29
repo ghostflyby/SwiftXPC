@@ -74,7 +74,7 @@ struct StoredActorReference: Sendable {
 final class XPCActorExportSession: Sendable {
   let id: UUID
   let actorID: XPCActorID
-  let listener: XPCConnection
+  let acceptor: XPCExportAcceptorBox
   /// Invoked when the session transitions to zero live peers. Never invoked
   /// from `cancel()`.
   let onDrained: @Sendable () -> Void
@@ -88,12 +88,12 @@ final class XPCActorExportSession: Sendable {
   init(
     id: UUID,
     actorID: XPCActorID,
-    listener: XPCConnection,
+    acceptor: XPCExportAcceptorBox,
     onDrained: @escaping @Sendable () -> Void
   ) {
     self.id = id
     self.actorID = actorID
-    self.listener = listener
+    self.acceptor = acceptor
     self.onDrained = onDrained
   }
 
@@ -143,7 +143,7 @@ final class XPCActorExportSession: Sendable {
       return peers
     }
     for peer in peers { peer.connection.cancel() }
-    listener.cancel()
+    acceptor.cancel()
   }
 }
 
@@ -155,9 +155,9 @@ final class XPCActorExportSession: Sendable {
 /// Cancelling an already-dead connection is a no-op.
 final class PeerBox: Sendable {
   let id = UUID()
-  let connection: XPCConnection
+  let connection: any XPCMessageChannel
 
-  init(_ connection: XPCConnection) {
+  init(_ connection: any XPCMessageChannel) {
     self.connection = connection
   }
 
@@ -205,30 +205,31 @@ extension XPCDistributedActorSystem {
 
   private func mintExportSession<Act>(for actor: Act) throws(XPCMarshalError) -> xpc_object_t
   where Act: XPCExportableActor {
-    let listener = XPCConnection(name: nil)
+    let acceptor: XPCExportAcceptorBox
+    do {
+      acceptor = try makeExportAcceptor()
+    } catch {
+      throw XPCMarshalError.actorResolutionFailed(String(describing: error))
+    }
     let sessionID = UUID()
     let actorID = actor.id
     let session = XPCActorExportSession(
       id: sessionID,
       actorID: actorID,
-      listener: listener,
+      acceptor: acceptor,
       onDrained: { [weak self] in self?.exportSessionDrained(actorID) }
     )
-    listener.setEventHandler { [weak self, weak actor, weak session] object in
-      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
-      let peer = XPCConnection(xpc_object: object)
+    acceptor.setAcceptHandler { [weak self, weak actor, weak session] peer in
       // A forwarded reference is consumed once per receiver, so the listener
       // serves every peer. Rejections never touch the session: the peer's
       // invalidation handler is installed only after a successful accept.
       guard let self, let actor, let session else {
-        peer.setEventHandler { _ in }
         peer.activate()
         peer.cancel()
         return
       }
       let box = PeerBox(peer)
       guard session.accept(box) else {
-        peer.setEventHandler { _ in }
         peer.activate()
         peer.cancel()
         return
@@ -240,7 +241,7 @@ extension XPCDistributedActorSystem {
       self.bind(peer, to: actor)
       peer.activate()
     }
-    listener.activate()
+    acceptor.activate()
 
     let registered = invalidated.withLock { invalidated in
       guard !invalidated else { return false }
@@ -255,7 +256,7 @@ extension XPCDistributedActorSystem {
       let reference = XPCActorReferenceWire(
         version: XPCWireProtocol.currentVersion,
         actorID: actor.id,
-        endpoint: SendableXPCObject(try listener.marshal())
+        endpoint: SendableXPCObject(acceptor.wireEndpoint)
       )
       return try reference.marshal()
     } catch {

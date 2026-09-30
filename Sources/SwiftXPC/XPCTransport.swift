@@ -4,7 +4,11 @@ import Foundation
 import Synchronization
 @preconcurrency import XPC
 
-/// The transport backend that carries a channel.
+/// The transport backend that carries a channel — also the single
+/// selection point for entry paths that cannot take an explicit backend
+/// parameter: dialing and accepting factories live here, the process-wide
+/// default (`processDefault`) backs them, and endpoints are backend-agnostic
+/// so either backend can interoperate with the other.
 public enum XPCChannelTransport: CaseIterable, Sendable {
   /// The C-API connection backend (`XPCConnection`): full feature set —
   /// peer validation, bundled-service hosting, peer identity, transactions.
@@ -12,6 +16,19 @@ public enum XPCChannelTransport: CaseIterable, Sendable {
   /// Apple's `XPCSession` backend: non-privileged scenarios only (no peer
   /// validation below macOS 26, no bundled-`.xpc` hosting, no peer identity).
   case session
+
+  private static let _processDefault = Mutex(XPCChannelTransport.cConnection)
+
+  /// The process-wide default backend, read where no explicit backend can
+  /// be passed (actor-reference import decodes through a fixed
+  /// `unmarshal(from:)` signature) and used as the default of the
+  /// parameters that can. Set it before the first channel operation; later
+  /// changes only affect subsequent constructions. Defaults to the C
+  /// backend.
+  public static var processDefault: XPCChannelTransport {
+    get { _processDefault.withLock { $0 } }
+    set { _processDefault.withLock { $0 = newValue } }
+  }
 
   /// Dials `endpoint` (a `wireEndpoint` token, `XPC_TYPE_ENDPOINT`) over this
   /// transport. Endpoints are backend-agnostic: either transport can dial an

@@ -16,7 +16,7 @@ public func xpcSessionMain<Root: XPCRootActor>(
   _ rootType: Root.Type = Root.self,
   delegate: some XPCServiceDelegate = XPCServiceConfiguration()
 ) -> Never {
-  let server = XPCServiceHost(rootType, delegate)
+  let server = XPCServiceHost(rootType, delegate, transport: .session)
   // The hosted service *is* the process: retire it right after the
   // delegate's shutdown hook has run.
   server.setShutdownCompletion { exit(0) }

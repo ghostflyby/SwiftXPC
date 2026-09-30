@@ -36,8 +36,18 @@ extension XPCExportableActor {
         expected: XPCWireProtocol.currentVersion, actual: reference.version)
     }
 
-    let connection = try XPCConnection.unmarshal(from: reference.endpoint.raw)
-    let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
+    // The dialing backend is local policy: endpoints are backend-agnostic,
+    // so the process default applies even when the reference was minted by
+    // the other backend.
+    let transport = XPCChannelTransport.processDefault
+    let connection: any XPCMessageChannel
+    do {
+      connection = try transport.channel(dialing: reference.endpoint.raw)
+    } catch {
+      throw XPCMarshalError.actorResolutionFailed(String(describing: error))
+    }
+    let system = XPCDistributedActorSystem(
+      connection: connection, ownsConnection: true, transport: transport)
     // Remember the wire so this proxy can be forwarded later: re-exporting
     // re-emits the stored endpoint, giving the next receiver its own direct
     // channel to the owning process.
@@ -207,7 +217,7 @@ extension XPCDistributedActorSystem {
   where Act: XPCExportableActor {
     let acceptor: XPCChannelAcceptor
     do {
-      acceptor = try makeExportAcceptor()
+      acceptor = try transport.acceptor()
     } catch {
       throw XPCMarshalError.actorResolutionFailed(String(describing: error))
     }

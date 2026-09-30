@@ -38,10 +38,17 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// pin. Enabled only on the service host system; per-session systems
   /// reclaim through their own invalidation cascade instead.
   private let allowsChildReclamation: Bool
-  /// Backend seam for actor-reference export: each exported actor mints a
-  /// fresh acceptor (anonymous listener) through this factory. Defaults to
-  /// the C backend; session-backed export requires the session factory.
-  package let makeExportAcceptor: @Sendable () throws -> XPCChannelAcceptor
+  /// The backend each exported actor reference mints its listener over
+  /// (`transport.acceptor()`). Redirection is a process-hosting concern: the
+  /// service host singleton adopts the hosting entry point's backend at
+  /// first accept (`xpcSessionMain` sets `.session`) so exported references
+  /// ride the same backend that hosts the service — before the first
+  /// export, only.
+  private let exportTransport: Mutex<XPCChannelTransport>
+  /// The backend that mints export listeners for actors on this system.
+  public var transport: XPCChannelTransport {
+    exportTransport.withLock { $0 }
+  }
   public let connection: any XPCMessageChannel
 
   private static let _serviceHost: XPCDistributedActorSystem = {
@@ -51,7 +58,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     let system = XPCDistributedActorSystem(
       connection: connection,
       ownsConnection: true,
-      allowsChildReclamation: true)
+      allowsChildReclamation: true,
+      transport: .cConnection)
     // The singleton root is the first actor on the host: reserving `.root`
     // at creation makes its identity independent of when `shared` is first
     // materialized relative to the first accepted connection.
@@ -73,18 +81,23 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   init(
     connection: any XPCMessageChannel, ownsConnection: Bool,
     allowsChildReclamation: Bool = false,
-    makeExportAcceptor: @escaping @Sendable () throws -> XPCChannelAcceptor = {
-      try XPCChannelTransport.cConnection.acceptor()
-    }
+    transport: XPCChannelTransport = XPCChannelTransport.processDefault
   ) {
     self.connection = connection
     self.ownsConnection = ownsConnection
     self.allowsChildReclamation = allowsChildReclamation
-    self.makeExportAcceptor = makeExportAcceptor
+    self.exportTransport = Mutex(transport)
     self.connection.addInvalidationHandler { [weak self] in
       self?.invalidate()
     }
     installEventHandler()
+  }
+
+  /// Points this system's export listeners at another backend. Process
+  /// hosting only: the service host singleton adopts the hosting entry
+  /// point's backend at first accept. Must run before the first export.
+  func setExportTransport(_ transport: XPCChannelTransport) {
+    exportTransport.withLock { $0 = transport }
   }
 
   deinit {

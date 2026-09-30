@@ -108,11 +108,15 @@ extension XPCServiceHost {
   ///   - delegate: the connection-lifecycle customization; see
   ///     `XPCServiceDelegate` for the per-hook semantics. Defaults to a
   ///     plain `XPCServiceConfiguration`.
+  ///   - transport: the backend exported actor references mint their
+  ///     listeners over. Defaults to the C backend; session-hosted services
+  ///     (`xpcSessionMain`) pass `.session`.
   ///   - eventLog: when non-nil, the host records every delegate-hook
   ///     invocation into it, in invocation order.
   public convenience init<Root: XPCRootActor>(
     _ rootType: Root.Type = Root.self,
     _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
+    transport: XPCChannelTransport = .cConnection,
     eventLog: XPCServiceEventLog? = nil
   ) {
     self.init(delegate, eventLog: eventLog)
@@ -121,6 +125,8 @@ extension XPCServiceHost {
       // Reserve before the first `shared` access so lazy creation assigns
       // the reserved identity (one root actor type per process).
       serviceHost.reserveRootID()
+      // Exported references ride the backend that hosts this service.
+      serviceHost.setExportTransport(transport)
       // Actors of the singleton reach the cooperative shutdown path through
       // the host system; a weak reference avoids a server <-> system cycle.
       serviceHost.setServiceShutdownHandler { [weak self] in self?.requestShutdown() }

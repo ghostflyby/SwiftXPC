@@ -6,7 +6,11 @@ import XPC
 private let mainHandler = Mutex<@Sendable (XPCConnection) -> Void>({ _ in })
 
 private func handleIncomingConnection(_ connection: xpc_connection_t) {
-  mainHandler.withLock { $0 }(XPCConnection(xpc_object: connection))
+  let wrapped = XPCConnection(xpc_object: connection)
+  // xpc_main forwards listener-level error objects too; only real peer
+  // connections carry accept semantics.
+  guard wrapped.isConnectionObject else { return }
+  mainHandler.withLock { $0 }(wrapped)
 }
 
 /// Runs the XPC service event loop, invoking `handler` for every accepted

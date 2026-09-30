@@ -7,9 +7,11 @@ import DistributedXPC
 import SwiftXPC
 import Testing
 
-/// Integration tests for the slim session service host: acceptance, echo
-/// service over an accepted channel, and cooperative shutdown.
-@Suite struct XPCSessionServiceHostTests {
+/// Integration tests for the unified `XPCServiceHost` over the session
+/// backend: acceptance, an echo service over an accepted channel, and the
+/// cooperative shutdown pipeline — the same host semantics the C backend
+/// exercises in `XPCServiceDelegateTests`.
+@Suite struct XPCSessionHostTests {
 
   private final class ShutdownBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -49,22 +51,14 @@ import Testing
     }
   }
 
-  /// Disabled: the echo `send` after a fire-and-forget dial message tears the
-  /// session down ("Underlying connection interrupted", then "canceled
-  /// session"). Requires a focused session-handshake investigation — see the
-  /// dual-transport PR notes.
-  @Test
-  func HostAcceptsEchoesAndShutsDownCooperatively() async throws {
-    let host = XPCSessionServiceHost()
+  @Test func UnifiedHostAcceptsEchoesAndShutsDownCooperativelyOverSession() async throws {
+    let host = XPCServiceHost(XPCServiceConfiguration())
     let shutdown = ShutdownBox()
     let accepted = ChannelBox()
-    let acceptedFlag = Mutex(false)
 
     host.setPeerHandler { channel in
       // An echo "service": the peer handler installs the incoming routing.
       channel.setIncomingHandler { message in
-        print(
-          "NOTE | server recv keys=[\(XPCDictionary(message.payload).keys.joined(separator: ","))]")
         // The lazy-dial wake message is fire-and-forget: never reply to it.
         if XPCDictionary(message.payload)["wake"] != nil { return }
         var response = XPCDictionary()
@@ -78,7 +72,6 @@ import Testing
     acceptor.setAcceptHandler { channel in
       accepted.store(channel)
       host.accept(channel)
-      acceptedFlag.withLock { $0 = true }
     }
     try acceptor.activate()
 
@@ -90,21 +83,18 @@ import Testing
     wake["wake"] = true
     client.sendAndForget(wake.xpcObject)
 
-    // Wait for the host to accept and activate the server-side channel.
+    // Wait for the host to accept the server-side channel. Messages that
+    // raced the host's incoming-handler install are buffered by the channel
+    // and flushed once it runs, so the ordering is safe either way.
     guard let serverChannel = accepted.wait(5) else {
       Issue.record("host never accepted the channel")
       return
     }
-    _ = acceptedFlag
 
-    do {
-      var ping = XPCDictionary()
-      ping["ping"] = "hello"
-      let reply = try await client.send(ping.xpcObject, replyQueue: nil)
-      #expect(XPCDictionary(reply)["echo"] == "hello")
-    } catch {
-      Issue.record("send failed: \(error)")
-    }
+    var ping = XPCDictionary()
+    ping["ping"] = "hello"
+    let reply = try await client.send(ping.xpcObject, replyQueue: nil)
+    #expect(XPCDictionary(reply)["echo"] == "hello")
 
     // Cooperative shutdown: cancels accepted channels and fires completion.
     host.requestShutdown()

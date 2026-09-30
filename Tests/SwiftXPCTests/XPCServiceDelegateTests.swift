@@ -51,12 +51,12 @@ struct XPCServiceDelegateTests {
     let audits = Mutex<Int>(0)
     let accepted = Mutex<Int>(0)
 
-    func shouldAcceptPeer(_ connection: XPCConnection) throws -> Bool {
+    func shouldAcceptPeer(_ peer: XPCPeerContext) throws -> Bool {
       audits.withLock { $0 += 1 }
       return true
     }
 
-    func didAcceptPeer(_ connection: XPCConnection) {
+    func didAcceptPeer(_ peer: XPCPeerContext) {
       accepted.withLock { $0 += 1 }
     }
   }

@@ -243,14 +243,3 @@ extension XPCRootActor {
     return try Self.resolve(id: .root, using: system)
   }
 }
-
-extension XPCConnection {
-  /// Installs `requirement` on this connection when non-nil. Must run before
-  /// activation; an install failure propagates so callers can fail closed.
-  func applyPeerCodeSigningRequirement(
-    _ requirement: String?
-  ) throws(XPCConnection.PeerRequirementError) {
-    guard let requirement else { return }
-    try setPeerCodeSigningRequirement(requirement)
-  }
-}

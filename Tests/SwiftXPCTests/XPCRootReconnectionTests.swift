@@ -18,7 +18,7 @@ private final class AttemptCounter: Sendable {
       return value
     }
     if attempt <= failures {
-      throw XPCConnection.ConnectionError.invalid
+      throw XPCChannelError.invalid
     }
     return try await body(attempt)
   }
@@ -67,10 +67,10 @@ private final class AttemptCounter: Sendable {
   do {
     _ = try await handle.retrying(policy) { attempt in
       attempts.withLock { $0 += 1 }
-      throw XPCConnection.ConnectionError.invalid
+      throw XPCChannelError.invalid
     }
     Issue.record("Expected retry exhaustion")
-  } catch XPCConnection.ConnectionError.invalid {
+  } catch XPCChannelError.invalid {
     #expect(attempts.withLock { $0 } == 3)
   }
 }

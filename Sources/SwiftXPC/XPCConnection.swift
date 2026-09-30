@@ -269,24 +269,12 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
-  /// The reason an asynchronous send failed. A named service connection may
-  /// recover from `.interrupted` on a later send (launchd relaunches the
-  /// service); `.invalid` and `.peerCodeSigningRequirement` are terminal,
-  /// though retries may still cover brief cold-start or registration gaps.
-  public enum ConnectionError: Error, Sendable {
-    case invalid
-    case interrupted
-    /// The peer failed this connection's code signing requirement
-    /// (`XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT`); XPC delivers the error
-    /// through the reply path as well, so sends surface it here.
-    case peerCodeSigningRequirement
-  }
-
   public func sendAndForget(message: XPCDictionary) {
     xpc_connection_send_message(xpc_object, message.xpcObject)
   }
 
-  private static func connectionError(forReply raw: xpc_object_t) -> ConnectionError? {
+  /// Maps a reply-path error object to the backend-agnostic channel error.
+  private static func channelError(forReply raw: xpc_object_t) -> XPCChannelError? {
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
       return .invalid
     }
@@ -299,32 +287,42 @@ extension XPCConnection {
     return nil
   }
 
+  /// Sends `message` and awaits its reply. Suspending on a cancelled task
+  /// throws `CancellationError` without retracting the request: the reply,
+  /// when it eventually arrives, is dropped. Messages sent before
+  /// `activate()` are buffered by libxpc and issued on activation.
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
-    async throws(ConnectionError)
-    -> xpc_object_t
+    async throws -> xpc_object_t
   {
-    let boxed = await withCheckedContinuation { continuation in
-      xpc_connection_send_message_with_reply(
-        xpc_object,
-        message.xpcObject,
-        replyQueue,
-        { continuation.resume(returning: SendableXPCObject($0)) }
-      )
+    let sink = XPCSendSink()
+    let boxed = try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        sink.install(continuation)
+        xpc_connection_send_message_with_reply(
+          xpc_object,
+          message.xpcObject,
+          replyQueue,
+          { raw in
+            if let error = Self.channelError(forReply: raw) {
+              sink.finish(.failure(error))
+            } else {
+              sink.finish(.reply(SendableXPCObject(raw)))
+            }
+          })
+      }
+    } onCancel: {
+      sink.finish(.failure(CancellationError()))
     }
-    let r = boxed.raw
-    if let error = Self.connectionError(forReply: r) {
-      throw error
-    }
-    return r
+    return boxed.raw
   }
 
   @available(*, noasync)
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
-    throws(ConnectionError)
+    throws(XPCChannelError)
     -> xpc_object_t
   {
     let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpcObject)
-    if let error = Self.connectionError(forReply: r) {
+    if let error = Self.channelError(forReply: r) {
       throw error
     }
     return r

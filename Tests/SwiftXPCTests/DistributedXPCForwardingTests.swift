@@ -76,7 +76,7 @@ distributed actor ForwardRoot: XPCRootActor {
   do {
     _ = try await channel.client.send(message: XPCDictionary())
     Issue.record("Expected rejected peer send to fail")
-  } catch XPCConnection.ConnectionError.interrupted {
+  } catch XPCChannelError.interrupted {
     // expected: the server cancels rejected peers, which the client observes
     // as interruption rather than service invalidation.
   } catch {

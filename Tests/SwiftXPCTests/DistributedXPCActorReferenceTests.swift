@@ -127,7 +127,7 @@ distributed actor ChannelRoot: XPCRootActor {
 
   worker.actorSystem.connection.cancel()
 
-  await #expect(throws: XPCConnection.ConnectionError.invalid) {
+  await #expect(throws: XPCChannelError.invalid) {
     _ = try await worker.greet("closed")
   }
   #expect(try await root.ping() == "root")

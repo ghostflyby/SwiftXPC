@@ -6,8 +6,8 @@ import SwiftXPC
 import Synchronization
 
 /// How often and with which backoff a flaky transport operation is retried.
-/// Only infrastructure failures (`XPCConnection.ConnectionError`) are retried;
-/// errors thrown by the operation itself propagate immediately.
+/// Only infrastructure failures (`XPCChannelError`) are retried; errors
+/// thrown by the operation itself propagate immediately.
 public struct XPCRetryPolicy: Sendable {
   /// Total number of attempts, including the first one. Must be >= 1.
   public let maxAttempts: Int
@@ -149,7 +149,7 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   }
 
   /// Runs `operation` against the root actor, retrying only when the
-  /// infrastructure fails (`ConnectionError.invalid`/`.interrupted`), which
+  /// infrastructure fails (`XPCChannelError.invalid`/`.interrupted`), which
   /// covers a service restart in progress. Business errors propagate at once.
   public func retrying<T>(
     _ policy: XPCRetryPolicy = .resilient,
@@ -160,7 +160,7 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
       attempt += 1
       do {
         return try await operation(root)
-      } catch let error as XPCConnection.ConnectionError {
+      } catch let error as XPCChannelError {
         // Authentication failure is terminal, never a restart in progress.
         if case .peerCodeSigningRequirement = error { throw error }
         if attempt >= policy.maxAttempts { throw error }

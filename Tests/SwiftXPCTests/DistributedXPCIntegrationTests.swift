@@ -251,7 +251,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   do {
     _ = try await pair.client.send(message: XPCDictionary())
     Issue.record("Expected send on invalidated connection to throw")
-  } catch XPCConnection.ConnectionError.invalid {
+  } catch XPCChannelError.invalid {
     // expected
   } catch {
     Issue.record("Expected .invalid, got \(error)")

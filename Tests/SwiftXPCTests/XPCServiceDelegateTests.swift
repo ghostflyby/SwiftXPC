@@ -202,7 +202,7 @@ struct XPCServiceDelegateTests {
     // The watchdog closes the coordinator so a hung test fails fast:
     // pending calls observe the channel going down.
     await service.waitUntilClosed()
-    await #expect(throws: XPCConnection.ConnectionError.self) {
+    await #expect(throws: XPCChannelError.self) {
       _ = try await service.client.root.ping()
     }
   }

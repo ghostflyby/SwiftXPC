@@ -29,6 +29,22 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     var activated = false
     var cancelled = false
     var session: XPCSession?
+    /// Sends issued before `activate()`, issued once the session goes live
+    /// (the channel-level counterpart of libxpc's native pre-activation
+    /// buffering on the C backend).
+    var pendingSends: [PendingSend] = []
+  }
+
+  private enum PendingSend {
+    case forget(SendableXPCObject)
+    case reply(SendableXPCObject, XPCSendSink)
+  }
+
+  /// What a send should do, decided under the control lock.
+  private enum SendAction {
+    case drop
+    case buffered
+    case sendNow(XPCSession)
   }
 
   /// Chained lifecycle handlers, mirroring `XPCConnection`'s semantics:
@@ -142,6 +158,7 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
 
   public func activate() {
     var dialFailed = false
+    var toFlush: [PendingSend] = []
     control.withLock { st in
       // A cancelled channel never dials, and a cancel racing this activation
       // cannot slip between dial and store: both run under the same lock, so
@@ -150,13 +167,17 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
       st.activated = true
       switch source {
       case .accepted:
-        break  // accepted sessions are live once the accept decision returned
+        // accepted sessions are live once the accept decision returned
+        toFlush = st.pendingSends
+        st.pendingSends = []
       case .dialed(let make):
         do {
           let dialed = try make()
           installSessionHandler(dialed)
           st.session = dialed
           try dialed.activate()
+          toFlush = st.pendingSends
+          st.pendingSends = []
         } catch {
           // A session whose activation failed is auto-cancelled by the
           // runtime; terminal for this channel.
@@ -167,17 +188,76 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
       }
     }
     if dialFailed {
+      failPendingSends()
       lifecycle.takeInvalidation()()
+      return
     }
+    flushPendingSends(toFlush)
   }
 
   public func cancel() {
-    let session = control.withLock { st -> XPCSession? in
-      if st.cancelled { return nil }
+    let (session, pending) = control.withLock { st -> (XPCSession?, [PendingSend]) in
+      if st.cancelled { return (nil, []) }
       st.cancelled = true
-      return st.session
+      let pending = st.pendingSends
+      st.pendingSends = []
+      return (st.session, pending)
     }
     session?.cancel(reason: "channel canceled")
+    finishPending(pending)
+  }
+
+  /// Fails every still-buffered send with `.invalid` (the channel is
+  /// terminal; buffered sends can never be issued).
+  private func failPendingSends() {
+    finishPending(
+      control.withLock { st in
+        let pending = st.pendingSends
+        st.pendingSends = []
+        return pending
+      })
+  }
+
+  private func finishPending(_ pending: [PendingSend]) {
+    for send in pending {
+      if case .reply(_, let sink) = send {
+        sink.finish(.failure(XPCChannelError.invalid))
+      }
+    }
+  }
+
+  /// Issues buffered sends on the live session. Fire-and-forget entries
+  /// send directly; reply entries whose waiter was cancelled while buffered
+  /// are skipped (their sink already delivered).
+  private func flushPendingSends(_ pending: [PendingSend]) {
+    guard let current = control.withLock({ $0.session }) else { return }
+    for send in pending {
+      switch send {
+      case .forget(let boxed):
+        do {
+          try current.send(message: XPCDictionary(boxed.raw))
+        } catch {
+          routeSendFailure(error)
+        }
+      case .reply(let boxed, let sink):
+        guard !sink.isDelivered else { continue }
+        issueReplySend(current, message: boxed.raw, sink: sink)
+      }
+    }
+  }
+
+  private func issueReplySend(_ session: XPCSession, message: xpc_object_t, sink: XPCSendSink) {
+    session.send(
+      message: XPCDictionary(message),
+      replyHandler: { result in
+        switch result {
+        case .success(let reply):
+          sink.finish(.reply(SendableXPCObject(reply.xpcObject)))
+        case .failure(let error):
+          sink.finish(
+            .failure(error.canRetry ? XPCChannelError.interrupted : XPCChannelError.invalid))
+        }
+      })
   }
 
   /// Session channels carry no peer validation: a non-nil requirement fails
@@ -191,7 +271,15 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   }
 
   public func sendAndForget(_ message: xpc_object_t) {
-    guard let current = control.withLock({ $0.session }) else { return }
+    let action = control.withLock { st -> SendAction in
+      if st.cancelled { return .drop }
+      guard let current = st.session, st.activated else {
+        st.pendingSends.append(.forget(SendableXPCObject(message)))
+        return .buffered
+      }
+      return .sendNow(current)
+    }
+    guard case .sendNow(let current) = action else { return }
     // The replyHandler overload registers a reply expectation: when the peer's
     // handler returns no reply, the runtime tears the session down
     // ("Underlying connection interrupted" then "canceled session"). Use the
@@ -215,22 +303,31 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   public func send(_ message: xpc_object_t, replyQueue: DispatchQueue?) async throws
     -> xpc_object_t
   {
-    let current = control.withLock { $0.session }
-    guard let current else {
-      throw XPCChannelError.invalid
-    }
-    return try await withCheckedThrowingContinuation { continuation in
-      current.send(
-        message: XPCDictionary(message),
-        replyHandler: { result in
-          switch result {
-          case .success(let reply):
-            continuation.resume(returning: reply.xpcObject)
-          case .failure(let error):
-            continuation.resume(throwing: error.canRetry ? XPCChannelError.interrupted : .invalid)
+    let sink = XPCSendSink()
+    let boxed = try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        sink.install(continuation)
+        let action = control.withLock { st -> SendAction in
+          if st.cancelled { return .drop }
+          guard let current = st.session, st.activated else {
+            st.pendingSends.append(.reply(SendableXPCObject(message), sink))
+            return .buffered
           }
-        })
+          return .sendNow(current)
+        }
+        switch action {
+        case .drop:
+          sink.finish(.failure(XPCChannelError.invalid))
+        case .buffered:
+          break
+        case .sendNow(let current):
+          issueReplySend(current, message: message, sink: sink)
+        }
+      }
+    } onCancel: {
+      sink.finish(.failure(CancellationError()))
     }
+    return boxed.raw
   }
 
   private func installSessionHandler(_ session: XPCSession) {

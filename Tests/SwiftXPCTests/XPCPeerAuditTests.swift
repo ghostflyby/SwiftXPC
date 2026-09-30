@@ -56,7 +56,7 @@ private func ownSigningIdentifier() -> String? {
     eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
   #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
@@ -87,7 +87,7 @@ private func ownSigningIdentifier() -> String? {
 
   // The requirement installs cleanly; the kernel drops the peer when the
   // signature fails at activation, which surfaces server-side as a peer end.
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
   #expect(await log.expectCount(.peerDidEnd, atLeast: 1, timeout: .seconds(2)))
@@ -125,7 +125,7 @@ private func ownSigningIdentifier() -> String? {
     eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
   #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
@@ -147,7 +147,7 @@ private func ownSigningIdentifier() -> String? {
     eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
   #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
@@ -171,7 +171,7 @@ private func ownSigningIdentifier() -> String? {
   channel.client.setEventHandler { _ in }
   channel.client.activate()
 
-  #expect(throws: XPCConnection.ConnectionError.interrupted) {
+  #expect(throws: XPCChannelError.interrupted) {
     _ = try channel.client.send(message: XPCDictionary())
   }
 }
@@ -199,7 +199,7 @@ private func ownSigningIdentifier() -> String? {
 
   // The kernel delivers the requirement failure through the reply path; send
   // surfaces it as the typed connection error.
-  await #expect(throws: XPCConnection.ConnectionError.peerCodeSigningRequirement) {
+  await #expect(throws: XPCChannelError.peerCodeSigningRequirement) {
     _ = try await root.ping()
   }
 }

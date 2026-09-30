@@ -40,7 +40,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   // to observe the channel going down (a graceful cancel surfaces as an
   // interruption).
   await channel.client.waitForDisconnection()
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
 }
@@ -58,7 +58,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
-  await #expect(throws: XPCConnection.ConnectionError.interrupted) {
+  await #expect(throws: XPCChannelError.interrupted) {
     _ = try await lateRoot.ping()
   }
   let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
@@ -81,7 +81,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
-  await #expect(throws: XPCConnection.ConnectionError.interrupted) {
+  await #expect(throws: XPCChannelError.interrupted) {
     _ = try await lateRoot.ping()
   }
   // The post-shutdown rejection happens before the audit window: the late
@@ -122,7 +122,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   #expect(await channel.host.expectShutdown(timeout: .seconds(2)))
 
   await channel.client.waitForDisconnection()
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
   _ = reply  // resolved by channel.close() cancelling the pending call

@@ -213,6 +213,93 @@ struct XPCChannelTransportTests {
     acceptor.cancel()
   }
 
+  private func runSendCancellation<A: XPCChannelAcceptor>(
+    makeAcceptor: @escaping () throws -> A,
+    clientTransport: XPCChannelTransport
+  ) async throws {
+    let acceptor = try makeAcceptor()
+    let retained = Mutex<(any XPCMessageChannel)?>(nil)
+    acceptor.setAcceptHandler { channel in
+      retained.withLock { $0 = channel }
+      channel.setIncomingHandler { message in
+        // Reply late enough for the test to cancel the waiting task first.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+          var response = XPCDictionary()
+          response["late"] = true
+          message.reply(response.xpcObject)
+        }
+      }
+      channel.activate()
+    }
+    try acceptor.activate()
+
+    let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
+    client.setIncomingHandler { _ in }
+    client.activate()
+
+    let sendTask = Task {
+      var ask = XPCDictionary()
+      ask["ask"] = "cancel-me"
+      _ = try await client.send(ask.xpcObject, replyQueue: nil)
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    sendTask.cancel()
+    do {
+      _ = try await sendTask.value
+      Issue.record("send must throw on task cancellation")
+    } catch is CancellationError {
+      // expected
+    } catch {
+      Issue.record("unexpected error: \(error)")
+    }
+    // The late reply must be dropped harmlessly and the channel stays usable.
+    try await Task.sleep(for: .milliseconds(400))
+    var followUp = XPCDictionary()
+    followUp["ask"] = "still-alive"
+    let reply = try await client.send(followUp.xpcObject, replyQueue: nil)
+    #expect(XPCDictionary(reply)["late"] == true)
+    client.cancel()
+    acceptor.cancel()
+  }
+
+  private func runPreActivationBuffering<A: XPCChannelAcceptor>(
+    makeAcceptor: @escaping () throws -> A,
+    clientTransport: XPCChannelTransport
+  ) async throws {
+    let acceptor = try makeAcceptor()
+    let retained = Mutex<(any XPCMessageChannel)?>(nil)
+    acceptor.setAcceptHandler { channel in
+      retained.withLock { $0 = channel }
+      channel.setIncomingHandler { message in
+        var response = XPCDictionary()
+        response["answered"] = true
+        message.reply(response.xpcObject)
+      }
+      channel.activate()
+    }
+    try acceptor.activate()
+
+    let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
+    client.setIncomingHandler { _ in }
+    // Both sends are issued BEFORE activation: they must buffer and issue
+    // once activate() runs (libxpc does this natively on the C backend; the
+    // session backend buffers in the channel).
+    var wake = XPCDictionary()
+    wake["wake"] = true
+    client.sendAndForget(wake.xpcObject)
+    var ask = XPCDictionary()
+    ask["ask"] = "buffered"
+    let replyTask = Task {
+      SendableXPCObject(try await client.send(ask.xpcObject, replyQueue: nil))
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    client.activate()
+    let reply = try await replyTask.value.raw
+    #expect(XPCDictionary(reply)["answered"] == true)
+    client.cancel()
+    acceptor.cancel()
+  }
+
   // MARK: - Parameterized entry points
 
   @Test(arguments: XPCBackendPair.all)
@@ -258,6 +345,30 @@ struct XPCChannelTransportTests {
       try runCancelChain(makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
     case .session:
       try runCancelChain(makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
+    }
+  }
+
+  @Test(arguments: XPCBackendPair.all)
+  func SendCancellationThrowsAndKeepsChannelUsable(pair: XPCBackendPair) async throws {
+    switch pair.server {
+    case .cConnection:
+      try await runSendCancellation(
+        makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
+    case .session:
+      try await runSendCancellation(
+        makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
+    }
+  }
+
+  @Test(arguments: XPCBackendPair.all)
+  func PreActivationSendsAreBuffered(pair: XPCBackendPair) async throws {
+    switch pair.server {
+    case .cConnection:
+      try await runPreActivationBuffering(
+        makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
+    case .session:
+      try await runPreActivationBuffering(
+        makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
     }
   }
 

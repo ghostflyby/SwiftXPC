@@ -33,15 +33,14 @@ public struct XPCPeerRequirementError: Error, Sendable {
   }
 }
 
-/// Transport-level failure model shared by every channel backend.
-///
-/// `XPCConnection.ConnectionError` remains the C backend's native error type;
-/// this top-level enum is the backend-agnostic spelling used by
-/// `XPCMessageChannel`.
+/// Transport-level failure model shared by every channel backend: the single
+/// error vocabulary of `XPCMessageChannel` and of the C surface's sends.
 public enum XPCChannelError: Error, Sendable, Equatable {
   /// The channel is invalid and cannot be re-established.
   case invalid
-  /// The peer went away; a later send may re-establish the channel.
+  /// The peer went away. On the C backend a later send may transparently
+  /// re-establish the channel (named services and live endpoint listeners);
+  /// the session backend never re-establishes — treat it as terminal there.
   case interrupted
   /// The peer failed this channel's code signing requirement.
   case peerCodeSigningRequirement
@@ -77,7 +76,10 @@ public struct XPCIncomingMessage: @unchecked Sendable {
 ///
 /// Configure the incoming and lifecycle handlers, then call `activate()`.
 /// Handlers may also be installed after activation; they take effect for
-/// subsequent events. `activate()` is idempotent.
+/// subsequent events. `activate()` is idempotent. Sends issued before
+/// `activate()` are buffered and issued on activation (probed on both
+/// backends; the session backend buffers in the channel, the C backend in
+/// libxpc).
 ///
 /// Backend availability differs (see `XPCSessionChannel`): the C backend
 /// supports peer validation, bundled-service hosting, and peer identity
@@ -102,7 +104,9 @@ public protocol XPCMessageChannel: Sendable {
   /// Sends a message without expecting a reply.
   func sendAndForget(_ message: xpc_object_t)
 
-  /// Sends a message and awaits its reply.
+  /// Sends a message and awaits its reply. Suspending on a cancelled task
+  /// throws `CancellationError` without retracting the request: the late
+  /// reply is dropped, and the channel stays usable.
   /// - Returns: The reply payload (a dictionary).
   func send(_ message: xpc_object_t, replyQueue: DispatchQueue?) async throws
     -> xpc_object_t

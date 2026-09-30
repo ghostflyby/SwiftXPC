@@ -74,7 +74,7 @@ struct StoredActorReference: Sendable {
 final class XPCActorExportSession: Sendable {
   let id: UUID
   let actorID: XPCActorID
-  let acceptor: XPCExportAcceptorBox
+  let acceptor: XPCChannelAcceptor
   /// Invoked when the session transitions to zero live peers. Never invoked
   /// from `cancel()`.
   let onDrained: @Sendable () -> Void
@@ -88,7 +88,7 @@ final class XPCActorExportSession: Sendable {
   init(
     id: UUID,
     actorID: XPCActorID,
-    acceptor: XPCExportAcceptorBox,
+    acceptor: XPCChannelAcceptor,
     onDrained: @escaping @Sendable () -> Void
   ) {
     self.id = id
@@ -205,7 +205,7 @@ extension XPCDistributedActorSystem {
 
   private func mintExportSession<Act>(for actor: Act) throws(XPCMarshalError) -> xpc_object_t
   where Act: XPCExportableActor {
-    let acceptor: XPCExportAcceptorBox
+    let acceptor: XPCChannelAcceptor
     do {
       acceptor = try makeExportAcceptor()
     } catch {

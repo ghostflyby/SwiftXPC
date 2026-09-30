@@ -22,6 +22,13 @@ public enum XPCChannelTransport: CaseIterable, Sendable {
     case .session: return XPCSessionChannel(dialing: XPCEndpoint(endpoint))
     }
   }
+
+  /// Creates an acceptor over this transport: anonymous when `service` is
+  /// nil, or serving the launchd-advertised mach service name (a
+  /// `MachServices` entry in the job's launchd configuration) otherwise.
+  public func acceptor(service: String? = nil) throws -> XPCChannelAcceptor {
+    try XPCChannelAcceptor(transport: self, service: service)
+  }
 }
 
 /// A peer code signing requirement install failure (errno-style `status`,
@@ -118,141 +125,117 @@ public protocol XPCMessageChannel: Sendable {
 }
 
 /// A listener that mints dialable endpoint tokens and delivers accepted
-/// channels.
+/// channels, independent of the transport backend that carries it. Create
+/// through `XPCChannelTransport.acceptor(service:)`.
 ///
 /// The `wireEndpoint` is the wire token embedded in payloads (for example the
 /// actor-reference format); it is an `XPC_TYPE_ENDPOINT` object, so endpoints
 /// minted by one backend can be dialed by the other.
-public protocol XPCChannelAcceptor: AnyObject, Sendable {
-  /// The channel type delivered by this acceptor.
-  associatedtype Channel: XPCMessageChannel
-
-  /// The dialable endpoint token for this acceptor.
-  var wireEndpoint: xpc_object_t { get }
-
-  /// Installs the handler invoked for every accepted channel. The delivered
-  /// channel type and the configuration/activation window are
-  /// backend-specific; see the conforming type's documentation.
-  func setAcceptHandler(_ handler: @escaping @Sendable (Channel) -> Void)
-
-  func activate() throws
-  func cancel()
-}
-
-/// Transport-neutral acceptor seam for consumers that must stay
-/// backend-agnostic (for example the actor-reference export path): the
-/// operations an export needs from any acceptor, injected as closures so
-/// backends keep their native listener levels.
-public struct XPCExportAcceptorBox: Sendable {
-  public let wireEndpoint: xpc_object_t
-  public typealias AcceptHandler =
-    @Sendable (
-      _ handler: @escaping @Sendable (any XPCMessageChannel) -> Void
-    ) -> Void
-
-  public let setAcceptHandler: AcceptHandler
-  public let activate: @Sendable () throws -> Void
-  public let cancel: @Sendable () -> Void
-
-  public init(
-    wireEndpoint: xpc_object_t,
-    setAcceptHandler: @escaping AcceptHandler,
-    activate: @escaping @Sendable () throws -> Void,
-    cancel: @escaping @Sendable () -> Void
-  ) {
-    self.wireEndpoint = wireEndpoint
-    self.setAcceptHandler = setAcceptHandler
-    self.activate = activate
-    self.cancel = cancel
-  }
-}
-
-extension XPCConnectionAcceptor {
-  /// The transport-neutral seam over this acceptor.
-  public var exportBox: XPCExportAcceptorBox {
-    XPCExportAcceptorBox(
-      wireEndpoint: wireEndpoint,
-      setAcceptHandler: { [self] handler in setAcceptHandler { handler($0) } },
-      activate: { [self] in try activate() },
-      cancel: { [self] in cancel() })
-  }
-}
-
-extension XPCListenerAcceptor {
-  /// The transport-neutral seam over this acceptor.
-  public var exportBox: XPCExportAcceptorBox {
-    XPCExportAcceptorBox(
-      wireEndpoint: wireEndpoint,
-      setAcceptHandler: { [self] handler in setAcceptHandler { handler($0) } },
-      activate: { [self] in try activate() },
-      cancel: { [self] in cancel() })
-  }
-}
-
-// MARK: - C backend
-
-/// Accepts channels through a C-launchd anonymous listener
-/// (`XPCConnection(name: nil)`).
 ///
-/// Delivered channels are *not* activated: configure handlers, then call
-/// `activate()` on the channel (mirroring the C handler-before-activate
-/// contract). Listener-level error events are dropped; peer validation is the
+/// The one semantic difference between backends sits at the accept decision
+/// point: the C backend delivers channels *before activation* — configure
+/// handlers, then call `activate()` on the channel (the C
+/// handler-before-activate contract). The session backend accepts the peer
+/// inside the listener callback and delivers an already-live channel;
+/// `activate()` is an idempotent no-op on it, and rejecting means cancelling
+/// it. Listener-level error events are dropped; peer validation is the
 /// acceptor consumer's responsibility on the delivered channel.
-public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendable {
-  /// The C backend delivers accepted peers as C connections: the peer channel
-  /// type of this acceptor.
-  public typealias Channel = XPCConnection
+public final class XPCChannelAcceptor: @unchecked Sendable {
+  private enum Backend {
+    /// A C-API listener connection: anonymous, or serving a mach service.
+    case connection(XPCConnection)
+    /// Apple's `XPCListener`.
+    case listener(XPCListener)
+  }
 
   /// Reference-type storage so the accept handler can be swapped from any
-  /// queue after the listener's event handler captured it.
+  /// queue after the backend's event machinery captured it.
   private final class AcceptHandlerBox: Sendable {
-    let handler: Mutex<(@Sendable (XPCConnection) -> Void)?> = Mutex(nil)
+    let handler = Mutex<(@Sendable (any XPCMessageChannel) -> Void)?>(nil)
   }
 
-  private let listener: XPCConnection
-  private let state = AcceptHandlerBox()
+  private let acceptBox = AcceptHandlerBox()
+  private let backend: Backend
   private let activated = Mutex(false)
 
-  /// Creates an anonymous acceptor.
-  public init() {
-    listener = XPCConnection(name: nil)
-    installListenerHandler()
-  }
-
-  /// Creates a launchd-named acceptor serving `serviceName`
-  /// (a `MachServices` entry in the job's launchd configuration): a
-  /// *listener* connection, not a client dial to that service.
-  public init(serviceName: String) {
-    listener = XPCConnection(machServiceName: serviceName, options: [.listener])
-    installListenerHandler()
-  }
-
-  /// libxpc traps with `_xpc_api_misuse` ("Activation of a connection
-  /// without an event handler.") when a connection is activated before an
-  /// event handler was installed, so the handler is installed eagerly here
-  /// and `setAcceptHandler` only swaps the boxed closure.
-  private func installListenerHandler() {
-    listener.setEventHandler { [state] object in
-      let peer = XPCConnection(xpc_object: object)
-      guard peer.isConnectionObject else {
-        return  // listener error events carry no accept semantics
+  init(transport: XPCChannelTransport, service: String?) throws {
+    switch transport {
+    case .cConnection:
+      // libxpc traps with `_xpc_api_misuse` ("Activation of a connection
+      // without an event handler.") when a connection is activated before an
+      // event handler was installed, so the routing handler is installed
+      // eagerly here; `setAcceptHandler` only swaps the boxed closure.
+      let listener: XPCConnection
+      if let service {
+        listener = XPCConnection(machServiceName: service, options: [.listener])
+      } else {
+        listener = XPCConnection(name: nil)
       }
-      guard let handler = state.handler.withLock({ $0 }) else { return }
-      handler(peer)
+      listener.setEventHandler { [acceptBox] object in
+        let peer = XPCConnection(xpc_object: object)
+        guard peer.isConnectionObject else {
+          return  // listener error events carry no accept semantics
+        }
+        guard let handler = acceptBox.handler.withLock({ $0 }) else { return }
+        handler(peer)
+      }
+      backend = .connection(listener)
+    case .session:
+      // Handlers may only be installed while the session is still inactive,
+      // so the accept closure is part of the listener's construction.
+      let box = acceptBox
+      if let service {
+        backend = .listener(
+          try XPCListener(
+            service: service, targetQueue: nil, options: [.inactive],
+            incomingSessionHandler: Self.makeSessionAcceptClosure(box)))
+      } else {
+        backend = .listener(
+          XPCListener(
+            targetQueue: nil, options: [.inactive],
+            incomingSessionHandler: Self.makeSessionAcceptClosure(box)))
+      }
+    }
+  }
+
+  /// A static factory so the closure's `@Sendable` conformance is checked
+  /// across toolchains (some are stricter about inferring it for local
+  /// closures).
+  private static func makeSessionAcceptClosure(
+    _ box: AcceptHandlerBox
+  )
+    -> @Sendable (XPCListener.IncomingSessionRequest)
+    -> XPCListener.IncomingSessionRequest.Decision
+  {
+    { req in
+      // Sending from inside the accept callback traps; the channel is
+      // handed over only after the accept decision has returned.
+      let (decision, session) = req.accept(
+        incomingMessageHandler: { (_: XPCDictionary) -> XPCDictionary? in nil },
+        cancellationHandler: nil)
+      let channel = XPCSessionChannel(accepted: session)
+      DispatchQueue.global().async {
+        if let handler = box.handler.withLock({ $0 }) {
+          handler(channel)
+        }
+      }
+      return decision
     }
   }
 
   public var wireEndpoint: xpc_object_t {
-    xpc_endpoint_create(listener.xpc_object)
+    switch backend {
+    case .connection(let listener): xpc_endpoint_create(listener.xpc_object)
+    case .listener(let listener): listener.endpoint._endpoint
+    }
   }
 
-  public func setAcceptHandler(_ handler: @escaping @Sendable (XPCConnection) -> Void) {
-    state.handler.withLock { $0 = handler }
+  public func setAcceptHandler(_ handler: @escaping @Sendable (any XPCMessageChannel) -> Void) {
+    acceptBox.handler.withLock { $0 = handler }
   }
 
-  /// Startup contract: the listener event handler is installed at
-  /// initialization, so `activate()` may be called any time after
-  /// `setAcceptHandler`. Idempotent.
+  /// Idempotent. Activating a session listener can fail (for example an
+  /// unknown mach service); C activation never fails.
   public func activate() throws {
     let first = activated.withLock { current -> Bool in
       if current { return false }
@@ -260,23 +243,38 @@ public final class XPCConnectionAcceptor: XPCChannelAcceptor, @unchecked Sendabl
       return true
     }
     guard first else { return }
-    listener.activate()
+    switch backend {
+    case .connection(let listener): listener.activate()
+    case .listener(let listener): try listener.activate()
+    }
   }
 
   public func cancel() {
-    listener.cancel()
+    switch backend {
+    case .connection(let listener): listener.cancel()
+    case .listener(let listener): listener.cancel()
+    }
   }
 
-  /// libxpc requires a connection to reach the activated+cancelled state
-  /// before its last reference is released: dropping a live connection traps
-  /// at _xpc_connection_last_xref_cancel, and so does dropping an
-  /// unactivated one (probed on macOS 26). XPCConnection.activate()
-  /// installs a handler if none was set, so activating here is safe.
   deinit {
-    if !activated.withLock({ $0 }) {
-      listener.activate()
+    switch backend {
+    case .connection(let listener):
+      // libxpc requires a connection to reach the activated+cancelled state
+      // before its last reference is released: dropping a live connection
+      // traps at _xpc_connection_last_xref_cancel, and so does dropping an
+      // unactivated one (probed on macOS 26). XPCConnection.activate()
+      // installs a handler if none was set, so activating here is safe.
+      if !activated.withLock({ $0 }) {
+        listener.activate()
+      }
+      listener.cancel()
+    case .listener(let listener):
+      // An activated listener traps on deallocation in two ways: dealloc
+      // while active, and dispose-after-cancel racing a pending accept
+      // delivery. The object is tiny — retain it permanently.
+      listener.cancel()
+      _ = Unmanaged.passRetained(listener)
     }
-    listener.cancel()
   }
 }
 

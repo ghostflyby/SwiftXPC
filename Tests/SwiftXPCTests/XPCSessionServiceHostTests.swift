@@ -74,7 +74,7 @@ import Testing
     }
     host.setShutdownCompletion { shutdown.fire() }
 
-    let acceptor = try XPCListenerAcceptor()
+    let acceptor = try XPCChannelTransport.session.acceptor()
     acceptor.setAcceptHandler { channel in
       accepted.store(channel)
       host.accept(channel)
@@ -82,7 +82,7 @@ import Testing
     }
     try acceptor.activate()
 
-    let client = XPCSessionChannel(dialing: acceptor.listenerEndpoint)
+    let client = XPCSessionChannel(dialing: XPCEndpoint(acceptor.wireEndpoint))
     client.setIncomingHandler { _ in }
     client.activate()
     // A session dials lazily: the first send establishes the connection.

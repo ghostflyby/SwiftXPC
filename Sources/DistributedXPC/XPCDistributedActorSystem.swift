@@ -41,7 +41,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// Backend seam for actor-reference export: each exported actor mints a
   /// fresh acceptor (anonymous listener) through this factory. Defaults to
   /// the C backend; session-backed export requires the session factory.
-  package let makeExportAcceptor: @Sendable () throws -> XPCExportAcceptorBox
+  package let makeExportAcceptor: @Sendable () throws -> XPCChannelAcceptor
   public let connection: any XPCMessageChannel
 
   private static let _serviceHost: XPCDistributedActorSystem = {
@@ -73,8 +73,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   init(
     connection: any XPCMessageChannel, ownsConnection: Bool,
     allowsChildReclamation: Bool = false,
-    makeExportAcceptor: @escaping @Sendable () throws -> XPCExportAcceptorBox = {
-      XPCConnectionAcceptor().exportBox
+    makeExportAcceptor: @escaping @Sendable () throws -> XPCChannelAcceptor = {
+      try XPCChannelTransport.cConnection.acceptor()
     }
   ) {
     self.connection = connection

@@ -28,12 +28,9 @@ struct XPCBackendPair: CustomStringConvertible, Sendable {
 /// reply sink, fire-and-forget delivery, server pushes over the accepted
 /// channel, cancellation chains, and wire endpoint typing.
 ///
-/// The listener level is intentionally *not* unified behind a protocol: the
-/// C acceptor is a connection wrapper (its listener is a `xpc_connection_t`
-/// usage and mints endpoints itself), the session acceptor directly wraps
-/// `XPCListener` (whose endpoint lives on the overlay side). Each scenario
-/// therefore constructs the concrete acceptor through one switch seam and
-/// runs as a generic function over `XPCChannelAcceptor`.
+/// Every scenario constructs the backend-specific acceptor through the
+/// single factory `XPCChannelTransport.acceptor()` and stays typed against
+/// the unified `XPCChannelAcceptor`.
 @Suite(.serialized)
 struct XPCChannelTransportTests {
 
@@ -57,22 +54,12 @@ struct XPCChannelTransportTests {
     }
   }
 
-  private func makeAcceptor(
-    for transport: XPCChannelTransport
-  ) throws -> any XPCChannelAcceptor {
-    switch transport {
-    case .cConnection: return XPCConnectionAcceptor()
-    case .session: return try XPCListenerAcceptor()
-    }
-  }
-
   // MARK: - Generic scenarios
 
-  private func runRoundTrip<A: XPCChannelAcceptor>(
-    makeAcceptor: @escaping () throws -> A,
-    clientTransport: XPCChannelTransport
+  private func runRoundTrip(
+    serverTransport: XPCChannelTransport, clientTransport: XPCChannelTransport
   ) async throws {
-    let acceptor = try makeAcceptor()
+    let acceptor = try serverTransport.acceptor()
     let incoming = MessageBox()
     let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
@@ -100,11 +87,10 @@ struct XPCChannelTransportTests {
     acceptor.cancel()
   }
 
-  private func runFireAndForget<A: XPCChannelAcceptor>(
-    makeAcceptor: @escaping () throws -> A,
-    clientTransport: XPCChannelTransport
+  private func runFireAndForget(
+    serverTransport: XPCChannelTransport, clientTransport: XPCChannelTransport
   ) throws {
-    let acceptor = try makeAcceptor()
+    let acceptor = try serverTransport.acceptor()
     let incoming = MessageBox()
     let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
@@ -136,11 +122,10 @@ struct XPCChannelTransportTests {
     acceptor.cancel()
   }
 
-  private func runPush<A: XPCChannelAcceptor>(
-    makeAcceptor: @escaping () throws -> A,
-    clientTransport: XPCChannelTransport
+  private func runPush(
+    serverTransport: XPCChannelTransport, clientTransport: XPCChannelTransport
   ) async throws {
-    let acceptor = try makeAcceptor()
+    let acceptor = try serverTransport.acceptor()
     let incoming = MessageBox()
     let pushedByClient = MessageBox()
     let retained = Mutex<(any XPCMessageChannel)?>(nil)
@@ -180,12 +165,11 @@ struct XPCChannelTransportTests {
     acceptor.cancel()
   }
 
-  private func runCancelChain<A: XPCChannelAcceptor>(
-    makeAcceptor: @escaping () throws -> A,
-    clientTransport: XPCChannelTransport
+  private func runCancelChain(
+    serverTransport: XPCChannelTransport, clientTransport: XPCChannelTransport
   ) throws {
     let invalidated = DispatchSemaphore(value: 0)
-    let acceptor = try makeAcceptor()
+    let acceptor = try serverTransport.acceptor()
     let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
       retained.withLock { $0 = channel }
@@ -213,11 +197,10 @@ struct XPCChannelTransportTests {
     acceptor.cancel()
   }
 
-  private func runSendCancellation<A: XPCChannelAcceptor>(
-    makeAcceptor: @escaping () throws -> A,
-    clientTransport: XPCChannelTransport
+  private func runSendCancellation(
+    serverTransport: XPCChannelTransport, clientTransport: XPCChannelTransport
   ) async throws {
-    let acceptor = try makeAcceptor()
+    let acceptor = try serverTransport.acceptor()
     let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
       retained.withLock { $0 = channel }
@@ -262,11 +245,10 @@ struct XPCChannelTransportTests {
     acceptor.cancel()
   }
 
-  private func runPreActivationBuffering<A: XPCChannelAcceptor>(
-    makeAcceptor: @escaping () throws -> A,
-    clientTransport: XPCChannelTransport
+  private func runPreActivationBuffering(
+    serverTransport: XPCChannelTransport, clientTransport: XPCChannelTransport
   ) async throws {
-    let acceptor = try makeAcceptor()
+    let acceptor = try serverTransport.acceptor()
     let retained = Mutex<(any XPCMessageChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
       retained.withLock { $0 = channel }
@@ -304,77 +286,37 @@ struct XPCChannelTransportTests {
 
   @Test(arguments: XPCBackendPair.all)
   func RoundTripThroughDeferredReplySink(pair: XPCBackendPair) async throws {
-    switch pair.server {
-    case .cConnection:
-      try await runRoundTrip(
-        makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
-    case .session:
-      try await runRoundTrip(
-        makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
-    }
+    try await runRoundTrip(serverTransport: pair.server, clientTransport: pair.client)
   }
 
   @Test(arguments: XPCBackendPair.all)
   func FireAndForgetDelivers(pair: XPCBackendPair) throws {
-    switch pair.server {
-    case .cConnection:
-      try runFireAndForget(
-        makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
-    case .session:
-      try runFireAndForget(
-        makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
-    }
+    try runFireAndForget(serverTransport: pair.server, clientTransport: pair.client)
   }
 
   @Test(arguments: XPCBackendPair.all)
   func PushReachesClientHandler(pair: XPCBackendPair) async throws {
-    switch pair.server {
-    case .cConnection:
-      try await runPush(
-        makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
-    case .session:
-      try await runPush(
-        makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
-    }
+    try await runPush(serverTransport: pair.server, clientTransport: pair.client)
   }
 
   @Test(arguments: XPCBackendPair.all)
   func CancelFiresTerminalChain(pair: XPCBackendPair) throws {
-    switch pair.server {
-    case .cConnection:
-      try runCancelChain(makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
-    case .session:
-      try runCancelChain(makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
-    }
+    try runCancelChain(serverTransport: pair.server, clientTransport: pair.client)
   }
 
   @Test(arguments: XPCBackendPair.all)
   func SendCancellationThrowsAndKeepsChannelUsable(pair: XPCBackendPair) async throws {
-    switch pair.server {
-    case .cConnection:
-      try await runSendCancellation(
-        makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
-    case .session:
-      try await runSendCancellation(
-        makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
-    }
+    try await runSendCancellation(serverTransport: pair.server, clientTransport: pair.client)
   }
 
   @Test(arguments: XPCBackendPair.all)
   func PreActivationSendsAreBuffered(pair: XPCBackendPair) async throws {
-    switch pair.server {
-    case .cConnection:
-      try await runPreActivationBuffering(
-        makeAcceptor: XPCConnectionAcceptor.init, clientTransport: pair.client)
-    case .session:
-      try await runPreActivationBuffering(
-        makeAcceptor: XPCListenerAcceptor.init, clientTransport: pair.client)
-    }
+    try await runPreActivationBuffering(serverTransport: pair.server, clientTransport: pair.client)
   }
 
   @Test(arguments: XPCBackendPair.all)
   func WireEndpointIsEndpointObject(pair: XPCBackendPair) throws {
-    let acceptor = try makeAcceptor(for: pair.server)
+    let acceptor = try pair.server.acceptor()
     #expect(xpc_get_type(acceptor.wireEndpoint) == XPC_TYPE_ENDPOINT)
     acceptor.cancel()
   }

@@ -162,9 +162,9 @@ public func xpcSessionMain<Root: XPCRootActor>(
   host.onServiceWillShutdown { delegate.serviceWillShutdown() }
   host.setShutdownCompletion { exit(0) }
   delegate.serviceWillStart(host: host)
-  let acceptor: XPCListenerAcceptor
+  let acceptor: XPCChannelAcceptor
   do {
-    acceptor = try XPCListenerAcceptor(service: service)
+    acceptor = try XPCChannelTransport.session.acceptor(service: service)
   } catch {
     FileHandle.standardError.write(
       Data("xpcSessionMain: cannot create listener for \(service): \(error)\n".utf8))

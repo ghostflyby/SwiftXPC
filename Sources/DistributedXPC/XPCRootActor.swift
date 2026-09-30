@@ -224,11 +224,14 @@ extension XPCRootActor {
   ///     installed makes `connect` throw (fail-closed).
   public static func connect(
     toService serviceName: String,
+    transport: XPCChannelTransport = XPCChannelTransport.processDefault,
     peerCodeSigningRequirement: String? = nil
   ) throws -> Self {
-    try connect(
-      using: XPCConnection(name: serviceName),
-      peerCodeSigningRequirement: peerCodeSigningRequirement)
+    try XPCRootConnection<Self>.connect(
+      toService: serviceName,
+      transport: transport,
+      peerCodeSigningRequirement: peerCodeSigningRequirement
+    ).root
   }
 
   /// Connects through an existing connection. Note: only connections to a
@@ -240,12 +243,12 @@ extension XPCRootActor {
   /// connection the install reports success but the channel then fails to
   /// establish (hangs or interrupts) — pass a fresh connection.
   public static func connect(
-    using connection: XPCConnection,
+    using channel: any XPCMessageChannel,
     peerCodeSigningRequirement: String? = nil
   ) throws -> Self {
-    try connection.applyPeerCodeSigningRequirement(peerCodeSigningRequirement)
-    let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
-    connection.activate()
-    return try Self.resolve(id: .root, using: system)
+    try XPCRootConnection<Self>.connect(
+      using: channel,
+      peerCodeSigningRequirement: peerCodeSigningRequirement
+    ).root
   }
 }

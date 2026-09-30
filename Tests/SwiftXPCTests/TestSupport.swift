@@ -42,7 +42,11 @@ func makeIdleConnection() -> XPCConnection {
 final class RootChannel<Root: XPCRootActor>: Sendable {
   let harness: XPCRootTestCoordinator<Root>
   var host: XPCServiceHost { harness.host }
-  var client: XPCConnection { harness.client.connection }
+  /// The coordinator's client channel is C-backed, so the C-specific test
+  /// surface (setEventHandler, the sync send) stays reachable.
+  var client: XPCConnection {
+    harness.client.connection as! XPCConnection
+  }
 
   init(
     _ rootType: Root.Type,
@@ -56,8 +60,8 @@ final class RootChannel<Root: XPCRootActor>: Sendable {
       watchdog: .seconds(10))
   }
 
-  /// Dials a fresh, inactive client connection to the same listener.
-  func makeClient() throws -> XPCConnection {
+  /// Dials a fresh, inactive client channel to the same listener.
+  func makeClient() throws -> any XPCMessageChannel {
     try harness.makeClient()
   }
 

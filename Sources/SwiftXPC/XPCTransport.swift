@@ -40,6 +40,16 @@ public enum XPCChannelTransport: CaseIterable, Sendable {
     }
   }
 
+  /// Dials the launchd-advertised mach service `service` over this
+  /// transport (a named re-dialable connection on the C backend; a mach
+  /// session on the session backend).
+  public func channel(machService service: String) -> any XPCMessageChannel {
+    switch self {
+    case .cConnection: return XPCConnection(machServiceName: service)
+    case .session: return XPCSessionChannel(machServiceName: service)
+    }
+  }
+
   /// Creates an acceptor over this transport: anonymous when `service` is
   /// nil, or serving the launchd-advertised mach service name (a
   /// `MachServices` entry in the job's launchd configuration) otherwise.
@@ -121,6 +131,14 @@ public protocol XPCMessageChannel: Sendable {
   /// recover on a later send. Chained like
   /// `XPCConnection.addInterruptionHandler`.
   func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void)
+
+  /// Deterministically waits until the channel goes down — invalidated or
+  /// interrupted. Returns immediately when either was already delivered.
+  /// Never polls — the wait suspends and is resumed by the disconnecting
+  /// event itself. An interruption may be transient (the C backend
+  /// re-dials on a later send), so the wait only observes that a
+  /// disconnection happened, not that it was permanent.
+  func waitForDisconnection() async
 
   func activate()
   func cancel()

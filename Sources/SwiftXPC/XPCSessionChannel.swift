@@ -141,6 +141,12 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     lifecycle.addInterruption(handler)
   }
 
+  public func waitForDisconnection() async {
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      lifecycle.invalidation.waitForDisconnection(continuation: cont)
+    }
+  }
+
   public func activate() {
     var dialFailed = false
     var toFlush: [PendingSend] = []

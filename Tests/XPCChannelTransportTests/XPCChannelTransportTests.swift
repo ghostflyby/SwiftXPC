@@ -26,13 +26,52 @@ struct XPCBackendPair: CustomStringConvertible, Sendable {
 
 /// Transport scenarios for every backend combination: round trip through the
 /// reply sink, fire-and-forget delivery, server pushes over the accepted
-/// channel, cancellation chains, and wire endpoint typing.
+/// channel, cancellation chains, wire endpoint typing, and the unified
+/// service host (accept/echo, fail-closed requirements, shutdown pipeline).
 ///
 /// Every scenario constructs the backend-specific acceptor through the
 /// single factory `XPCChannelTransport.acceptor()` and stays typed against
 /// the unified `XPCChannelAcceptor`.
 @Suite(.serialized)
 struct XPCChannelTransportTests {
+
+  private final class FlagBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    func fire() {
+      lock.lock()
+      let first = !fired
+      fired = true
+      lock.unlock()
+      if first { semaphore.signal() }
+    }
+
+    func wait(_ timeout: TimeInterval) -> Bool {
+      semaphore.wait(timeout: .now() + timeout) == .success
+    }
+  }
+
+  private final class ErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: (any Error)?
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    func store(_ error: (any Error)?) {
+      lock.lock()
+      value = error
+      lock.unlock()
+      semaphore.signal()
+    }
+
+    func wait(_ timeout: TimeInterval) -> (any Error)? {
+      guard semaphore.wait(timeout: .now() + timeout) == .success else { return nil }
+      lock.lock()
+      defer { lock.unlock() }
+      return value
+    }
+  }
 
   private final class MessageBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -318,6 +357,74 @@ struct XPCChannelTransportTests {
   func WireEndpointIsEndpointObject(pair: XPCBackendPair) throws {
     let acceptor = try pair.server.acceptor()
     #expect(xpc_get_type(acceptor.wireEndpoint) == XPC_TYPE_ENDPOINT)
+    acceptor.cancel()
+  }
+
+  // MARK: - Unified service host
+
+  private func runUnifiedHostEcho(
+    serverTransport: XPCChannelTransport,
+    clientTransport: XPCChannelTransport
+  ) async throws {
+    let shutdown = FlagBox()
+    let host = XPCServiceHost(XPCServiceConfiguration(onShutdown: { shutdown.fire() }))
+    host.setPeerHandler { channel in
+      channel.setIncomingHandler { message in
+        var response = XPCDictionary()
+        response["echo"] = XPCDictionary(message.payload)["ping", as: xpc_object_t.self]
+        message.reply(response.xpcObject)
+      }
+    }
+
+    let acceptor = try serverTransport.acceptor()
+    acceptor.setAcceptHandler { channel in host.accept(channel) }
+    try acceptor.activate()
+
+    let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
+    client.activate()
+    var ping = XPCDictionary()
+    ping["ping"] = "host"
+    let reply = try await client.send(ping.xpcObject, replyQueue: nil)
+    #expect(XPCDictionary(reply)["echo"] == "host")
+
+    // The cooperative shutdown pipeline runs the delegate hook and the
+    // completion on both backends.
+    host.requestShutdown()
+    #expect(shutdown.wait(2))
+    client.cancel()
+    acceptor.cancel()
+  }
+
+  @Test(arguments: XPCBackendPair.all)
+  func UnifiedHostAcceptsEchoesAndShutsDown(pair: XPCBackendPair) async throws {
+    try await runUnifiedHostEcho(serverTransport: pair.server, clientTransport: pair.client)
+  }
+
+  @Test func RequirementFailsClosedOnSessionBackend() async throws {
+    // A non-nil requirement on the session backend must reject the peer
+    // with the install error (ENOTSUP) instead of silently hosting
+    // unvalidated — the unified host's fail-closed path.
+    let rejections = ErrorBox()
+    let host = XPCServiceHost(
+      XPCServiceConfiguration(
+        peerCodeSigningRequirement: "identifier \"com.example.anything\"",
+        onPeerReject: { _, error in rejections.store(error) }))
+
+    let acceptor = try XPCChannelTransport.session.acceptor()
+    acceptor.setAcceptHandler { channel in host.accept(channel) }
+    try acceptor.activate()
+
+    let client = try XPCChannelTransport.session.channel(dialing: acceptor.wireEndpoint)
+    client.setIncomingHandler { _ in }
+    client.activate()
+    var ping = XPCDictionary()
+    ping["ping"] = true
+    client.sendAndForget(ping.xpcObject)
+
+    let rejection = rejections.wait(2)
+    #expect(rejection != nil)
+    #expect(rejection is XPCPeerRequirementError)
+    client.cancel()
     acceptor.cancel()
   }
 }

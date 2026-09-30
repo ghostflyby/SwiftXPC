@@ -48,8 +48,10 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// The service host driving the coordinator's peers and shutdown
   /// pipeline.
   public let host: XPCServiceHost
+  /// The backend the coordinator serves and dials with.
+  public let transport: XPCChannelTransport
 
-  private let listener: XPCConnection
+  private let acceptor: XPCChannelAcceptor
   private let system: XPCDistributedActorSystem
   private let eventLog: XPCServiceEventLog?
   private let closed = Mutex(false)
@@ -63,13 +65,17 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// Retains the latest server-side peer so tests can simulate the service
   /// dropping a client.
   private final class ServerPeerBox: Sendable {
-    let peer = Mutex<XPCConnection?>(nil)
+    let peer = Mutex<(any XPCMessageChannel)?>(nil)
   }
   private let serverPeer: ServerPeerBox
 
   /// - Parameters:
   ///   - rootType: the concrete root actor type served on the channel.
   ///   - delegate: the connection-lifecycle customization.
+  ///   - transport: the backend for the coordinator's acceptor, client
+  ///     dial, and export listeners. The simulated process's anchor
+  ///     connection stays C-backed regardless: it is an idle channel that
+  ///     never carries traffic.
   ///   - eventLog: when non-nil, every delegate-hook invocation is recorded
   ///     into it for hook-order and count assertions.
   ///   - watchdog: when non-nil, the coordinator force-closes itself after
@@ -79,38 +85,39 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   init(
     _ rootType: Root.Type,
     _ delegate: some XPCServiceDelegate,
+    transport: XPCChannelTransport = .cConnection,
     eventLog: XPCServiceEventLog?,
     watchdog: Duration?
   ) throws {
+    self.transport = transport
     let processConnection = XPCConnection(name: nil)
     processConnection.setEventHandler { _ in }
     processConnection.activate()
     let system = XPCDistributedActorSystem(
       connection: processConnection,
       ownsConnection: true,
-      allowsChildReclamation: true)
+      allowsChildReclamation: true,
+      transport: transport)
     system.reserveRootID()
     let root = Root(actorSystem: system)
 
     let host = XPCServiceHost(delegate, eventLog: eventLog)
-    host.setPeerHandler { [weak host] connection in
+    host.setPeerHandler { [weak host] channel in
       system.setServiceShutdownHandler { [weak host] in host?.requestShutdown() }
-      system.bind(connection, to: root)
+      system.bind(channel, to: root)
     }
 
-    let listener = XPCConnection(name: nil)
+    let acceptor = try transport.acceptor()
     let serverPeer = ServerPeerBox()
-    listener.setEventHandler { object in
-      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
-      let peer = XPCConnection(xpc_object: object)
-      serverPeer.peer.withLock { $0 = peer }
-      host.accept(peer)
+    acceptor.setAcceptHandler { channel in
+      serverPeer.peer.withLock { $0 = channel }
+      host.accept(channel)
     }
-    listener.activate()
+    try acceptor.activate()
 
-    let endpoint = try XPCConnection.unmarshal(from: listener.marshal())
-    let client = try XPCRootConnection<Root>.connect(using: endpoint)
-    self.listener = listener
+    let clientChannel = try transport.channel(dialing: acceptor.wireEndpoint)
+    let client = try XPCRootConnection<Root>.connect(using: clientChannel)
+    self.acceptor = acceptor
     self.system = system
     self.eventLog = eventLog
     self.host = host
@@ -157,21 +164,23 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     await host.expectShutdown(timeout: timeout)
   }
 
-  /// Dials a fresh, inactive client connection to the same listener, for
+  /// Dials a fresh, inactive client channel to the same acceptor, for
   /// tests that exercise multiple sequential or concurrent clients against
-  /// one service. Endpoint-based like every connection here: activate it
+  /// one service. Endpoint-based like every channel here: activate it
   /// via `Root.connect(using:)` or manually; it dies permanently with its
   /// server-side peer.
-  public func makeClient() throws -> XPCConnection {
-    try XPCConnection.unmarshal(from: listener.marshal())
+  public func makeClient() throws -> any XPCMessageChannel {
+    try transport.channel(dialing: acceptor.wireEndpoint)
   }
 
   /// Cancels the latest accepted server-side peer, as if the service had
   /// dropped that client. The client channel observes `.disconnected` on
-  /// `events`; because it dials the coordinator's *listener* endpoint,
-  /// libxpc transparently re-dials while the coordinator lives and the
-  /// host accepts a fresh session. Permanent channel death requires
-  /// `close()`. A no-op while no peer has been accepted.
+  /// `events`. On the C backend, libxpc transparently re-dials the
+  /// coordinator's listener endpoint while the coordinator lives and the
+  /// host accepts a fresh session; the session backend never re-dials
+  /// (probed: the dropped session channel is terminal), so the client dies
+  /// permanently with the drop — use `.cConnection` for reconnection
+  /// tests. A no-op while no peer has been accepted.
   public func dropServerPeer() {
     serverPeer.peer.withLock { $0 }?.cancel()
   }
@@ -188,7 +197,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     guard first else { return }
     watchdog?.cancel()
     client.close()
-    listener.cancel()
+    acceptor.cancel()
     host.cancel()
     system.invalidate()
     notifyClosed()
@@ -242,6 +251,8 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
 ///   - delegate: the service customization; typically an
 ///     `XPCServiceConfiguration` whose closures record side effects for
 ///     assertions.
+///   - transport: the backend for the coordinator's acceptor, client dial,
+///     and export listeners; defaults to the C backend.
 ///   - eventLog: when non-nil, every delegate-hook invocation is recorded
 ///     into it for hook-order and count assertions.
 ///   - watchdog: when non-nil, the coordinator force-closes itself after
@@ -250,8 +261,10 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
 public func xpcTest<Root: XPCRootActor>(
   _ rootType: Root.Type,
   _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
+  transport: XPCChannelTransport = .cConnection,
   eventLog: XPCServiceEventLog? = nil,
   watchdog: Duration? = nil
 ) throws -> XPCRootTestCoordinator<Root> {
-  try XPCRootTestCoordinator(rootType, delegate, eventLog: eventLog, watchdog: watchdog)
+  try XPCRootTestCoordinator(
+    rootType, delegate, transport: transport, eventLog: eventLog, watchdog: watchdog)
 }

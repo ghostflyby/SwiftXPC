@@ -8,8 +8,8 @@ Two products ship from this package:
 
 | Product | Contents |
 |---|---|
-| `SwiftXPC` | Swift vocabulary over Apple's XPC: the `XPCDictionary`/`XPCArray` containers (re-exported from Apple's `XPC` module, extended with reply, endpoint, and element accessors), `xpc_object_t` as the marshal currency behind the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
-| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCApp` `@main`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
+| `SwiftXPC` | Swift vocabulary over Apple's XPC: the `XPCDictionary`/`XPCArray` containers (re-exported from Apple's `XPC` module, extended with reply, endpoint, and element accessors), `xpc_object_t` as the marshal currency behind the `XPCMarshal` serialization protocol + macro, `XPCConnection`, the dual-backend transport layer (`XPCMessageChannel`, `XPCChannelTransport`, `XPCChannelAcceptor`), and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
+| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCApp` `@main`, `xpcSessionMain` for session-backed services), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
 
 ## Raw handles and Sendability
 
@@ -45,6 +45,33 @@ struct SendableHandle: @unchecked Sendable {
 
 Equality, hashing, and description are available as free functions:
 `xpc_equal`/`xpc_hash` (C API) and `SwiftXPC.xpcCopyDescription(_:)`.
+
+## Transport backends
+
+Channels ride one of two backends, selected through `XPCChannelTransport`
+(`.cConnection` by default):
+
+| | C backend (`XPCConnection`) | Session backend (`XPCSession`) |
+|---|---|---|
+| Peer validation | kernel-enforced requirements (macOS 12+) | fail-closed `ENOTSUP` below macOS 26 |
+| Peer identity | pid / euid / egid / asid | none (`XPCPeerContext` identity is nil) |
+| Hosting | `xpcMain` / `XPCApp` (bundled `.xpc`, launchd) | `xpcSessionMain` (LaunchDaemon-style mach service) |
+| Re-dial after peer loss | transparent (named services, live listeners) | terminal — never re-establishes |
+
+Both backends share one contract:
+
+- Endpoints are backend-agnostic — either backend can dial an endpoint
+  minted by the other (covered by the parameterized test matrix).
+- Pre-activation sends buffer and issue on `activate()`; awaiting a reply
+  supports Swift task cancellation (the late reply is dropped, the channel
+  stays usable).
+- One error vocabulary (`XPCChannelError`) and one service host
+  (`XPCServiceHost`, delegate hooks over `XPCPeerContext`).
+
+`XPCChannelTransport.processDefault` (writable; set it before the first
+channel operation) backs the entry points that cannot take an explicit
+backend — actor-reference import — and is the default for the parameters
+that can.
 
 ## Requirements
 

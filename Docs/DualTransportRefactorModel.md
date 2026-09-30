@@ -323,3 +323,32 @@ session 宿主上 export 的 actor 仍铸造 C 匿名监听（`makeExportAccepto
   re-establish" 承诺仅对 C 后端成立；session 通道对端失联是终局（现行 `canRetry=false →
   invalidation 链`路由恰好正确）。`retrying` 在 session 后端上的重试是有限次的徒劳（保留、
   文档化）。
+
+### 实施结果（2026-09-30，七步全部落地于 PR #10）
+
+| 步骤 | 提交 | 结果 |
+|---|---|---|
+| §1 错误归一 + send 取消 + 激活前缓冲 | `6e2caac` | `ConnectionError` 删除；两后端 send 支持 Task 取消（`XPCSendSink` 一次性守卫）；session 通道补齐激活前缓冲 |
+| §2 acceptor 单一化 | `19d4143` | 协议 + Box + 两后端类 → 具体类型 `XPCChannelAcceptor` + `transport.acceptor(service:)` |
+| §3 共享生命周期机械 | `1d2f4ab` | `XPCInvalidationChain`（invalidation-once + 清除 + 断连 waiters）；interruption 槽因两后端语义不同（C 可重复、session 单发 take）保留各自实现 |
+| §4 宿主合一 | `3d9beaa` | `XPCServiceHost` 通道化 + `XPCPeerContext`；`XPCSessionServiceHost` 系列删除；serve 胶水唯一；`xpcSessionMain` 薄入口 |
+| §5 选择单点化 | `d8a3c19` | `processDefault`（可写进程默认）；import 经它拨号；export 工厂改 `transport` 参数 → **M4 修复**（session 宿主 export 走 session listener） |
+| §6 客户端通道化 | `719d547` | `XPCRootConnection` 通道化；`XPCRootActor.connect` 委托去重；`waitForDisconnection` 进协议（两后端） |
+| §7 测试参数化 | `7f05a4f` | `xpcTest(transport:)`（session 免费获得协调器：root 调用 / 子 actor 跨后端导出 / 终局 drop 三测）；参数化套件增统一宿主矩阵 + session fail-closed 拒绝 |
+
+**与模型的偏差**（有意）：
+
+- 统一 acceptor 沿用名字 `XPCChannelAcceptor`（协议删除后名字让给具体类型）。
+- §3 的共享机械收敛为 `XPCInvalidationChain` 而非全量 `XPCHandlerChain`：interruption 语义
+  两后端本就不同（C 可重复投递、session 单发 take-clear），强行统一会改变 C 行为；共享的是
+  真正同构的 invalidation-once + waiters 核心，行为零变化。
+- 宿主合一中 serve 胶水的后端传导：`XPCServiceHost(rootType:delegate:transport:eventLog:)`
+  便利 init 在首 accept 时 `setExportTransport(transport)`——单例宿主系统的 export 后端跟随
+  宿主进程的宿主后端（M4 的落地形态）。
+- `xpcMain`（SwiftXPC 层）包装新增 `isConnectionObject` 过滤：宿主 `accept` 通道化后，
+  listener 错误对象过滤职责迁到喂入侧。
+- `RootChannel` 测试壳保留 C 下钻面（`client as! XPCConnection`）：C 专属断言
+  （`setEventHandler`、同步 send）仍需要它；协调器 `makeClient()` 已通道化。
+
+**最终状态**：主套件 154 全过、参数化套件 9×4 组合全过（含统一宿主矩阵与 fail-closed 拒绝）、
+连跑 3 轮稳定、werror 构建 + format strict + out-of-package demo 构建全绿。

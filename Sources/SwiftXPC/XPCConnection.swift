@@ -26,11 +26,14 @@ public struct XPCConnection: @unchecked Sendable {
 /// queue, so all access is lock-protected. Handlers should be installed
 /// before `activate()`; later additions take effect for subsequent events,
 /// except invalidation handlers, which run immediately when invalidation was
-/// already delivered (it is terminal and never repeats).
+/// already delivered (it is terminal and never repeats). The terminal
+/// invalidation chain (once, clear-on-delivery, disconnection waiters) is
+/// the shared `XPCInvalidationChain`; the C-specific slots here are the
+/// generic event handler, the repeatable interruption chain, and the
+/// termination-imminent / peer-code-signing-error chains.
 final class _ConnectionHandlerState: Sendable {
   struct Handlers: Sendable {
     var generic: (@Sendable (xpc_object_t) -> Void)?
-    var invalidation: (@Sendable () -> Void)?
     var interruption: (@Sendable () -> Void)?
     var terminationImminent: (@Sendable () -> Void)?
     var peerCodeSigningError: (@Sendable () -> Void)?
@@ -38,11 +41,9 @@ final class _ConnectionHandlerState: Sendable {
 
   private struct State: Sendable {
     var handlers = Handlers()
-    var invalidationDelivered = false
-    var interruptionDelivered = false
-    var disconnectionWaiters: [CheckedContinuation<Void, Never>] = []
   }
 
+  let invalidation = XPCInvalidationChain()
   private let state = Mutex(State())
 
   private func withHandlers<T>(_ body: (inout Handlers) -> T) -> T {
@@ -68,35 +69,15 @@ final class _ConnectionHandlerState: Sendable {
     }
   }
 
-  /// Registers an invalidation handler. Invalidation is terminal and
-  /// delivered once, so a handler installed after delivery would otherwise
-  /// never run: returns `true` in that case and the caller invokes it.
+  /// Registers an invalidation handler; see `XPCInvalidationChain.add`.
   func chainInvalidation(_ handler: @escaping @Sendable () -> Void) -> Bool {
-    state.withLock { state in
-      if state.invalidationDelivered {
-        return true
-      }
-      let previous = state.handlers.invalidation
-      state.handlers.invalidation = {
-        previous?()
-        handler()
-      }
-      return false
-    }
+    invalidation.add(handler)
   }
 
-  /// Registers a continuation resumed when the connection goes down —
-  /// invalidation or interruption. Resumes immediately when either event
-  /// was already delivered.
+  /// Registers a continuation resumed when the connection goes down; see
+  /// `XPCInvalidationChain.waitForDisconnection`.
   func waitForDisconnection(continuation: CheckedContinuation<Void, Never>) {
-    let down: Bool = state.withLock { state in
-      if state.invalidationDelivered || state.interruptionDelivered { return true }
-      state.disconnectionWaiters.append(continuation)
-      return false
-    }
-    if down {
-      continuation.resume()
-    }
+    invalidation.waitForDisconnection(continuation: continuation)
   }
 
   /// Routes one connection event object to the matching dedicated handler.
@@ -108,32 +89,19 @@ final class _ConnectionHandlerState: Sendable {
     let snapshot = withHandlers { $0 }
     let raw = object
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
-      let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
-        state.invalidationDelivered = true
-        // Invalidation is terminal: nothing can invoke these two handlers
-        // afterwards. Dropping them here releases what they captured —
-        // including the connection itself, which service-host handlers
-        // capture strongly and which would otherwise form a
-        // connection -> event-handler block -> closure -> connection cycle.
-        state.handlers.invalidation = nil
-        state.handlers.peerCodeSigningError = nil
-        let waiters = state.disconnectionWaiters
-        state.disconnectionWaiters.removeAll()
-        return waiters
-      }
-      snapshot.invalidation?()
-      waiters.forEach { $0.resume() }
+      // Invalidation is terminal: nothing can invoke the peer-code-signing
+      // handler afterwards. Dropping it here releases what it captured —
+      // including the connection itself, which service-host handlers capture
+      // strongly and which would otherwise form a connection ->
+      // event-handler block -> closure -> connection cycle. (The invalidation
+      // chain clears itself on delivery.)
+      withHandlers { $0.peerCodeSigningError = nil }
+      invalidation.take()()
       return
     }
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
-      let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
-        state.interruptionDelivered = true
-        let waiters = state.disconnectionWaiters
-        state.disconnectionWaiters.removeAll()
-        return waiters
-      }
+      invalidation.markDisconnected()
       snapshot.interruption?()
-      waiters.forEach { $0.resume() }
       return
     }
     if xpc_equal(raw, XPC_ERROR_TERMINATION_IMMINENT) {

@@ -10,8 +10,8 @@ import XPC
 /// no peer validation below macOS 26, no peer identity accessors, and no
 /// bundled-`.xpc` service hosting — use the C backend (`XPCConnection`)
 /// for privileged services. Sending from inside an accept callback traps;
-/// `XPCListenerAcceptor` delivers accepted channels only after the accept
-/// decision has returned.
+/// the session-side `XPCChannelAcceptor` delivers accepted channels only
+/// after the accept decision has returned.
 public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   private final class IncomingBox: Sendable {
     let handler = Mutex<(@Sendable (XPCIncomingMessage) -> Void)?>(nil)
@@ -47,62 +47,47 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
     case sendNow(XPCSession)
   }
 
-  /// Chained lifecycle handlers, mirroring `XPCConnection`'s semantics:
-  /// registrations chain (previous runs first), invalidation is delivered
-  /// exactly once, and a handler registered after invalidation runs
-  /// immediately. Handlers are cleared on delivery so captured references
-  /// (including channels) do not form permanent retain cycles.
+  /// Chained lifecycle handlers. The terminal invalidation chain (once,
+  /// clear-on-delivery, disconnection waiters) is the shared
+  /// `XPCInvalidationChain`; the interruption slot is session-specific —
+  /// single-take, because the channel routes one loss per event.
   private final class LifecycleBox: Sendable {
-    private struct State {
-      var invalidation: (@Sendable () -> Void)?
-      var interruption: (@Sendable () -> Void)?
-      var invalidationDelivered = false
-    }
-
-    private let state = Mutex(State())
+    let invalidation = XPCInvalidationChain()
+    private let interruption = Mutex<(@Sendable () -> Void)?>(nil)
 
     /// Registers `handler`; returns true when invalidation already happened
     /// and the caller must invoke it now.
     func addInvalidation(_ handler: @escaping @Sendable () -> Void) -> Bool {
-      state.withLock { state in
-        if state.invalidationDelivered { return true }
-        let previous = state.invalidation
-        state.invalidation = {
-          previous?()
-          handler()
-        }
-        return false
-      }
+      invalidation.add(handler)
     }
 
     func addInterruption(_ handler: @escaping @Sendable () -> Void) {
-      state.withLock { state in
-        let previous = state.interruption
-        state.interruption = {
+      interruption.withLock { slot in
+        let previous = slot
+        slot = {
           previous?()
           handler()
         }
       }
     }
 
-    /// Marks invalidation delivered and returns the chained handler to run
-    /// (already cleared from storage).
+    /// Marks invalidation delivered, clears both chains (invalidation is
+    /// terminal for everything), and returns the invalidation chain to run.
     func takeInvalidation() -> @Sendable () -> Void {
-      state.withLock { state in
-        state.invalidationDelivered = true
-        let handler = state.invalidation
-        state.invalidation = nil
-        state.interruption = nil
-        return handler ?? {}
-      }
+      interruption.withLock { $0 = nil }
+      return invalidation.take()
     }
 
+    /// Takes the interruption chain for delivery and marks the channel down
+    /// for disconnection waiters (an interruption is a disconnection).
     func takeInterruption() -> @Sendable () -> Void {
-      state.withLock { state in
-        let handler = state.interruption
-        state.interruption = nil
-        return handler ?? {}
+      let handler = interruption.withLock { slot in
+        let handler = slot
+        slot = nil
+        return handler
       }
+      invalidation.markDisconnected()
+      return handler ?? {}
     }
   }
 
@@ -116,7 +101,7 @@ public final class XPCSessionChannel: XPCMessageChannel, @unchecked Sendable {
   }
 
   /// Creates a channel dialing `endpoint` (for example the wire endpoint of
-  /// an `XPCListenerAcceptor`).
+  /// an acceptor).
   public init(dialing endpoint: XPCEndpoint, targetQueue: DispatchQueue? = nil) {
     source = .dialed({
       try XPCSession(endpoint: endpoint, targetQueue: targetQueue, options: [.inactive])

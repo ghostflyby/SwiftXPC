@@ -106,7 +106,7 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeRemoteCallReplyUsesMetadataFallbackThrownErrorType() throws {
-  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
+  let system = XPCDistributedActorSystem()
   _ = SampleReplyMetadataActor(actorSystem: system)
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
@@ -126,7 +126,7 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeRemoteCallReplyDoesNotRequireMetadataForMarshalableError() throws {
-  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
+  let system = XPCDistributedActorSystem()
   _ = SampleReplyActorWithoutMetadata(actorSystem: system)
   let envelope = XPCReplyEnvelope(
     kind: .throwError,

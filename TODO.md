@@ -477,12 +477,9 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
 
 ### P2（现代 API 代际与能力补全）
 
-- [ ] **runtime v3 方向：采纳 XPC overlay（XPCListener/XPCSession）**。可行性研究已完成
-  （`Docs/XPCSessionMigrationFeasibility.md`，探针实跑验证）：session 模型的 reply 链路、
-  reject 模型、rich error 取消语义、裸对象桥接全部可用；但对端身份 API（pid/euid）完全缺失、
-  字符串 code-signing requirement 在 26 前不可用、TERMINATION_IMMINENT 不可观测——
-  部署目标 < 26 时迁移是鉴权净倒退。**当前选择维持 connection 体系（方案 D）**，
-  把双传输层抽象（方案 B）作为 v3 预案；重估触发条件见报告。
+- [x] **双 transport runtime**（2026-10-03）：C 和 Session 经具体 `XPCChannel` 门面统一；
+  服务准入、actor registry、服务组装分别独立。Session requirement 当前仍 fail-closed；
+  完整复审与迁移见 `Docs/DualTransportRefactorModel.md`。
 - [ ] `xpc_shmem_create/map`（可直接封装）：共享内存零拷贝传输，大 payload 场景。
 - [ ] mach send right 传递（`xpc_dictionary_set_mach_send/copy_mach_send`、
   `xpc_array/dictionary_create_connection`）。

@@ -5,14 +5,9 @@ import Foundation
 import SwiftXPC
 import Synchronization
 
-/// The test coordinator for root-actor services: it owns a **simulated
-/// service process** — a long-lived actor system private to the
-/// coordinator (the `serviceHost` recipe: idle activated channel, child
-/// reclamation, `.root` reserved at creation), a **fresh** root instance
-/// constructed on it (never the process-global `XPCRootActor.shared`), and
-/// an anonymous listener — and coordinates the test's connection model:
-/// handing out the production client channel, dialing additional clients,
-/// and simulating service-side drops.
+/// Owns a production `XPCActorService`, an anonymous listener, and a client
+/// connection. Each coordinator has an independent root and actor registry.
+/// Additional clients share that coordinator's root.
 ///
 ///     let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
 ///       onPeerAccept: { connection in /* audit hook fires here too */ }))
@@ -20,12 +15,6 @@ import Synchronization
 ///     let root = try await service.client.retrying { _ in
 ///       try await service.client.root.ping()
 ///     }
-///
-/// Coordinators are fully isolated from one another — parallel-safe, no
-/// shared `.root` identity, no shared shutdown bridge — and each serves a
-/// fresh root. The process-global `XPCRootActor.shared` singleton
-/// (production semantics) is exercised by hosting
-/// `XPCServiceHost(rootType, delegate)` directly instead.
 ///
 /// The client side is a full production `XPCRootConnection` — `root`,
 /// `events`, and `retrying` behave exactly as against a launchd service,
@@ -49,10 +38,10 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// pipeline.
   public let host: XPCServiceHost
   /// The backend the coordinator serves and dials with.
+  private let service: XPCActorService<Root>
   public let transport: XPCChannelTransport
 
   private let acceptor: XPCChannelAcceptor
-  private let system: XPCDistributedActorSystem
   private let eventLog: XPCServiceEventLog?
   private let closed = Mutex(false)
   private struct CloseWaiterState: Sendable {
@@ -65,7 +54,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// Retains the latest server-side peer so tests can simulate the service
   /// dropping a client.
   private final class ServerPeerBox: Sendable {
-    let peer = Mutex<(any XPCMessageChannel)?>(nil)
+    let peer = Mutex<(XPCChannel)?>(nil)
   }
   private let serverPeer: ServerPeerBox
 
@@ -73,9 +62,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   ///   - rootType: the concrete root actor type served on the channel.
   ///   - delegate: the connection-lifecycle customization.
   ///   - transport: the backend for the coordinator's acceptor, client
-  ///     dial, and export listeners. The simulated process's anchor
-  ///     connection stays C-backed regardless: it is an idle channel that
-  ///     never carries traffic.
+  ///     dial, and exported references.
   ///   - eventLog: when non-nil, every delegate-hook invocation is recorded
   ///     into it for hook-order and count assertions.
   ///   - watchdog: when non-nil, the coordinator force-closes itself after
@@ -90,22 +77,9 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     watchdog: Duration?
   ) throws {
     self.transport = transport
-    let processConnection = XPCConnection(name: nil)
-    processConnection.setEventHandler { _ in }
-    processConnection.activate()
-    let system = XPCDistributedActorSystem(
-      connection: processConnection,
-      ownsConnection: true,
-      allowsChildReclamation: true,
-      transport: transport)
-    system.reserveRootID()
-    let root = Root(actorSystem: system)
-
-    let host = XPCServiceHost(delegate, eventLog: eventLog)
-    host.setPeerHandler { [weak host] channel in
-      system.setServiceShutdownHandler { [weak host] in host?.requestShutdown() }
-      system.bind(channel, to: root)
-    }
+    let service = XPCActorService(rootType, delegate, transport: transport, eventLog: eventLog)
+    self.service = service
+    let host = service.host
 
     let acceptor = try transport.acceptor()
     let serverPeer = ServerPeerBox()
@@ -118,7 +92,6 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     let clientChannel = try transport.channel(dialing: acceptor.wireEndpoint)
     let client = try XPCRootConnection<Root>.connect(using: clientChannel)
     self.acceptor = acceptor
-    self.system = system
     self.eventLog = eventLog
     self.host = host
     self.client = client
@@ -169,7 +142,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// one service. Endpoint-based like every channel here: activate it
   /// via `Root.connect(using:)` or manually; it dies permanently with its
   /// server-side peer.
-  public func makeClient() throws -> any XPCMessageChannel {
+  public func makeClient() throws -> XPCChannel {
     try transport.channel(dialing: acceptor.wireEndpoint)
   }
 
@@ -199,7 +172,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     client.close()
     acceptor.cancel()
     host.cancel()
-    system.invalidate()
+    service.cancel()
     notifyClosed()
   }
 
@@ -241,10 +214,9 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
 /// the process; see `XPCRootTestCoordinator` for lifetime, isolation, and
 /// connection-model details.
 ///
-/// The delegate semantics are identical to the hosted `xpcMain` entry point
-/// — hooks and code signing requirements behave the same — with two
-/// deliberate differences: nothing exits the process, and the served root
-/// is coordinator-local, not the process-global `XPCRootActor.shared`.
+/// Peer admission and shutdown hooks match the hosted entry points.
+/// The coordinator retains the service locally and never exits the process;
+/// `serviceWillStart` remains a hosted-process entry hook.
 ///
 /// - Parameters:
 ///   - rootType: the concrete root actor type served on the channel.

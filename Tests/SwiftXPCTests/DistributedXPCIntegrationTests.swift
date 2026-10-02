@@ -100,10 +100,11 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   listener.setEventHandler { object in
     guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
     let server = XPCConnection(xpc_object: object)
-    let serverSystem = XPCDistributedActorSystem(connection: server)
+    let serverChannel = XPCChannel(server)
+    let serverSystem = XPCDistributedActorSystem(connection: serverChannel)
     serverSystem.reserveRootID()
     let root = IntegrationGreeter(actorSystem: serverSystem)
-    serverSystem.bind(server, to: root)
+    serverSystem.bind(serverChannel, to: root)
     acceptedPeer.withLock {
       $0 = AcceptedPeer(connection: server, system: serverSystem, root: root)
     }
@@ -114,7 +115,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 
   let endpoint = try listener.marshal()
   let client = try XPCConnection.unmarshal(from: endpoint)
-  let clientSystem = XPCDistributedActorSystem(connection: client)
+  let clientSystem = XPCDistributedActorSystem(connection: XPCChannel(client))
   client.activate()
   client.sendAndForget(message: XPCDictionary())
 

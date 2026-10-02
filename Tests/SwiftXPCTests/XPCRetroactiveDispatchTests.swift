@@ -107,7 +107,7 @@ public enum RetroError: Error, XPCMarshal, Equatable {
 }
 
 private func makeIdleSystem() -> XPCDistributedActorSystem {
-  XPCDistributedActorSystem(connection: makeIdleConnection())
+  XPCDistributedActorSystem()
 }
 
 /// With reference marshaling opted in.

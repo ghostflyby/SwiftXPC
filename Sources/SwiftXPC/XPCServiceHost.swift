@@ -14,13 +14,12 @@ import XPC
 /// shutdown. Conformance requires `Sendable`; keep shared state behind a
 /// lock.
 ///
-/// The hooks are backend-agnostic: `peer.channel` is the accepted channel
+/// The hooks are backend-agnostic: `peer` is the accepted channel
 /// (C or session backend), and the identity properties (`pid`/`euid`/…) are
 /// nil on session-backed peers — the session model has no counterpart
 /// accessors, so identity-based audit is a C-backend capability.
 public protocol XPCServiceDelegate: Sendable {
 
-  init()
   /// Kernel-enforced code signing requirement installed on every peer
   /// *before activation*. Read once per accepted peer, so class-type
   /// conformers may vary it between peers. A requirement that cannot be
@@ -40,16 +39,16 @@ public protocol XPCServiceDelegate: Sendable {
   /// `peerCodeSigningRequirement` is set this hook must not install
   /// another. Returning `false` rejects the peer; throwing rejects the peer
   /// and reports the error to `didRejectPeer(_:error:)`.
-  func shouldAcceptPeer(_ peer: XPCPeerContext) throws -> Bool
+  func shouldAcceptPeer(_ peer: XPCChannel) throws -> Bool
 
   /// Invoked once a peer is accepted (bound to the service, before
   /// activation).
-  func didAcceptPeer(_ peer: XPCPeerContext)
+  func didAcceptPeer(_ peer: XPCChannel)
 
   /// Invoked when an accepted peer disconnects — including peers dropped by
   /// XPC for failing a code signing requirement at activation. The channel
   /// is already down at this point; only identity inspection is meaningful.
-  func peerDidEnd(_ peer: XPCPeerContext)
+  func peerDidEnd(_ peer: XPCChannel)
 
   /// Invoked when a peer is rejected before ever being accepted:
   /// `shouldAcceptPeer(_:)` returned `false` (error is `nil`), it threw, the
@@ -57,7 +56,7 @@ public protocol XPCServiceDelegate: Sendable {
   /// installed (including the session backend's fail-closed `ENOTSUP`), or
   /// the host already shut down or was cancelled (error is `nil`). The
   /// channel is already cancelled; only identity inspection is meaningful.
-  func didRejectPeer(_ peer: XPCPeerContext, error: (any Error)?)
+  func didRejectPeer(_ peer: XPCChannel, error: (any Error)?)
 
   /// Invoked by a hosted entry point once the host exists, before the event
   /// loop starts — retain `host` here to reach `requestShutdown()` from
@@ -78,13 +77,13 @@ public protocol XPCServiceDelegate: Sendable {
 extension XPCServiceDelegate {
   public var peerCodeSigningRequirement: String? { nil }
 
-  public func shouldAcceptPeer(_ peer: XPCPeerContext) throws -> Bool { true }
+  public func shouldAcceptPeer(_ peer: XPCChannel) throws -> Bool { true }
 
-  public func didAcceptPeer(_ peer: XPCPeerContext) {}
+  public func didAcceptPeer(_ peer: XPCChannel) {}
 
-  public func peerDidEnd(_ peer: XPCPeerContext) {}
+  public func peerDidEnd(_ peer: XPCChannel) {}
 
-  public func didRejectPeer(_ peer: XPCPeerContext, error: (any Error)?) {}
+  public func didRejectPeer(_ peer: XPCChannel, error: (any Error)?) {}
 
   public func serviceWillStart(host: XPCServiceHost) {}
 
@@ -100,16 +99,16 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
   public let peerCodeSigningRequirement: String?
 
   /// See `XPCServiceDelegate.shouldAcceptPeer(_:)`.
-  public let shouldAccept: (@Sendable (XPCPeerContext) throws -> Bool)?
+  public let shouldAccept: (@Sendable (XPCChannel) throws -> Bool)?
 
   /// See `XPCServiceDelegate.didAcceptPeer(_:)`.
-  public let onPeerAccept: (@Sendable (XPCPeerContext) -> Void)?
+  public let onPeerAccept: (@Sendable (XPCChannel) -> Void)?
 
   /// See `XPCServiceDelegate.peerDidEnd(_:)`.
-  public let onPeerEnd: (@Sendable (XPCPeerContext) -> Void)?
+  public let onPeerEnd: (@Sendable (XPCChannel) -> Void)?
 
   /// See `XPCServiceDelegate.didRejectPeer(_:error:)`.
-  public let onPeerReject: (@Sendable (XPCPeerContext, (any Error)?) -> Void)?
+  public let onPeerReject: (@Sendable (XPCChannel, (any Error)?) -> Void)?
 
   /// See `XPCServiceDelegate.serviceWillStart(host:)`.
   public let onStart: (@Sendable (XPCServiceHost) -> Void)?
@@ -122,10 +121,10 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
   ///   - shouldAccept: `nil` accepts every peer.
   public init(
     peerCodeSigningRequirement: String? = nil,
-    shouldAccept: (@Sendable (XPCPeerContext) throws -> Bool)? = nil,
-    onPeerAccept: (@Sendable (XPCPeerContext) -> Void)? = nil,
-    onPeerEnd: (@Sendable (XPCPeerContext) -> Void)? = nil,
-    onPeerReject: (@Sendable (XPCPeerContext, (any Error)?) -> Void)? = nil,
+    shouldAccept: (@Sendable (XPCChannel) throws -> Bool)? = nil,
+    onPeerAccept: (@Sendable (XPCChannel) -> Void)? = nil,
+    onPeerEnd: (@Sendable (XPCChannel) -> Void)? = nil,
+    onPeerReject: (@Sendable (XPCChannel, (any Error)?) -> Void)? = nil,
     onStart: (@Sendable (XPCServiceHost) -> Void)? = nil,
     onShutdown: (@Sendable () -> Void)? = nil
   ) {
@@ -142,20 +141,20 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
     self.init(peerCodeSigningRequirement: nil)
   }
 
-  public func shouldAcceptPeer(_ peer: XPCPeerContext) throws -> Bool {
+  public func shouldAcceptPeer(_ peer: XPCChannel) throws -> Bool {
     guard let shouldAccept else { return true }
     return try shouldAccept(peer)
   }
 
-  public func didAcceptPeer(_ peer: XPCPeerContext) {
+  public func didAcceptPeer(_ peer: XPCChannel) {
     onPeerAccept?(peer)
   }
 
-  public func peerDidEnd(_ peer: XPCPeerContext) {
+  public func peerDidEnd(_ peer: XPCChannel) {
     onPeerEnd?(peer)
   }
 
-  public func didRejectPeer(_ peer: XPCPeerContext, error: (any Error)?) {
+  public func didRejectPeer(_ peer: XPCChannel, error: (any Error)?) {
     onPeerReject?(peer, error)
   }
 
@@ -170,30 +169,26 @@ public struct XPCServiceConfiguration: XPCServiceDelegate {
 
 /// Channel-lifecycle plumbing for an XPC service: channel bookkeeping, the
 /// pre-activation audit window, rejection paths, and the cooperative
-/// shutdown pipeline — over any `XPCMessageChannel` backend. Actor-free —
+/// shutdown pipeline — over any `XPCChannel` backend. Actor-free —
 /// an actor runtime layers on top by installing a `peerHandler` that binds
-/// accepted peers, exactly as `DistributedXPC`'s `XPCServiceHost(_:_:eventLog:)`
+/// accepted peers, exactly as `DistributedXPC`'s `XPCActorService`
 /// initializer does.
 ///
 /// Lifecycle of an accepted peer: requirement install →
 /// `shouldAcceptPeer` → `peerHandler` (wire message routing) →
-/// `didAcceptPeer` → bookkeeping → activation. Rejections run before any of
+/// bookkeeping → `didAcceptPeer` → activation. Rejections run before any of
 /// that and end in `didRejectPeer(_:error:)` on an already-cancelled
 /// channel.
 ///
-/// The one backend-specific window is the accept decision point: C-backend
-/// channels arrive *before activation* (the host audits, then activates);
-/// session-backend channels were already accepted inside the listener
-/// callback, so a host rejection cancels the live channel. Everything
-/// downstream — hooks, requirement enforcement (fail-closed on the session
-/// backend), bookkeeping, shutdown pipeline — is backend-agnostic.
+/// Both backends defer incoming message delivery until the host activates
+/// the admitted channel. Session requirements still fail closed with ENOTSUP.
 ///
 /// Whether the process retires when the service shuts down is launchd's
 /// decision (on-demand reaping) or the hosting entry point's
 /// (`setShutdownCompletion`); the host itself never exits the process.
 public final class XPCServiceHost: Sendable {
   struct State {
-    var channels: [UUID: any XPCMessageChannel] = [:]
+    var channels: [UUID: XPCChannel] = [:]
     var cancelled = false
     var shutdownRequested = false
   }
@@ -201,7 +196,7 @@ public final class XPCServiceHost: Sendable {
   private let state = Mutex(State())
   private let delegate: any XPCServiceDelegate
   private let eventLog: XPCServiceEventLog?
-  private let peerHandler = Mutex<@Sendable (any XPCMessageChannel) throws -> Void>({ _ in })
+  private let peerHandler = Mutex<@Sendable (XPCChannel) throws -> Void>({ _ in })
   /// Installed by a hosting entry point; runs after
   /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
   private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
@@ -214,7 +209,7 @@ public final class XPCServiceHost: Sendable {
 
   /// - Parameters:
   ///   - delegate: the channel-lifecycle customization.
-  ///   - eventLog: when non-nil, the host records every delegate-hook
+  ///   - eventLog: when non-nil, the host records every peer and shutdown hook
   ///     invocation into it, in invocation order — the basis for hook
   ///     assertions in tests.
   public init(
@@ -239,7 +234,7 @@ public final class XPCServiceHost: Sendable {
   /// installed before the host starts accepting; defaults to a no-op for
   /// delegates that manage peers purely through the hooks.
   public func setPeerHandler(
-    _ handler: @escaping @Sendable (any XPCMessageChannel) throws -> Void
+    _ handler: @escaping @Sendable (XPCChannel) throws -> Void
   ) {
     peerHandler.withLock { $0 = handler }
   }
@@ -256,15 +251,11 @@ public final class XPCServiceHost: Sendable {
   /// entry points (`xpcMain`, `xpcSessionMain`) feed this for each incoming
   /// peer; on the C backend, feeders filter listener error events and only
   /// forward real peer channels.
-  public func accept(_ channel: any XPCMessageChannel) {
-    let peer = XPCPeerContext.make(channel)
+  public func accept(_ channel: XPCChannel) {
+    let peer = channel
 
     func reject(_ error: (any Error)?) {
-      // Reject without releasing an inactive connection (libxpc misuse):
-      // install a no-op handler, activate first, then cancel so the peer
-      // observes invalidation.
       channel.setIncomingHandler { _ in }
-      channel.activate()
       channel.cancel()
       record(.didRejectPeer, error: error)
       delegate.didRejectPeer(peer, error: error)
@@ -296,40 +287,26 @@ public final class XPCServiceHost: Sendable {
     } catch {
       return reject(error)
     }
-    record(.didAcceptPeer)
-    delegate.didAcceptPeer(peer)
-
     let key = UUID()
-    channel.addInvalidationHandler { [weak self] in
-      self?.record(.peerDidEnd)
-      self?.delegate.peerDidEnd(peer)
-      let removed = self?.state.withLock { $0.channels.removeValue(forKey: key) }
-      withExtendedLifetime(removed) {}
-    }
-    // A peer that activates but then fails the kernel-level requirement
-    // delivers XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT; cancel drives the
-    // invalidation chain above. C backend only: the session backend has no
-    // post-activation requirement events.
-    if let connection = peer.connection {
-      connection.addPeerCodeSigningErrorHandler {
-        connection.cancel()
-      }
-    }
     let accepted = state.withLock { state -> Bool in
-      guard !state.cancelled else { return false }
+      guard !state.cancelled, !state.shutdownRequested else { return false }
       state.channels[key] = channel
-      // Activate inside the critical section: a concurrent cancel() removes
-      // channels and cancels them outside the lock, and it must never
-      // observe a registered-but-never-activated channel — libxpc gives
-      // cancelling an unactivated connection no defined behavior (the
-      // reject path above deliberately activates first for that reason).
-      channel.activate()
       return true
     }
-    if !accepted {
-      channel.activate()
-      channel.cancel()
+    guard accepted else { return reject(nil) }
+    record(.didAcceptPeer)
+    delegate.didAcceptPeer(peer)
+    channel.addInvalidationHandler { [weak self, channel] in
+      guard let self else { return }
+      self.record(.peerDidEnd)
+      self.delegate.peerDidEnd(channel)
+      let removed = self.state.withLock { $0.channels.removeValue(forKey: key) }
+      withExtendedLifetime(removed) {}
     }
+    if let connection = channel.connection {
+      connection.addPeerCodeSigningErrorHandler { connection.cancel() }
+    }
+    channel.activate()
   }
 
   /// Immediately tears every accepted peer down and closes the host to new
@@ -438,7 +415,7 @@ public final class XPCServiceHost: Sendable {
   /// host never runs the pipeline. Peers arriving after cancellation are
   /// rejected through the standard path (`didRejectPeer` with a nil error).
   public func cancel() {
-    let channels = state.withLock { state -> [any XPCMessageChannel] in
+    let channels = state.withLock { state -> [XPCChannel] in
       state.cancelled = true
       let channels = Array(state.channels.values)
       state.channels.removeAll()
@@ -454,26 +431,5 @@ public final class XPCServiceHost: Sendable {
     if !requested {
       cancelShutdownWaiters(resuming: false)
     }
-  }
-}
-
-extension XPCServiceDelegate {
-  /// Runs the XPC service event loop with `Self` as the delegate — the
-  /// `@main` entry point for a delegate type constructible with no
-  /// arguments. Never returns; the hosted service *is* the process, so a
-  /// cooperative shutdown exits it.
-  ///
-  /// The default peer handler ignores incoming traffic: a plain service
-  /// that should respond to messages installs its routing from
-  /// `serviceWillStart(host:)` via `host.setPeerHandler(...)`.
-  @MainActor
-  public static func main() {
-    let delegate = Self()
-    let host = XPCServiceHost(delegate)
-    // The hosted service *is* the process: retire it right after the
-    // delegate's shutdown hook has run.
-    host.setShutdownCompletion { exit(0) }
-    delegate.serviceWillStart(host: host)
-    xpcMain { connection in host.accept(connection) }
   }
 }

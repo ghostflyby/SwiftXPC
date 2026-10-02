@@ -129,7 +129,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func RequestServiceShutdownWithoutServerIsNoOp() async throws {
-  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
+  let system = XPCDistributedActorSystem()
   // Client-side systems host no server session: this must not route anywhere.
   system.requestServiceShutdown()
 }

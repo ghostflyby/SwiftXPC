@@ -43,6 +43,7 @@ final class _ConnectionHandlerState: Sendable {
     var handlers = Handlers()
   }
 
+  let activated = Mutex(false)
   let invalidation = XPCInvalidationChain()
   private let state = Mutex(State())
 
@@ -95,7 +96,7 @@ final class _ConnectionHandlerState: Sendable {
       // strongly and which would otherwise form a connection ->
       // event-handler block -> closure -> connection cycle. (The invalidation
       // chain clears itself on delivery.)
-      withHandlers { $0.peerCodeSigningError = nil }
+      withHandlers { $0 = Handlers() }
       invalidation.take()()
       return
     }
@@ -300,6 +301,13 @@ extension XPCConnection {
 
 extension XPCConnection {
   public func activate() {
+    guard
+      _handlerState.activated.withLock({ activated in
+        if activated { return false }
+        activated = true
+        return true
+      })
+    else { return }
     // libxpc traps (_xpc_api_misuse, "Activation of a connection without an
     // event handler.") when a connection is activated before any event
     // handler was installed. Install the routing handler eagerly; a later
@@ -452,4 +460,40 @@ extension XPCConnection: XPCMarshal {
     }
     return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object))
   }
+}
+
+extension XPCConnection {
+  func applyPeerCodeSigningRequirement(
+    _ requirement: String?
+  ) throws(XPCPeerRequirementError) {
+    guard let requirement else { return }
+    try setPeerCodeSigningRequirement(requirement)
+  }
+}
+
+extension XPCConnection {
+  func setIncomingHandler(_ handler: @escaping @Sendable (XPCIncomingMessage) -> Void) {
+    setEventHandler { object in
+      guard xpc_get_type(object) == XPC_TYPE_DICTIONARY else { return }
+      // libxpc handles are thread-safe: the box carries the raw handle
+      // across the reply closure's isolation boundary.
+      let box = SendableXPCObject(object)
+      handler(
+        XPCIncomingMessage(
+          payload: box.raw,
+          replyer: { replyPayload in
+            let received = XPCDictionary(box.raw)
+            guard var reply = XPCDictionary(replyTo: XPCDictionary(box.raw)),
+              let remote = received.remoteConnection
+            else { return }
+            // create_reply only binds the destination; merge the envelope
+            // payload keys into it before sending.
+            XPCDictionary(replyPayload).forEach { key, value in
+              reply[key] = value
+            }
+            remote.sendAndForget(message: reply)
+          }))
+    }
+  }
+
 }

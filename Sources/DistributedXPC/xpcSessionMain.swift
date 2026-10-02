@@ -4,7 +4,7 @@ import Dispatch
 import Foundation
 import SwiftXPC
 
-/// The session-backend process entry point: serves `Root.shared` over an
+/// The session-backend process entry point: serves one root instance over an
 /// `XPCListener` bound to the launchd mach service name `service`, through
 /// the same unified `XPCServiceHost` (delegate hooks, requirement
 /// enforcement, cooperative shutdown) as the C backend, and never returns.
@@ -16,10 +16,13 @@ public func xpcSessionMain<Root: XPCRootActor>(
   _ rootType: Root.Type = Root.self,
   delegate: some XPCServiceDelegate = XPCServiceConfiguration()
 ) -> Never {
-  let server = XPCServiceHost(rootType, delegate, transport: .session)
+  let actorService = XPCActorService(rootType, delegate, transport: .session)
+  let server = actorService.host
   // The hosted service *is* the process: retire it right after the
   // delegate's shutdown hook has run.
-  server.setShutdownCompletion { exit(0) }
+  server.setShutdownCompletion {
+    actorService.cancel(); exit(0)
+  }
   delegate.serviceWillStart(host: server)
   let acceptor: XPCChannelAcceptor
   do {

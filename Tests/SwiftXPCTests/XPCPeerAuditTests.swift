@@ -168,11 +168,13 @@ private func ownSigningIdentifier() -> String? {
 @Test func SyncSendSurfacesInterruptionFromRejectedPeer() async throws {
   let channel = try RootChannel(
     AuditRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
-  channel.client.setEventHandler { _ in }
+  defer { channel.close() }
+  let connection = try #require(channel.client.connection)
+  connection.setEventHandler { _ in }
   channel.client.activate()
 
   #expect(throws: XPCChannelError.interrupted) {
-    _ = try channel.client.send(message: XPCDictionary())
+    _ = try connection.send(message: XPCDictionary())
   }
 }
 

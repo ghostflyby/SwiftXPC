@@ -51,12 +51,12 @@ struct XPCServiceDelegateTests {
     let audits = Mutex<Int>(0)
     let accepted = Mutex<Int>(0)
 
-    func shouldAcceptPeer(_ peer: XPCPeerContext) throws -> Bool {
+    func shouldAcceptPeer(_ peer: XPCChannel) throws -> Bool {
       audits.withLock { $0 += 1 }
       return true
     }
 
-    func didAcceptPeer(_ peer: XPCPeerContext) {
+    func didAcceptPeer(_ peer: XPCChannel) {
       accepted.withLock { $0 += 1 }
     }
   }
@@ -89,7 +89,7 @@ struct XPCServiceDelegateTests {
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
       guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object))
+      host.accept(XPCChannel(XPCConnection(xpc_object: object)))
     }
     listener.activate()
     let client = try XPCConnection.unmarshal(from: listener.marshal())
@@ -101,7 +101,7 @@ struct XPCServiceDelegateTests {
     listener.cancel()
   }
 
-  @Test func DefaultHostingServesSingletonRoot() async throws {
+  @Test func DefaultHostingServesServiceRoot() async throws {
     let channel = try RootChannel(DelegateRoot.self)
     defer { channel.close() }
     let root = try DelegateRoot.connect(using: channel.client)
@@ -124,7 +124,7 @@ struct XPCServiceDelegateTests {
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
       guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object))
+      host.accept(XPCChannel(XPCConnection(xpc_object: object)))
     }
     listener.activate()
 
@@ -265,7 +265,7 @@ struct XPCServiceDelegateTests {
     let listener = XPCConnection(name: nil)
     listener.setEventHandler { object in
       guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
-      host.accept(XPCConnection(xpc_object: object))
+      host.accept(XPCChannel(XPCConnection(xpc_object: object)))
     }
     listener.activate()
 

@@ -3,148 +3,13 @@
 import Distributed
 import Foundation
 import SwiftXPC
-import Synchronization
 
-/// Marks a concrete distributed actor as the bootstrap entry point of an
-/// XPC service: the actor is a process-wide singleton hosted on the
-/// long-lived service host system, and every accepted peer channel binds to
-/// `shared` under `XPCActorID.root` — the one-instance-per-process shape of
-/// a typical XPC service. Clients obtain it via `connect(toService:)` /
-/// `connect(using:)`.
-///
-/// Conformance is nearly free: `init(actorSystem:)` plus the export
-/// metadata are all a bare root needs — `shared` has a default
-/// implementation that lazily creates and caches
-/// `Self(actorSystem: .serviceHost)`. Override `shared` when construction
-/// needs dependencies:
-///
-///     private let sharedRoot = ServiceRoot(greeter: Greeter(), actorSystem: .serviceHost)
-///     extension ServiceRoot: XPCRootActor {
-///       static var shared: ServiceRoot { sharedRoot }
-///     }
-///
-/// Services that need per-connection behavior build it on top of the
-/// singleton: hand out child actors from `shared`'s methods, or route by
-/// peer identity inside the delegate's `didAcceptPeer`.
+/// The bootstrap actor type constructed once per actor service.
+/// All accepted channels on that service bind to the same root instance.
 public protocol XPCRootActor: XPCExportableActor,
   XPCDistributedTargetMetadataProviding
 {
   init(actorSystem: XPCDistributedActorSystem)
-
-  /// The process-wide singleton root. Prefer the default implementation;
-  /// override with a computed property over a file-scoped constant when
-  /// construction needs dependencies — a `static let` stored on the actor
-  /// itself cannot call `init(actorSystem:)` under Swift 6 strict
-  /// concurrency:
-  ///
-  ///     private let sharedRoot = ServiceRoot(actorSystem: .serviceHost)
-  ///     extension ServiceRoot: XPCRootActor {
-  ///       static var shared: ServiceRoot { sharedRoot }
-  ///     }
-  ///
-  /// Materializing `shared` before the first connection is safe: the host
-  /// system reserves the `.root` identity at creation, so the singleton
-  /// keeps that identity regardless of creation order. Its registry entry
-  /// is never reclaimed.
-  static var shared: Self { get }
-}
-
-/// Cache behind the default `shared`. A `~Copyable` struct over a `Mutex`:
-/// protocols cannot hold static stored properties, and a noncopyable
-/// registry cannot be aliased into a second mutable copy.
-private struct SharedRootRegistry: Sendable, ~Copyable {
-  private let roots = Mutex<[ObjectIdentifier: any XPCRootActor]>([:])
-  /// Serializes first construction. Creating outside a lock can build two
-  /// instances under a concurrent first access: both consume identities on
-  /// the service host (one wins `.root`, the other gets a stray ID and is
-  /// pinned in the registry by `actorReady`), and only one can be cached —
-  /// if the cached one is not the `.root` instance, every subsequent peer's
-  /// identity check fails permanently. The lock is held only across
-  /// construction, and the cache is re-checked inside it, so `init` that
-  /// re-enters the registry for a different root type stays correct. The
-  /// conformer's `init(actorSystem:)` must not re-enter `shared` for the
-  /// same type.
-  private let creation = Mutex<Void>(())
-
-  func root<R: XPCRootActor>(for rootType: R.Type) -> R {
-    let key = ObjectIdentifier(rootType)
-    if let existing = roots.withLock({ $0[key] }) {
-      return existing as! R
-    }
-    return creation.withLock { _ in
-      if let existing = roots.withLock({ $0[key] }) {
-        return existing as! R
-      }
-      let created = R(actorSystem: .serviceHost)
-      roots.withLock {
-        $0[key] = created
-      }
-      return created
-    }
-  }
-}
-
-private let sharedRootRegistry = SharedRootRegistry()
-
-extension XPCRootActor {
-  /// The process-wide singleton root, lazily created and cached on the
-  /// long-lived service host system. Concurrent first accesses are
-  /// serialized: exactly one instance is created and cached.
-  public static var shared: Self {
-    sharedRootRegistry.root(for: Self.self)
-  }
-}
-
-extension XPCServiceHost {
-  /// Serves `rootType`'s process-wide singleton on every accepted peer:
-  /// the installed peer handler binds each connection to `Root.shared`
-  /// under `XPCActorID.root`. This is the in-process root-actor host used
-  /// by `xpcMain`/`XPCApp.main()`, and it is available directly to
-  /// embedders and tests that drive `accept(_:)` themselves.
-  ///
-  /// - Parameters:
-  ///   - rootType: the concrete root actor type served on every accepted
-  ///     peer; only its `shared` singleton is ever constructed.
-  ///   - delegate: the connection-lifecycle customization; see
-  ///     `XPCServiceDelegate` for the per-hook semantics. Defaults to a
-  ///     plain `XPCServiceConfiguration`.
-  ///   - transport: the backend exported actor references mint their
-  ///     listeners over. Defaults to the C backend; session-hosted services
-  ///     (`xpcSessionMain`) pass `.session`.
-  ///   - eventLog: when non-nil, the host records every delegate-hook
-  ///     invocation into it, in invocation order.
-  public convenience init<Root: XPCRootActor>(
-    _ rootType: Root.Type = Root.self,
-    _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
-    transport: XPCChannelTransport = .cConnection,
-    eventLog: XPCServiceEventLog? = nil
-  ) {
-    self.init(delegate, eventLog: eventLog)
-    setPeerHandler { [weak self] connection in
-      let serviceHost = XPCDistributedActorSystem.serviceHost
-      // Reserve before the first `shared` access so lazy creation assigns
-      // the reserved identity (one root actor type per process).
-      serviceHost.reserveRootID()
-      // Exported references ride the backend that hosts this service.
-      serviceHost.setExportTransport(transport)
-      // Actors of the singleton reach the cooperative shutdown path through
-      // the host system; a weak reference avoids a server <-> system cycle.
-      serviceHost.setServiceShutdownHandler { [weak self] in self?.requestShutdown() }
-      let root = Root.shared
-      // Programming-error guard: if anything else on the service host
-      // consumed the `.root` identity before the singleton was created,
-      // refuse the peer instead of silently misrouting every call
-      // addressed to `.root`. Throwing rejects the peer through the host's
-      // standard rejection path.
-      guard root.id == .root else {
-        // Do not leave this peer's reservation pending: it would hand
-        // `.root` to the next unrelated actor created on the host.
-        serviceHost.clearRootReservation()
-        throw XPCDispatchError.unknownActor(.root)
-      }
-      serviceHost.bind(connection, to: root)
-    }
-  }
 }
 
 /// The SwiftUI-`App`-style entry point: a type carrying both the service's
@@ -155,18 +20,18 @@ extension XPCServiceHost {
 ///       typealias Root = ServiceRoot
 ///
 ///       var peerCodeSigningRequirement: String? { "identifier \"com.example.agent\"" }
-///       func shouldAcceptPeer(_ connection: XPCConnection) throws -> Bool {
+///       func shouldAcceptPeer(_ connection: XPCChannel) throws -> Bool {
 ///         connection.euid == 501
 ///       }
 ///     }
 ///
 /// The type must be constructible with no arguments: the library-provided
 /// `main()` hosts a fresh instance as the delegate of an `XPCServiceHost`
-/// serving `Root.shared`, and exits the process after a cooperative
+/// serving one root per service, and exits the process after a cooperative
 /// shutdown. All customization lives in the conformer's own requirement
 /// implementations, exactly as in `xpcMain`.
 public protocol XPCApp: XPCServiceDelegate {
-  /// The singleton root actor type served by the app.
+  /// The root actor type constructed by the app.
   associatedtype Root: XPCRootActor
 
   /// Creates the delegate for hosting.
@@ -185,7 +50,7 @@ extension XPCApp {
 }
 
 /// Runs the XPC service event loop with default service behavior, serving
-/// `rootType`'s singleton on every accepted peer connection. Never returns.
+/// one `rootType` instance on every accepted peer connection. Never returns.
 /// Must run on the main thread.
 ///
 /// Equivalent to `xpcMain(rootType, XPCServiceConfiguration())`: peers are
@@ -197,17 +62,20 @@ extension XPCApp {
 /// service process (`xpc_main` aborts anywhere else), so a cooperative
 /// shutdown unconditionally ends the process: see the delegate overload.
 /// For in-process hosting — tests and embedders — use `xpcTest(_:_:)` or a
-/// standalone `XPCServiceHost(rootType, delegate)`, neither of which ever
+/// standalone `XPCActorService(rootType, delegate)`, neither of which ever
 /// exits the process.
 @MainActor
 public func xpcMain<Root>(
   _ rootType: Root.Type,
   _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
 ) -> Never where Root: XPCRootActor {
-  let server = XPCServiceHost(rootType, delegate)
+  let service = XPCActorService(rootType, delegate)
+  let server = service.host
   // The hosted service *is* the process: retire it right after the
   // delegate's shutdown hook has run.
-  server.setShutdownCompletion { exit(0) }
+  server.setShutdownCompletion {
+    service.cancel(); exit(0)
+  }
   delegate.serviceWillStart(host: server)
   return SwiftXPC.xpcMain { connection in server.accept(connection) }
 }
@@ -224,7 +92,7 @@ extension XPCRootActor {
   ///     installed makes `connect` throw (fail-closed).
   public static func connect(
     toService serviceName: String,
-    transport: XPCChannelTransport = XPCChannelTransport.processDefault,
+    transport: XPCChannelTransport = .cConnection,
     peerCodeSigningRequirement: String? = nil
   ) throws -> Self {
     try XPCRootConnection<Self>.connect(
@@ -243,7 +111,7 @@ extension XPCRootActor {
   /// connection the install reports success but the channel then fails to
   /// establish (hangs or interrupts) — pass a fresh connection.
   public static func connect(
-    using channel: any XPCMessageChannel,
+    using channel: XPCChannel,
     peerCodeSigningRequirement: String? = nil
   ) throws -> Self {
     try XPCRootConnection<Self>.connect(

@@ -33,17 +33,17 @@ import Testing
 
   private final class ChannelBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: (any XPCMessageChannel)?
+    private var value: (XPCChannel)?
     let stored = DispatchSemaphore(value: 0)
 
-    func store(_ channel: any XPCMessageChannel) {
+    func store(_ channel: XPCChannel) {
       lock.lock()
       value = channel
       lock.unlock()
       stored.signal()
     }
 
-    func wait(_ timeout: TimeInterval) -> (any XPCMessageChannel)? {
+    func wait(_ timeout: TimeInterval) -> (XPCChannel)? {
       guard stored.wait(timeout: .now() + timeout) == .success else { return nil }
       lock.lock()
       defer { lock.unlock() }
@@ -75,7 +75,7 @@ import Testing
     }
     try acceptor.activate()
 
-    let client = XPCSessionChannel(dialing: XPCEndpoint(acceptor.wireEndpoint))
+    let client = try XPCChannelTransport.session.channel(dialing: acceptor.wireEndpoint)
     client.setIncomingHandler { _ in }
     client.activate()
     // A session dials lazily: the first send establishes the connection.
@@ -93,7 +93,7 @@ import Testing
 
     var ping = XPCDictionary()
     ping["ping"] = "hello"
-    let reply = try await client.send(ping.xpcObject, replyQueue: nil)
+    let reply = try await client.send(ping.xpcObject)
     #expect(XPCDictionary(reply)["echo"] == "hello")
 
     // Cooperative shutdown: cancels accepted channels and fires completion.

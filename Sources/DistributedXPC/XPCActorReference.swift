@@ -30,24 +30,21 @@ extension XPCExportableActor {
   /// Imports an actor reference by dialing the embedded endpoint and resolving
   /// the actor against the fresh channel, yielding a remote proxy.
   public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
+    try unmarshal(from: object, transport: XPCActorDecodingContext.transport)
+  }
+
+  /// Imports a standalone reference with an explicit local backend policy.
+  public static func unmarshal(
+    from object: xpc_object_t, transport: XPCChannelTransport
+  ) throws(XPCMarshalError) -> Self {
     let reference = try XPCActorReferenceWire.unmarshal(from: object)
     guard reference.version == XPCWireProtocol.currentVersion else {
       throw .unsupportedProtocolVersion(
         expected: XPCWireProtocol.currentVersion, actual: reference.version)
     }
 
-    // The dialing backend is local policy: endpoints are backend-agnostic,
-    // so the process default applies even when the reference was minted by
-    // the other backend.
-    let transport = XPCChannelTransport.processDefault
-    let connection: any XPCMessageChannel
-    do {
-      connection = try transport.channel(dialing: reference.endpoint.raw)
-    } catch {
-      throw XPCMarshalError.actorResolutionFailed(String(describing: error))
-    }
-    let system = XPCDistributedActorSystem(
-      connection: connection, ownsConnection: true, transport: transport)
+    let connection = try transport.channel(dialing: reference.endpoint.raw)
+    let system = XPCDistributedActorSystem(connection: connection)
     // Remember the wire so this proxy can be forwarded later: re-exporting
     // re-emits the stored endpoint, giving the next receiver its own direct
     // channel to the owning process.
@@ -165,9 +162,9 @@ final class XPCActorExportSession: Sendable {
 /// Cancelling an already-dead connection is a no-op.
 final class PeerBox: Sendable {
   let id = UUID()
-  let connection: any XPCMessageChannel
+  let connection: XPCChannel
 
-  init(_ connection: any XPCMessageChannel) {
+  init(_ connection: XPCChannel) {
     self.connection = connection
   }
 
@@ -195,7 +192,7 @@ extension XPCDistributedActorSystem {
       return try reference.marshal()
     }
     // Child reclamation may have released the registry entry of a local
-    // actor that is still alive (the singleton kept a reference). Re-adopt
+    // actor that is still alive (the root kept a reference). Re-adopt
     // it; a remote proxy without a stored wire is genuinely unexportable.
     // `__isLocalActor` is the runtime's public locality probe.
     guard __isLocalActor(actor) else {
@@ -286,4 +283,10 @@ extension XPCDistributedActorSystem {
     // may now be quiescent.
     notifyDrainIfQuiescent()
   }
+}
+
+/// Inherited by nested marshal decoders while processing an invocation or reply.
+/// Direct unmarshal calls use the stable C default; no process-global mutation.
+enum XPCActorDecodingContext {
+  @TaskLocal static var transport: XPCChannelTransport = .cConnection
 }

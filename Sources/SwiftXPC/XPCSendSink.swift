@@ -48,7 +48,7 @@ final class XPCSendSink: Sendable {
   /// buffered for a not-yet-installed one. Later calls are dropped.
   func finish(_ outcome: Outcome) {
     state.withLock { st in
-      guard !st.delivered else { return }
+      guard !st.delivered, st.outcome == nil else { return }
       if let continuation = st.continuation {
         st.continuation = nil
         st.delivered = true

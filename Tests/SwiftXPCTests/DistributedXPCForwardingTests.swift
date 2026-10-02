@@ -66,7 +66,8 @@ distributed actor ForwardRoot: XPCRootActor {
 @Test func RootServerRejectsPeerBeforeActivation() async throws {
   let channel = try RootChannel(
     ForwardRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
-  channel.client.setEventHandler { _ in }
+  let connection = try #require(channel.client.connection)
+  connection.setEventHandler { _ in }
   // The client side is the harness's already-active production channel;
   // the pre-activation contract under test is server-side (reject before
   // the peer is activated), so re-driving the client here is equivalent.
@@ -74,7 +75,7 @@ distributed actor ForwardRoot: XPCRootActor {
   defer { channel.close() }
 
   do {
-    _ = try await channel.client.send(message: XPCDictionary())
+    _ = try await connection.send(message: XPCDictionary())
     Issue.record("Expected rejected peer send to fail")
   } catch XPCChannelError.interrupted {
     // expected: the server cancels rejected peers, which the client observes

@@ -44,13 +44,11 @@ import Testing
       SessionRoot.self, transport: .session, watchdog: .seconds(10))
     defer { service.close() }
 
-    // makeWorker() exports the child through the coordinator's system,
-    // whose export listeners ride the session backend; the client-side
-    // import dials with the process default (C), exercising cross-backend
-    // interop over the backend-agnostic endpoint.
+    // Nested actor references inherit the client system's session policy.
     let worker = try await service.client.root.makeWorker()
     #expect(try await worker.work("export") == "worked: export")
     #expect(service.transport == .session)
+    #expect(worker.actorSystem.transport == .session)
   }
 
   @Test func SessionBackendPeerDropIsTerminalForTheClientChannel() async throws {
@@ -63,6 +61,7 @@ import Testing
     // fails terminally instead of transparently recovering like the C
     // backend does.
     service.dropServerPeer()
+    await service.client.connection.waitForDisconnection()
     await #expect(throws: XPCChannelError.self) {
       _ = try await service.client.root.makeWorker()
     }

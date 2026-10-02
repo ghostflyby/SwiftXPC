@@ -33,7 +33,7 @@ private let sampleActorWithoutMetadataPingTargetIdentifier =
   "$s13SwiftXPCTests26SampleActorWithoutMetadataC4pingyyYaKFTE"
 
 private func makeSystem() -> XPCDistributedActorSystem {
-  XPCDistributedActorSystem(connection: makeIdleConnection())
+  XPCDistributedActorSystem()
 }
 
 @Test func DispatchInvocationExecutesDistributedTarget() async throws {
@@ -234,4 +234,11 @@ private func makeSystem() -> XPCDistributedActorSystem {
   let identifier =
     "$s7RimeKit0A11ServiceRootC12selectSchema_3forSbSS_AA0A9SessionIDVtYaAA0A5ErrorOYKF"
   #expect(parseTargetIdentifier(identifier) == "selectSchema(for:)")
+}
+
+@Test func PrivateActorDiscriminatorDoesNotBecomeMethodName() {
+  let target =
+    "$s13SwiftXPCTests13SuspendedRoot33_4A1D767A288444EBE4C03F0BF5431DB0LLC4holdSiyYaKFTE"
+  let metadata = ["hold()": XPCDistributedTargetMetadata()]
+  #expect(parseTargetIdentifier(target, matching: metadata) == "hold()")
 }

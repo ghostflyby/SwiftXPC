@@ -18,7 +18,7 @@ private final class AttemptCounter: Sendable {
       return value
     }
     if attempt <= failures {
-      throw XPCChannelError.invalid
+      throw XPCChannelError.interrupted
     }
     return try await body(attempt)
   }
@@ -67,12 +67,39 @@ private final class AttemptCounter: Sendable {
   do {
     _ = try await handle.retrying(policy) { attempt in
       attempts.withLock { $0 += 1 }
-      throw XPCChannelError.invalid
+      throw XPCChannelError.interrupted
     }
     Issue.record("Expected retry exhaustion")
-  } catch XPCChannelError.invalid {
+  } catch XPCChannelError.interrupted {
     #expect(attempts.withLock { $0 } == 3)
   }
+}
+
+@Test(arguments: XPCChannelTransport.allCases)
+func RetryingDoesNotRetryTerminalChannelErrors(transport: XPCChannelTransport) async throws {
+  let service = try xpcTest(ReconnectRoot.self, transport: transport)
+  defer { service.close() }
+  let attempts = Mutex(0)
+  await #expect(throws: XPCChannelError.invalid) {
+    try await service.client.retrying { _ -> Int in
+      attempts.withLock { $0 += 1 }
+      throw XPCChannelError.invalid
+    }
+  }
+  #expect(attempts.withLock { $0 } == 1)
+}
+
+@Test func RetryingDoesNotRetrySessionInterruptions() async throws {
+  let service = try xpcTest(ReconnectRoot.self, transport: .session)
+  defer { service.close() }
+  let attempts = Mutex(0)
+  await #expect(throws: XPCChannelError.interrupted) {
+    try await service.client.retrying { _ -> Int in
+      attempts.withLock { $0 += 1 }
+      throw XPCChannelError.interrupted
+    }
+  }
+  #expect(attempts.withLock { $0 } == 1)
 }
 
 // MARK: - Lifecycle events and peer callbacks

@@ -65,7 +65,7 @@ public struct SaveStringError: Error, XPCMarshal, Equatable {
 }
 
 private func makeOverloadSystem() -> XPCDistributedActorSystem {
-  XPCDistributedActorSystem(connection: makeIdleConnection())
+  XPCDistributedActorSystem()
 }
 
 // MARK: - Reproduction: collisions in the generated metadata table

@@ -229,11 +229,9 @@ public func xpcTransactionEnd() {
 extension XPCConnection {
 
   public var invalidationReason: String? {
-    if let s = xpc_connection_copy_invalidation_reason(xpc_object) {
-      String(cString: s)
-    } else {
-      nil
-    }
+    guard let reason = xpc_connection_copy_invalidation_reason(xpc_object) else { return nil }
+    defer { free(reason) }
+    return String(cString: reason)
   }
 }
 

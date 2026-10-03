@@ -20,6 +20,10 @@ public struct XPCInvocationResultHandler: DistributedTargetInvocationResultHandl
   public func onReturnVoid() async throws { try send(XPCReplyEnvelope(kind: .returnVoid)) }
 
   public func onThrow<Err: Error>(error: Err) async throws {
+    if error is CancellationError {
+      try send(XPCReplyEnvelope(kind: .cancelled))
+      return
+    }
     guard let error = error as? any ErrorXPCMarshal else {
       throw XPCRemoteCallError.unsupportedThrownErrorType(String(describing: Err.self))
     }

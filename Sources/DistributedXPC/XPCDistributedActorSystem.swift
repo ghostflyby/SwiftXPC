@@ -299,6 +299,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       try await executeDistributedTarget(
         on: actor, target: message.target,
         invocationDecoder: &decoder, handler: resultHandler)
+    } catch let error as CancellationError {
+      throw error
     } catch let error as any ErrorXPCMarshal {
       throw error
     } catch {
@@ -340,6 +342,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// Even an error whose custom encoder fails must complete the reply.
   func replyToFailure(_ error: any Error, message: XPCIncomingMessage) {
     do {
+      if error is CancellationError {
+        message.reply(try XPCReplyEnvelope(kind: .cancelled).marshal())
+        return
+      }
       let payload: xpc_object_t
       if let error = error as? any ErrorXPCMarshal {
         payload = try error.marshal()

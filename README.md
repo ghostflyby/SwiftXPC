@@ -74,6 +74,10 @@ system keeps an immutable backend policy. Nested actor references inherit the
 receiving system's policy during invocation or reply decoding; standalone
 imports can use `Worker.unmarshal(from: payload, transport: .session)`.
 
+Service-side invocation cancellation reaches the caller as `CancellationError`
+and leaves the channel usable. The distributed wire protocol is version 2;
+upgrade both peers together. Version 1 peers are rejected explicitly.
+
 `XPCChannel` owns its native resource and cancels on deinitialization. Use
 `channel.connection` for C-specific operations; identity, signing requirements,
 and interruption handlers stay on `XPCConnection`. Session admission runs inside

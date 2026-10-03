@@ -4,7 +4,7 @@ import Distributed
 import SwiftXPC
 
 enum XPCWireProtocol {
-  public static let currentVersion: UInt64 = 1
+  public static let currentVersion: UInt64 = 2
 }
 
 @XPCMarshal
@@ -36,6 +36,8 @@ public enum XPCReplyKind: Sendable, Hashable, Equatable {
   case returnValue
   case returnVoid
   case throwError
+  /// The service-side invocation ended with CancellationError.
+  case cancelled
 }
 
 struct XPCReplyEnvelope: @unchecked Sendable {
@@ -136,6 +138,8 @@ extension XPCReplyEnvelope {
         throw XPCRemoteCallError.missingPayload(.throwError)
       }
       throw try decodeThrownError(payload, as: errorType, fallback: fallbackErrorType)
+    case .cancelled:
+      throw CancellationError()
     }
   }
 
@@ -154,6 +158,8 @@ extension XPCReplyEnvelope {
         throw XPCRemoteCallError.missingPayload(.throwError)
       }
       throw try decodeThrownError(payload, as: errorType, fallback: fallbackErrorType)
+    case .cancelled:
+      throw CancellationError()
     }
   }
 

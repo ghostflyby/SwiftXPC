@@ -32,6 +32,42 @@ distributed actor SampleReplyActorWithoutMetadata {
   }
 }
 
+@XPCService
+distributed actor CancellationReplyRoot: XPCRootActor {
+  typealias ActorSystem = XPCDistributedActorSystem
+
+  distributed func cancelValue() throws -> String {
+    withUnsafeCurrentTask { $0?.cancel() }
+    try Task.checkCancellation()
+    return "unreachable"
+  }
+
+  distributed func cancelVoid() throws {
+    withUnsafeCurrentTask { $0?.cancel() }
+    try Task.checkCancellation()
+  }
+
+  distributed func ping() -> String { "alive" }
+}
+
+@Test(arguments: XPCChannelTransport.allCases, [false, true])
+func ServiceTaskCancellationReachesCaller(
+  transport: XPCChannelTransport, returningVoid: Bool
+) async throws {
+  let service = try xpcTest(
+    CancellationReplyRoot.self, transport: transport, watchdog: .seconds(10))
+  defer { service.close() }
+  await #expect(throws: CancellationError.self) {
+    if returningVoid {
+      try await service.client.root.cancelVoid()
+    } else {
+      _ = try await service.client.root.cancelValue()
+    }
+  }
+  // Cancelling one invocation must not terminate its channel or the next task.
+  #expect(try await service.client.root.ping() == "alive")
+}
+
 @Test func DecodeReplyReturnsValue() throws {
   let envelope = XPCReplyEnvelope(kind: .returnValue, payload: try "pong".marshal())
 
@@ -229,5 +265,27 @@ private enum UnencodableReplyError: Error, XPCMarshal {
   guard case .targetExecutionFailed = error else {
     Issue.record("Unexpected fallback error: \(error)")
     return
+  }
+}
+
+@Test func CancellationFailureStillCompletesReply() throws {
+  let replies = Mutex<[SendableXPCObject]>([])
+  let message = XPCIncomingMessage(payload: XPCDictionary().xpcObject) { reply in
+    replies.withLock { $0.append(SendableXPCObject(reply)) }
+  }
+  XPCDistributedActorSystem().replyToFailure(CancellationError(), message: message)
+  #expect(replies.withLock { $0.count } == 1)
+  let raw = try #require(replies.withLock { $0.first })
+  let envelope = try XPCReplyEnvelope.unmarshal(from: raw.raw)
+  #expect(envelope.kind == .cancelled)
+  #expect(envelope.payload == nil)
+  #expect(throws: CancellationError.self) {
+    let _: String = try envelope.decodeReturnValue(
+      throwing: SampleReplyError.self, returning: String.self,
+      fallbackErrorType: SampleReplyError.self)
+  }
+  #expect(throws: CancellationError.self) {
+    try envelope.decodeReturnVoid(
+      throwing: SampleReplyError.self, fallbackErrorType: SampleReplyError.self)
   }
 }

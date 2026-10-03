@@ -6,7 +6,8 @@ import SwiftXPC
 /// Errors produced while dispatching an inbound invocation on the service
 /// side. Surfaces to the caller inside a `.throwError` reply envelope;
 /// `targetExecutionFailed` additionally covers errors thrown by the target
-/// method itself when its typed error is not marshalable.
+/// method itself when its typed error is not marshalable. CancellationError
+/// uses a separate `.cancelled` reply and is restored directly on the caller.
 @XPCMarshal
 public enum XPCDispatchError: Error, Sendable, Equatable {
   case unknownActor(XPCActorID)

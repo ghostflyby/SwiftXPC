@@ -105,6 +105,18 @@ extension XPCReplyEnvelope: XPCMarshal {
 }
 
 extension XPCReplyEnvelope {
+  /// Nonthrowing last resort: a valid error envelope with no encodable payload.
+  /// The client deterministically reports missingPayload(.throwError).
+  static func encodingFailureReply() -> xpc_object_t {
+    let dictionary = xpc_dictionary_create(nil, nil, 0)
+    xpc_dictionary_set_uint64(dictionary, "version", XPCWireProtocol.currentVersion)
+    let kind = xpc_array_create(nil, 0)
+    xpc_array_append_value(kind, xpc_string_create("throwError"))
+    xpc_dictionary_set_value(dictionary, "kind", kind)
+    xpc_dictionary_set_bool(dictionary, "hasPayload", false)
+    return dictionary
+  }
+
   func decodeReturnValue<Res, Err>(
     throwing errorType: Err.Type,
     returning returnType: Res.Type,

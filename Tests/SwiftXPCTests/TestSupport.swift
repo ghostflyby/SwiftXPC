@@ -107,3 +107,12 @@ final class ActorServiceChannel<Root: XPCRootActor>: @unchecked Sendable {
 
   deinit { close() }
 }
+
+/// Waits on a dedicated queue so a stalled regression reports a bounded failure.
+func waitForTestSignal(_ signal: DispatchSemaphore, seconds: Double = 5) async -> Bool {
+  await withCheckedContinuation { continuation in
+    DispatchQueue.global().async {
+      continuation.resume(returning: signal.wait(timeout: .now() + seconds) == .success)
+    }
+  }
+}

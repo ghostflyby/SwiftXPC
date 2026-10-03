@@ -3,6 +3,7 @@
 import Distributed
 import SwiftXPC
 import Testing
+import Synchronization
 
 @testable import DistributedXPC
 @testable import SwiftXPC
@@ -190,4 +191,43 @@ distributed actor SampleReplyActorWithoutMetadata {
   let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
   #expect(decoded.kind == .returnVoid)
   #expect(decoded.payload == nil)
+}
+
+private enum UnencodableReplyError: Error, XPCMarshal {
+  case failure
+  func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    throw .missingKey("intentional encoding failure")
+  }
+  static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self { .failure }
+}
+
+@Test func ErrorEncodingFailureStillCompletesReply() throws {
+  let replies = Mutex<[SendableXPCObject]>([])
+  let message = XPCIncomingMessage(payload: XPCDictionary().xpcObject) { reply in
+    replies.withLock { $0.append(SendableXPCObject(reply)) }
+  }
+  XPCDistributedActorSystem().replyToFailure(UnencodableReplyError.failure, message: message)
+  #expect(replies.withLock { $0.count } == 1)
+  let raw = try #require(replies.withLock { $0.first })
+  let envelope = try XPCReplyEnvelope.unmarshal(from: raw.raw)
+  #expect(envelope.kind == .throwError)
+  #expect(throws: XPCRemoteCallError.missingPayload(.throwError)) {
+    try envelope.decodeReturnVoid(throwing: UnencodableReplyError.self)
+  }
+}
+
+@Test func NonmarshalableFailureStillCompletesReply() throws {
+  struct PlainFailure: Error {}
+  let replies = Mutex<[SendableXPCObject]>([])
+  let message = XPCIncomingMessage(payload: XPCDictionary().xpcObject) { reply in
+    replies.withLock { $0.append(SendableXPCObject(reply)) }
+  }
+  XPCDistributedActorSystem().replyToFailure(PlainFailure(), message: message)
+  let raw = try #require(replies.withLock { $0.first })
+  let envelope = try XPCReplyEnvelope.unmarshal(from: raw.raw)
+  let error = try XPCDispatchError.unmarshal(from: #require(envelope.payload))
+  guard case .targetExecutionFailed = error else {
+    Issue.record("Unexpected fallback error: \(error)")
+    return
+  }
 }

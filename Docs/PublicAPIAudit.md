@@ -43,14 +43,14 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `canReconnect` | 原先只是 `transport == .cConnection` 的计算别名；也不保证 endpoint listener 仍存活 | 删除。root retry 内部使用 backend 与实际 `.interrupted` outcome 决定，不把它公开为连接能力承诺 |
 | `XPCIncomingMessage.payload/reply` | 异步、跨 handler 返回后的 reply capability；C 与 Session reply 机制不同 | 保留为一个值，reply 状态由所有副本共享。直接暴露两个 native reply 方式会让每个服务重复分支 |
 | `XPCChannelTransport.channel(dialing:/machService:)` | endpoint 与 named service 两种 native 地址；客户端及 actor import 的运行时后端选择 | 保留两种地址入口，统一验证 endpoint 类型。不要把 Delegate 的静态后端约束推广为整个 actor runtime 的泛型层级 |
-| acceptor 的 `wireEndpoint`、`activate/cancel` | 导出可交换 token、开始监听、停止监听；与既有 peer 通道生命周期不同 | 保留。public handler 在构造时固定；仅 package 内为 export session 的分阶段初始化保留安装步骤 |
+| acceptor 的 `wireEndpoint`、`activate/cancel` | 导出可交换 token、开始监听、停止监听；与既有 peer 通道生命周期不同 | 保留。public handler 在构造时固定；并发激活未完成时抛 `ActivationError.inProgress`，完成后的重入幂等。取消阻止新的 callback claim，已 claim 的回调允许结束；host 关闭拒绝迟到绑定。仅 package 内为 export session 的分阶段初始化保留安装步骤 |
 | `XPCConnection` 的 native 构造、event handler、target queue、activate/cancel | 未采用 owned channel 时的 C 使用模式；native 事件、队列与 listener 选项不能由通用 channel 代替 | 保留为一个低层 surface。不是另一个所有权 facade，不在通用 channel 复制这些成员 |
 | native async / sync / forget send | await reply、阻塞 reply、无 reply；sync API 有独立使用场景 | 保留；删除 sync send 的 `replyQueue`，原生 sync API 无队列参数且此前传入值从未被使用 |
 | native invalidation / interruption / termination-imminent / signing-error hooks | 不同 C 原生事件，部分可重复或有进程退出含义 | 保留在 native 类型。泛化为 Session 回调无等价语义，不上移到公共通道 |
 | native `pid/euid/egid/asid` | C 准入窗口的身份信息 | 保留；accepted connection 保留身份快照，终止后仍可用于通知记录。Session 不提供这些访问器 |
 | native `name/debugDescription/invalidationReason` | 地址信息、对象诊断、终局原因，内容并不相同 | 保留。copy 出来的诊断字符串释放 native allocation；修正此前 invalidationReason 的释放遗漏 |
 | native `setPeer*Requirement` 各 overload | 字符串、entitlement、team/platform 的不同 kernel 策略；不是 Delegate 的通知 | 保留；Bool/Int/String overload 提供类型约束。安装只能执行一次的 native 限制仍明确写在文档 |
-| `XPCPeerRequirementError`、`XPCChannelError` | requirement 安装的 errno 状态与传输发送的 typed outcome | 保留两个错误域；删除重复的 `XPCConnection.PeerRequirementError` typealias。没有把 native 安装错误揉成一个无细节的 channel invalid |
+| `XPCPeerRequirementError`（声明在 XPCConnection.swift）、`XPCChannelError` | requirement 安装的 errno 状态与传输发送的 typed outcome | 保留两个错误域；删除重复的 `XPCConnection.PeerRequirementError` typealias。没有把 native 安装错误揉成一个无细节的 channel invalid |
 | `XPCConnection.marshal/unmarshal` | 既有 C 代码的 endpoint 交换、`XPCMarshal` conformance | 保留；不能把现有 native C 用户都迫使采用 owned channel。高层用户使用 transport factory，不需要两条路径都调用 |
 | `XPCMarshal`、`@XPCMarshal` | 手写 codec 契约与编译期合成；支持 raw handles、布局和 typed errors | 保留，不引入另一个 message codec / Codable adapter。macro 生成与手写 codec 都实现同一协议 |
 | `XPCMarshalError.Kind`、构造 helpers、description | codec 与 actor-reference 导入的结构化诊断 | 保留同一错误值；helpers 是 enum case 的便利构造，未引入新的错误包装层 |
@@ -67,7 +67,7 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `XPCActorService.root/host` | root 访问与服务控制；维持 root/registry/peer 的具体生命周期 | 保留一个服务 owner；不再公开 `.system` 这一重复入口，必要时 root 已有 `.actorSystem` |
 | actor service 的两个 Delegate initializer 与 root factory | 静态绑定后端策略；为 root 注入业务依赖 | 保留。runtime transport initializer 只使用默认策略；自定义 Delegate 不能再配一个可能矛盾的 enum |
 | `XPCActorService.listen` | 自动使用同一个 Delegate 创建 listener、固定 host routing、激活并持有 listener | 新增以替代普通应用的多个装配步骤。service 关闭会关闭自己创建的 listeners；返回值用于 endpoint 访问和单独取消某个 listener，不要求调用方额外维持 listener 生命周期 |
-| `XPCActorService.cancel` 与 host `requestShutdown` | silent teardown 与有通知/完成动作的 cooperative shutdown | 保留语义差异。清理 registry 永远执行在用户 completion 前；删除可替换 cleanup 的 public setter |
+| `XPCActorService.cancel` 与 host `requestShutdown` | silent teardown 与有通知/完成动作的 cooperative shutdown | 保留语义差异。清理 registry 永远执行在用户 completion 前；三个 service initializer 与三个 xpcTest 变体都支持 `onShutdown`。多个 closure 参数使用显式 `makeRoot:` / `onShutdown:`；删除可替换 cleanup 的 public setter |
 | `XPCServiceHost` 的 routing / completion 构造参数 | raw service 自定义路由、embedding 的关闭完成动作 | 收拢到一次构造。删除 `setPeerHandler/setShutdownCompletion`；actor service 的 cleanup 不会被外部 replacement setter 覆盖 |
 | `XPCRootActor` / `XPCExportableActor` | root 有初始化约束；exportable child actor 只需可编码引用 | 保留两种协议，不能将所有 child 都要求为 root。macro 自动实现 export conformance |
 | `XPCExportableActor.unmarshal(from:transport:)` | runtime 之外单独导入时指定后端；常规 unmarshal 从 runtime 解码上下文继承 | 保留显式入口；没有重新引入进程全局 default / policy builder |
@@ -86,7 +86,7 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | hosted `onStart` / `XPCApp.serviceWillStart` | 进程运行循环开始前拿到 host、安装业务控制 | 仅在真正 hosted 的 API 出现；没有在 standalone service / xpcTest 的公共 Delegate 留一个永远不触发的方法 |
 | `xpcTest` / `XPCRootTestCoordinator` | 管理真实 in-process 服务、匿名 listener、production client、watchdog | 保留确定性 integration harness。C / Session 的自定义 Delegate 各有约束；runtime backend matrix 只接受默认准入，避免默默忽略专用方法 |
 | coordinator 的 client/host/transport/makeClient/dropServerPeer/close/waitUntilClosed | 多客户端、模拟失联、整个 fixture 收尾，与 production client 控制不同 | 保留这些 test-only 操作。删除 coordinator 的事件和 shutdown 等待转发；调用 log / host 即可 |
-| `XPCServiceEvent` / `XPCServiceEventLog` | 无 missed edge 的有序 hook 时间线和 occurrence 等待 | 保留 recorder、snapshot 和唯一 `wait(for:occurrence:timeout:)`。删除 `expectEvent/expectCount` 两种等待入口及 public append；固定 Kind 无法表示所谓任意用户 marker，公开写入只会污染 production hook 时间线 |
+| `XPCServiceEvent` / `XPCServiceEventLog` | 无 missed edge 的有序 hook 时间线和 occurrence 等待 | 保留 recorder、snapshot 和唯一 `wait(for:occurrence:timeout:)`。删除 `expectEvent/expectCount` 两种等待入口及 public append；Kind 与 hook 对齐：`didRejectConnection`、`didRejectSessionRequest`、`didRejectPeer` 分别表示两个 native admission 和 host binding 阶段；固定 Kind 不能表示任意用户 marker，公开写入会污染 production hook 时间线 |
 | `DistributedXPC` 再导出 SwiftXPC | public actor API 的实际参数均来自 SwiftXPC；省去反复 import | 保留模块依赖再导出，不增加 umbrella facade 或第二套对应类型 |
 
 ## 使用方式与迁移
@@ -153,7 +153,7 @@ let listener = try XPCChannelAcceptor(
 
 ## 验证与边界
 
-- warnings-as-errors 全量测试：主套件 163 tests，transport 套件 18 tests；四种 server/client 组合均覆盖。
+- warnings-as-errors 全量测试：主套件 167 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
 - 新增/调整测试覆盖 native audit → binding → notification → message 的顺序、Session false/throw
   原生拒绝、两个后端的绑定失败与 native rejection 区分、直接 Session conformer、service 持有及关闭 listeners。
 - Session 激活的同步取消/重入、激活过程中并发取消、创建失败后的发送结束，以及 shutdown 管线期间
@@ -168,3 +168,21 @@ let listener = try XPCChannelAcceptor(
 named listener 的 typed peer requirement 策略。新增 macOS 26 constructor 已通过包外类型检查；
 这轮明确接受真实 launchd named listener 的签名策略集成测试缺口。现有测试使用匿名监听器；
 仍需用 launchd 注册的服务和签名匹配/不匹配进程验证 kernel enforcement，当前类型检查不能代替它。
+
+
+## 后续 P2/P3 核验（2026-10-03）
+
+| 审查项 | 核验与处理 |
+|---|---|
+| mainHandler 在锁内调用用户代码 | 原表达式先结束 withLock 再调用返回的 closure，没有该问题；改为两行显式快照。补底层 xpcMain 的 launchd 约束 |
+| 并发 listener 激活提前成功 | 存在；重入抛 inProgress，失败 owner 回滚后可重试。确定性测试阻塞并使首轮激活失败 |
+| cancel 后已捕获的 delivery | 存在在途窗口；审核后重新检查状态、取消清除 handler。已经完成 claim 的回调允许结束，文档明确；不持锁执行用户代码或等待重入回调 |
+| Session send 错误分类较粗 | 保留统一 fail-stop 策略：任一 native send 失败终结 channel/全部 reply 等待者，包括 canRetry 错误。XPCRichError 没有 C 的类型化 reason，不能靠文本推断 signing/interruption，也不自动重发可能已投递的调用 |
+| onShutdown 不对称 | Session service 专用构造器原本已有；补 runtime service 与 Session/runtime xpcTest，新增 completion 顺序与矩阵测试 |
+| decoder 默认 C transport | 删除默认值，强制内部构造点显式传入后端 |
+| 错误回复再次编码失败 | catch 所有 failure；编码失败时发送无 payload 的合法 throwError envelope，客户端确定性报 missingPayload；不再 try? 吞掉此路径。覆盖 custom encoder 失败及非 marshalable 错误 |
+| graceful shutdown 断言过宽 | 将断言收紧到 invalid/interrupted，明确排除 signing error。raw host listener 继续监听时另测 shutdown 后 binding rejection(nil)，C 精确断言 interrupted、Session 精确断言 invalid |
+| 重复/白盒/无 watchdog 测试 | 删除重复 Session host 文件并将 completion 断言并入矩阵；重命名并删除重复 backend 断言。registry 验证改用 resolve；保留 SendSink 白盒测试以确定性覆盖 continuation 安装前的 first-result 竞态。service/coordinator fixture 增加 watchdog |
+| sleep 与超时误报 | accept delivery、drain waiter 注册、延迟 reply 取消和 client 断连改用信号。并发 listener 测试的超时取消允许 CancellationError；其余短暂 sleep 仅扩大 pre-activation 窗口，不作为通过条件 |
+| 外来 root factory | 进程外 exit test 验证 foreign system 触发指定 precondition，检查 stderr 原因 |
+| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、12 个负例（校验诊断原因）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据；symbol graph 自动记录 owned 声明清单，逐面必要性分析仍由本文给出 |

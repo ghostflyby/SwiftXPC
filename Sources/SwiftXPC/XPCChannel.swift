@@ -4,14 +4,6 @@ import Foundation
 import Synchronization
 import XPC
 
-/// A peer requirement install failure, carrying its errno-style status.
-public struct XPCPeerRequirementError: Error, Sendable {
-  public let status: Int32
-  public init(status: Int32) {
-    self.status = status
-  }
-}
-
 /// Transport-level failure model shared by every channel backend: the single
 /// error vocabulary of `XPCChannel` and of the C surface's sends.
 public enum XPCChannelError: Error, Sendable, Equatable {
@@ -76,7 +68,6 @@ public final class XPCChannel: Sendable {
   /// Adopts a native C connection. The channel cancels it on deinitialization.
   public init(_ connection: XPCConnection) {
     backend = .connection(connection)
-
   }
 
   init(session: XPCSessionChannel) {

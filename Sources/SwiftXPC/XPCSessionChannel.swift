@@ -225,6 +225,8 @@ final class XPCSessionChannel: @unchecked Sendable {
       }
       switch send {
       case .forget(let payload):
+        // Deliberate fail-stop policy: a forget send has no error consumer.
+        // XPCRichError lacks C's typed reason codes; do not infer them from text.
         do { try session.send(message: XPCDictionary(payload.raw)) } catch { self.cancel() }
       case .reply(let payload, let sink):
         guard !sink.isDelivered else { return }

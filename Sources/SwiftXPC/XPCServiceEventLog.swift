@@ -15,7 +15,11 @@ public struct XPCServiceEvent: Equatable, Sendable {
     case didAcceptPeer
     /// An accepted peer disconnected.
     case peerDidEnd
-    /// Native admission or subsequent service binding rejected a peer.
+    /// Native C admission rejected a connection.
+    case didRejectConnection
+    /// Native Session admission rejected an incoming request.
+    case didRejectSessionRequest
+    /// Service binding failed or the host was closed.
     case didRejectPeer
     /// The cooperative shutdown pipeline ran its delegate hook.
     case serviceWillShutdown

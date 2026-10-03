@@ -153,7 +153,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
   )
 
   let incoming = XPCIncomingMessage(payload: try message.marshal(), replyer: { _ in })
-  try await system.handleIncomingMessage(incoming, on: actor)
+  await system.handleIncomingMessage(incoming, on: actor)
 }
 
 @Test func HandleIncomingMessageEncodesDispatchErrors() async throws {
@@ -168,7 +168,7 @@ private func makeSystem() -> XPCDistributedActorSystem {
   )
 
   let incoming = XPCIncomingMessage(payload: try message.marshal(), replyer: { _ in })
-  try await system.handleIncomingMessage(incoming, on: actor)
+  await system.handleIncomingMessage(incoming, on: actor)
 }
 
 @Test func DispatchInvocationRejectsWrongArgumentType() async throws {

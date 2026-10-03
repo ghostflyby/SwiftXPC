@@ -12,7 +12,7 @@ public struct XPCInvocationDecoder: DistributedTargetInvocationDecoder {
   let array: XPCArray
   private let transport: XPCChannelTransport
 
-  init(array: XPCArray, transport: XPCChannelTransport = .cConnection) {
+  init(array: XPCArray, transport: XPCChannelTransport) {
     self.array = array
     self.transport = transport
   }

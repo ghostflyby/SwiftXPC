@@ -16,10 +16,10 @@ import Testing
 
 @Test func IncomingMessageCopiesShareOneReplyCapability() {
   let replies = Mutex(0)
-  let payload = xpc_dictionary_create(nil, nil, 0)
-  let message = XPCIncomingMessage(payload: payload) { _ in replies.withLock { $0 += 1 } }
+  let payload = SendableXPCObject(xpc_dictionary_create(nil, nil, 0))
+  let message = XPCIncomingMessage(payload: payload.raw) { _ in replies.withLock { $0 += 1 } }
   let copy = message
-  DispatchQueue.concurrentPerform(iterations: 64) { _ in copy.reply(payload) }
+  DispatchQueue.concurrentPerform(iterations: 64) { _ in copy.reply(payload.raw) }
   #expect(replies.withLock { $0 } == 1)
 }
 

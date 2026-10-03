@@ -88,12 +88,16 @@ have separate roots, even within one process. Local registries need no idle
 XPC connection. To inject root dependencies, supply a root factory:
 
 ```swift
-let service = XPCActorService(ServiceRoot.self, transport: .session) { system in
-  ServiceRoot(dependencies: dependencies, actorSystem: system)
-}
-try service.listen()
+let service = XPCActorService(
+  ServiceRoot.self, transport: .session,
+  makeRoot: { system in ServiceRoot(dependencies: dependencies, actorSystem: system) })
+try service.listen(service: "com.example.service")
+// This name must be advertised by the process's launchd MachServices entry.
 // Retain service; it owns the listener and root for the serving lifetime.
 ```
+
+For an anonymous listener, use `service.listen()` and pass its `wireEndpoint` to
+clients explicitly; it cannot be dialed by a service name.
 
 `service.cancel()` ends listeners, peers, and exports. `service.host.requestShutdown()`
 runs the cooperative shutdown hooks and invalidates the service registry.

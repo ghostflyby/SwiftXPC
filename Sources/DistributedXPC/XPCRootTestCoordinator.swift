@@ -19,10 +19,10 @@ import Synchronization
 /// The client side is a full production `XPCRootConnection` — `root`,
 /// `events`, and `retrying` behave exactly as against a launchd service,
 /// with one documented difference: the channel dials the coordinator's own
-/// listener endpoint, so it survives peer drops (transparent re-dial) but
-/// dies permanently when the coordinator closes. Only a named-service
-/// connection also survives a full service restart. `dropServerPeer()`
-/// surfaces as `.disconnected` on `client.events`.
+/// listener endpoint. C channels survive peer drops through transparent re-dial;
+/// Session channels are terminal after a drop. Both end when the coordinator
+/// closes. Only a named C service connection survives a full service restart.
+/// `dropServerPeer()` surfaces as `.disconnected` on `client.events`.
 ///
 /// The test-only operations live here, not on the channel: `host` exposes
 /// the service host (cooperative `requestShutdown()` plus the shutdown
@@ -92,8 +92,8 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// Dials a fresh, inactive client channel to the same acceptor, for
   /// tests that exercise multiple sequential or concurrent clients against
   /// one service. Endpoint-based like every channel here: activate it
-  /// via `Root.connect(using:)` or manually; it dies permanently with its
-  /// server-side peer.
+  /// via `Root.connect(using:)` or manually. C channels can re-dial after a
+  /// peer drop; Session channels end permanently.
   public func makeClient() throws -> XPCChannel {
     try transport.channel(dialing: acceptor.wireEndpoint)
   }
@@ -178,10 +178,12 @@ public func xpcTest<Root: XPCRootActor>(
   _ rootType: Root.Type,
   sessionDelegate: some XPCSessionServiceDelegate,
   eventLog: XPCServiceEventLog? = nil,
-  watchdog: Duration? = nil
+  watchdog: Duration? = nil,
+  onShutdown: @escaping @Sendable () -> Void = {}
 ) throws -> XPCRootTestCoordinator<Root> {
   try XPCRootTestCoordinator(
-    service: XPCActorService(rootType, sessionDelegate: sessionDelegate, eventLog: eventLog),
+    service: XPCActorService(
+      rootType, sessionDelegate: sessionDelegate, eventLog: eventLog, onShutdown: onShutdown),
     watchdog: watchdog)
 }
 
@@ -190,9 +192,12 @@ public func xpcTest<Root: XPCRootActor>(
   _ rootType: Root.Type,
   transport: XPCChannelTransport,
   eventLog: XPCServiceEventLog? = nil,
-  watchdog: Duration? = nil
+  watchdog: Duration? = nil,
+  onShutdown: @escaping @Sendable () -> Void = {}
 ) throws -> XPCRootTestCoordinator<Root> {
   try XPCRootTestCoordinator(
-    service: XPCActorService(rootType, transport: transport, eventLog: eventLog), watchdog: watchdog
+    service: XPCActorService(
+      rootType, transport: transport, eventLog: eventLog, onShutdown: onShutdown),
+    watchdog: watchdog
   )
 }

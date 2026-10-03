@@ -207,12 +207,14 @@ struct XPCChannelTransportTests {
   private func runCancelChain(
     serverTransport: XPCChannelTransport, clientTransport: XPCChannelTransport
   ) throws {
+    let delivered = DispatchSemaphore(value: 0)
     let invalidated = DispatchSemaphore(value: 0)
     let acceptor = try serverTransport.acceptor()
     let retained = Mutex<(XPCChannel)?>(nil)
     acceptor.setAcceptHandler { channel in
       retained.withLock { $0 = channel }
       channel.activate()
+      delivered.signal()
     }
     try acceptor.activate()
 
@@ -229,7 +231,7 @@ struct XPCChannelTransportTests {
     wake["wake"] = true
     client.sendAndForget(wake.xpcObject)
     // Let the listener deliver and activate the peer before cancelling.
-    Thread.sleep(forTimeInterval: 0.15)
+    #expect(delivered.wait(timeout: .now() + 5) == .success)
     client.cancel()
 
     #expect(invalidated.wait(timeout: DispatchTime.now() + 5) == .success)
@@ -241,11 +243,15 @@ struct XPCChannelTransportTests {
   ) async throws {
     let acceptor = try serverTransport.acceptor()
     let retained = Mutex<(XPCChannel)?>(nil)
+    let pendingReply = Mutex<XPCIncomingMessage?>(nil)
+    let received = FlagBox()
     acceptor.setAcceptHandler { channel in
       retained.withLock { $0 = channel }
       channel.setIncomingHandler { message in
-        // Reply late enough for the test to cancel the waiting task first.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+        if XPCDictionary(message.payload)["ask"] == "cancel-me" {
+          pendingReply.withLock { $0 = message }
+          received.fire()
+        } else {
           var response = XPCDictionary()
           response["late"] = true
           message.reply(response.xpcObject)
@@ -264,7 +270,10 @@ struct XPCChannelTransportTests {
       ask["ask"] = "cancel-me"
       _ = try await client.send(ask.xpcObject)
     }
-    try await Task.sleep(for: .milliseconds(50))
+    let delivered = await withCheckedContinuation { continuation in
+      DispatchQueue.global().async { continuation.resume(returning: received.wait(5)) }
+    }
+    #expect(delivered)
     sendTask.cancel()
     do {
       _ = try await sendTask.value
@@ -275,7 +284,13 @@ struct XPCChannelTransportTests {
       Issue.record("unexpected error: \(error)")
     }
     // The late reply must be dropped harmlessly and the channel stays usable.
-    try await Task.sleep(for: .milliseconds(400))
+    let late = try #require(
+      pendingReply.withLock { message in
+        let saved = message
+        message = nil
+        return saved
+      })
+    late.reply(XPCDictionary().xpcObject)
     var followUp = XPCDictionary()
     followUp["ask"] = "still-alive"
     let reply = try await client.send(followUp.xpcObject)
@@ -375,11 +390,10 @@ struct XPCChannelTransportTests {
   }
 
   @Test(arguments: XPCBackendPair.all)
-  func PeerIdentityAndBackendAreChannelProperties(pair: XPCBackendPair) throws {
+  func BackendSelectsNativeConnectionInterop(pair: XPCBackendPair) throws {
     let acceptor = try pair.server.acceptor()
     let client = try pair.client.channel(dialing: acceptor.wireEndpoint)
     #expect(client.transport == pair.client)
-    #expect((client.connection != nil) == (pair.client == .cConnection))
     #expect((client.connection != nil) == (pair.client == .cConnection))
     client.cancel()
     acceptor.cancel()
@@ -433,7 +447,9 @@ struct XPCChannelTransportTests {
     }
     DispatchQueue.concurrentPerform(iterations: 64) { iteration in
       if iteration.isMultiple(of: 2) {
-        do { try acceptor.activate() } catch {
+        do { try acceptor.activate() } catch XPCChannelAcceptor.ActivationError.inProgress {
+          // A concurrent owner has not finished native activation yet.
+        } catch {
           Issue.record("Unexpected anonymous listener activation failure: \(error)")
         }
       } else {
@@ -451,7 +467,9 @@ struct XPCChannelTransportTests {
       send.cancel()
     }
     defer { timeout.cancel() }
-    await #expect(throws: XPCChannelError.self) { _ = try await send.value }
+    await #expect {
+      _ = try await send.value
+    } throws: { $0 is XPCChannelError || $0 is CancellationError }
     #expect(accepted.withLock { $0 } == 0)
   }
 
@@ -463,10 +481,13 @@ struct XPCChannelTransportTests {
   ) async throws {
     let shutdown = FlagBox()
     let ended = FlagBox()
+    let completed = FlagBox()
     let host = XPCServiceHost(
       XPCConnectionServiceConfiguration(
         onPeerEnd: { peer in
           #expect(peer.connection?.pid == (serverTransport == .cConnection ? getpid() : nil))
+          #expect(peer.connection?.euid == (serverTransport == .cConnection ? geteuid() : nil))
+          #expect(peer.connection?.egid == (serverTransport == .cConnection ? getegid() : nil))
           ended.fire()
         },
         onShutdown: { shutdown.fire() }),
@@ -476,7 +497,7 @@ struct XPCChannelTransportTests {
           response["echo"] = XPCDictionary(message.payload)["ping", as: xpc_object_t.self]
           message.reply(response.xpcObject)
         }
-      })
+      }, onShutdown: { completed.fire() })
 
     let acceptor = try serverTransport.acceptor()
     acceptor.setAcceptHandler { channel in host.bind(channel) }
@@ -493,6 +514,7 @@ struct XPCChannelTransportTests {
     // completion on both backends.
     host.requestShutdown()
     #expect(shutdown.wait(2))
+    #expect(completed.wait(2))
     #expect(ended.wait(2))
     client.cancel()
     acceptor.cancel()
@@ -553,6 +575,7 @@ struct XPCChannelTransportTests {
     struct BindingFailure: Error {}
     let rejected = ErrorBox()
     let nativeRejections = Mutex(0)
+    let log = XPCServiceEventLog()
     let didReject: @Sendable (XPCChannel, (any Error)?) -> Void = { _, error in
       rejected.store(error)
     }
@@ -564,13 +587,13 @@ struct XPCChannelTransportTests {
       let delegate = XPCConnectionServiceConfiguration(
         onConnectionReject: { _, _ in nativeRejections.withLock { $0 += 1 } },
         onPeerReject: didReject)
-      host = XPCServiceHost(delegate, peerHandler: binding)
+      host = XPCServiceHost(delegate, eventLog: log, peerHandler: binding)
       acceptor = try XPCChannelAcceptor(delegate)
     case .session:
       let delegate = XPCSessionServiceConfiguration(
         onSessionReject: { _, _ in nativeRejections.withLock { $0 += 1 } },
         onPeerReject: didReject)
-      host = XPCServiceHost(delegate, peerHandler: binding)
+      host = XPCServiceHost(delegate, eventLog: log, peerHandler: binding)
       acceptor = try XPCChannelAcceptor(sessionDelegate: delegate)
     }
     acceptor.setAcceptHandler { host.bind($0) }
@@ -581,6 +604,7 @@ struct XPCChannelTransportTests {
     client.sendAndForget(XPCDictionary().xpcObject)
     #expect(rejected.wait(2) is BindingFailure)
     #expect(nativeRejections.withLock { $0 } == 0)
+    #expect(log.events.map(\.kind) == [.didRejectPeer])
   }
 
   @Test(arguments: XPCChannelTransport.allCases, [false, true])
@@ -589,6 +613,7 @@ struct XPCChannelTransportTests {
   ) async throws {
 
     let rejections = ErrorBox()
+    let log = XPCServiceEventLog()
     let nativeRejected = FlagBox()
     let accepted = Mutex(0)
     struct Rejected: Error {}
@@ -603,13 +628,14 @@ struct XPCChannelTransportTests {
       },
       onPeerAccept: { _ in accepted.withLock { $0 += 1 } })
     let host = XPCServiceHost(delegate)
-    let acceptor = try XPCChannelAcceptor(sessionDelegate: delegate)
+    let acceptor = try XPCChannelAcceptor(sessionDelegate: delegate, eventLog: log)
     acceptor.setAcceptHandler { host.bind($0) }
     try acceptor.activate()
     let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
     client.activate()
     client.sendAndForget(XPCDictionary().xpcObject)
     #expect(nativeRejected.wait(2))
+    #expect(log.events.map(\.kind) == [.shouldAcceptPeer, .didRejectSessionRequest])
     let error = rejections.wait(2)
     if throwsError { #expect(error is Rejected) } else { #expect(error == nil) }
     #expect(accepted.withLock { $0 } == 0)

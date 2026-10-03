@@ -18,6 +18,11 @@ import XPC
 /// handlers are installed inside the native callback; buffered messages do not
 /// reach service routing until the host binds and activates the channel.
 public final class XPCChannelAcceptor: @unchecked Sendable {
+  /// A concurrent/reentrant call cannot report another call's unfinished result.
+  public enum ActivationError: Error, Sendable, Equatable {
+    case inProgress
+  }
+
   private enum Backend {
     /// A C-API listener connection: anonymous, or serving a mach service.
     case connection(XPCConnection)
@@ -39,6 +44,7 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
 
   private let acceptBox = AcceptHandlerBox()
   private let backend: Backend
+  private let activationOverride: (@Sendable () throws -> Void)?
   private let queue = DispatchQueue(label: "SwiftXPC.acceptor")
 
   private enum Admission {
@@ -94,6 +100,7 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
     eventLog: XPCServiceEventLog? = nil,
     handler: @escaping @Sendable (XPCChannel) -> Void
   ) throws {
+    activationOverride = nil
     acceptBox.state.withLock { $0.handler = handler }
     backend = .listener(
       try XPCListener(
@@ -111,6 +118,7 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
   }
 
   private init(admission: Admission, service: String?, eventLog: XPCServiceEventLog?) throws {
+    activationOverride = nil
     switch admission {
     case .connection(let delegate):
       // libxpc traps with `_xpc_api_misuse` ("Activation of a connection
@@ -129,12 +137,17 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
         guard peer.isConnectionObject else {
           return  // listener error events carry no accept semantics
         }
+        guard acceptBox.state.withLock({ $0.phase == .active && $0.handler != nil }) else {
+          rejectXPCConnection(peer, delegate: delegate, eventLog: eventLog, error: nil)
+          return
+        }
+        guard admitXPCConnection(peer, delegate: delegate, eventLog: eventLog) else { return }
+        // Audit is user code and may itself cancel the listener.
         guard let handler = acceptBox.state.withLock({ $0.phase == .active ? $0.handler : nil })
         else {
           rejectXPCConnection(peer, delegate: delegate, eventLog: eventLog, error: nil)
           return
         }
-        guard admitXPCConnection(peer, delegate: delegate, eventLog: eventLog) else { return }
         handler(XPCChannel(peer))
       }
       backend = .connection(listener)
@@ -170,7 +183,7 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
     { req in
       func reject(_ error: (any Error)?) -> XPCListener.IncomingSessionRequest.Decision {
         let decision = req.reject(reason: error.map(String.init(describing:)) ?? "request rejected")
-        eventLog?.append(.didRejectPeer, error: error)
+        eventLog?.append(.didRejectSessionRequest, error: error)
         delegate.didRejectSessionRequest(req, error: error)
         return decision
       }
@@ -181,6 +194,9 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
       do {
         guard try delegate.shouldAcceptSessionRequest(req) else { return reject(nil) }
       } catch { return reject(error) }
+      guard box.state.withLock({ $0.phase == .active && $0.handler != nil }) else {
+        return reject(nil)
+      }
       // Sending from inside the accept callback traps; the channel is
       // handed over only after the accept decision has returned.
       let (decision, session) = req.accept(
@@ -209,9 +225,19 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
     acceptBox.state.withLock { if $0.phase != .cancelled { $0.handler = handler } }
   }
 
-  /// Idempotent. Session listener activation can throw; cancellation is terminal.
+  // Native-operation injection for deterministic activation failure/reentrancy tests.
+  init(testingListener: XPCListener, activation: @escaping @Sendable () throws -> Void) {
+    backend = .listener(testingListener)
+    activationOverride = activation
+  }
+
+  /// Idempotent after activation completes. Overlapping calls throw
+  /// `ActivationError.inProgress`; native Session activation can also throw.
+  /// Cancellation is terminal and makes later activation a no-op.
   public func activate() throws {
-    let first = acceptBox.state.withLock { state in
+    let first = try acceptBox.state.withLock { state in
+      if state.phase == .cancelled { return false }
+      if state.activating { throw ActivationError.inProgress }
       guard state.phase == .inactive else { return false }
       state.phase = .active
       state.activating = true
@@ -234,14 +260,17 @@ public final class XPCChannelAcceptor: @unchecked Sendable {
   }
 
   private func activateBackend() throws {
+    if let activationOverride { return try activationOverride() }
     switch backend {
     case .connection(let listener): listener.activate()
     case .listener(let listener): try listener.activate()
     }
   }
 
-  /// Stops accepting immediately. When activation is in progress, its caller
-  /// completes native cancellation after activation returns.
+  /// Stops new admission/delivery claims. A handler already claimed by an
+  /// incoming callback may finish after cancellation returns. Cancel the host
+  /// as well to reject such late bindings. When activation is in progress,
+  /// its caller completes native cancellation after activation returns.
   public func cancel() {
     let (handler, activateFirst, cancelNow) = acceptBox.state.withLock {
       state -> ((@Sendable (XPCChannel) -> Void)?, Bool, Bool) in

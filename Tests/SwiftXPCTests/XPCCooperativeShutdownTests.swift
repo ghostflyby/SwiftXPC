@@ -40,9 +40,10 @@ distributed actor ShutdownRoot: XPCRootActor {
   // to observe the channel going down (a graceful cancel surfaces as an
   // interruption).
   await channel.client.waitForDisconnection()
-  await #expect(throws: XPCChannelError.self) {
+  let error = await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
+  #expect(error == .invalid || error == .interrupted)
 }
 
 @Test func ShutdownClosesListenerToNewPeers() async throws {
@@ -58,9 +59,10 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
-  await #expect(throws: XPCChannelError.self) {
+  let error = await #expect(throws: XPCChannelError.self) {
     _ = try await lateRoot.ping()
   }
+  #expect(error == .invalid || error == .interrupted)
   // Native listener closure prevents delivery of another incoming request.
   #expect(log.events.filter { $0.kind == .shouldAcceptPeer }.isEmpty)
 }
@@ -81,9 +83,10 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
-  await #expect(throws: XPCChannelError.self) {
+  let error = await #expect(throws: XPCChannelError.self) {
     _ = try await lateRoot.ping()
   }
+  #expect(error == .invalid || error == .interrupted)
   // Closing the service closes its listener, so no late native audit runs.
   #expect(log.events.filter { $0.kind == .shouldAcceptPeer }.count == 1)
 }
@@ -120,9 +123,10 @@ distributed actor ShutdownRoot: XPCRootActor {
   #expect(await channel.host.waitForShutdown(timeout: .seconds(2)))
 
   await channel.client.waitForDisconnection()
-  await #expect(throws: XPCChannelError.self) {
+  let error = await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
+  #expect(error == .invalid || error == .interrupted)
   _ = reply  // resolved by channel.close() cancelling the pending call
 }
 

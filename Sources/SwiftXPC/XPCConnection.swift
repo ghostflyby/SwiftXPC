@@ -4,6 +4,14 @@ import Foundation
 import Synchronization
 import XPC
 
+/// A peer requirement install failure, carrying its errno-style status.
+public struct XPCPeerRequirementError: Error, Sendable {
+  public let status: Int32
+  public init(status: Int32) {
+    self.status = status
+  }
+}
+
 /// A handle to an XPC connection: the named or anonymous channel over which
 /// dictionaries travel between processes.
 ///

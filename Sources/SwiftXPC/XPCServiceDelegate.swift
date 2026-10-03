@@ -157,7 +157,7 @@ package func rejectXPCConnection(
 ) {
   connection.activate()
   connection.cancel()
-  eventLog?.append(.didRejectPeer, error: error)
+  eventLog?.append(.didRejectConnection, error: error)
   delegate.didRejectConnection(connection, error: error)
 }
 

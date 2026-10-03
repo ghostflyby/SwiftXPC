@@ -30,7 +30,7 @@ distributed actor ForwardRoot: XPCRootActor {
 
 @Test(arguments: [XPCChannelTransport.cConnection, .session])
 func ForwardedProxyRoundTripsThroughOwnerEndpoint(transport: XPCChannelTransport) async throws {
-  let service = try xpcTest(ForwardRoot.self, transport: transport)
+  let service = try xpcTest(ForwardRoot.self, transport: transport, watchdog: .seconds(10))
   defer { service.close() }
   let root = service.client.root
   let worker = try await root.makeWorker()
@@ -46,7 +46,7 @@ func ForwardedProxyRoundTripsThroughOwnerEndpoint(transport: XPCChannelTransport
 
 @Test(arguments: [XPCChannelTransport.cConnection, .session])
 func SameProxyForwardedTwiceServesParallelPeers(transport: XPCChannelTransport) async throws {
-  let service = try xpcTest(ForwardRoot.self, transport: transport)
+  let service = try xpcTest(ForwardRoot.self, transport: transport, watchdog: .seconds(10))
   defer { service.close() }
   let root = service.client.root
   let worker = try await root.makeWorker()

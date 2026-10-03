@@ -62,7 +62,8 @@ requirement 接口；accepted 身份快照保留在 native connection。C 与 Se
 - 两种 acceptor 都交付需要逻辑 activate 的 channel。Session 在 native callback 返回后已由系统激活，
   但库层在服务绑定完成前缓冲 incoming messages，避免 handler 安装与交付竞争。
 - acceptor 状态锁只决定原生操作的执行方，`activate/cancel` 均在锁外执行；取消与激活重叠时，
-  先停止准入，再由激活调用完成原生取消，避免取消先于激活或重复激活。
+  先停止新的 callback claim，再由激活调用完成原生取消，避免取消先于激活或重复激活。
+  已 claim 的回调可在取消返回后结束，关闭 host 会拒绝其迟到绑定；重叠 activate 抛 inProgress。
 - dialed Session 的创建、handler 安装和原生激活在 control lock 外执行；activating 状态
   唯一指定执行方。并发 cancel 立即终止库层通道、释放发送等待者，由激活方完成原生取消。
 - host 的取消/关闭状态与 shutdown waiters 由同一把锁维护；bare cancel 原子地取走自己的
@@ -75,7 +76,8 @@ requirement 接口；accepted 身份快照保留在 native connection。C 与 Se
 - 取消 awaiting task 结束自己的 continuation，不撤回已经提交给 peer 的请求；channel 仍可使用。
   取消 channel 则结束整个 channel，Session 的全部 in-flight sends 也立即失败。
 - invalidation 一次投递并释放 handler captures；晚注册 handler 立即补发。C interruption 可以重复；
-  Session 的所有 peer loss 均是 terminal invalidation。
+  Session 的所有 peer loss 均是 terminal invalidation；native send 错误也采用 fail-stop 策略，
+  不将 XPCRichError 的描述猜测为 C 的 signing/interruption code。
 - host 先注册 peer，再安装带 replay 的 invalidation handler；不在 host state lock 内激活 channel，
   避免同步 invalidation 重入死锁。handler 保留 channel 至事件交付，终局事件清除这条引用链。
 - actor invocations 按通道 FIFO 执行，等待异步方法时不阻塞 transport 回调队列。此顺序仍是严格的：
@@ -148,8 +150,10 @@ C 的字符串 requirement 留在 native connection 专用 API。Session 的 nat
 
 最终验证已通过：
 
-- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 163 tests；transport 套件 18 tests，
+- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 167 tests；transport 套件 21 tests，
   新增准入与 binding 顺序 / 拒绝阶段测试运行四种 backend 组合；Session false/throw 原生拒绝覆盖两种 client backend。
+- `python3 Scripts/check-public-api.py` 运行包外正例、12 个反例及 public symbol graph；
+  `.build/public-api-verification` 保留 probe、诊断与 owned API 清单，CI 上传为 artifact。
 - `swift format lint --strict --recursive Sources Tests`、`git diff --check` 无问题。
 - `Examples/DistributedXPCDemo` 的 warnings-as-errors 独立 package 构建通过。
 

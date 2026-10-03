@@ -174,9 +174,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// Waits until no export session of this system has live peers — every
   /// export session fully drained (child reclamation attempted). Returns
   /// immediately when already drained. Never polls.
-  func waitForExportDrain() async {
+  func waitForExportDrain(onRegistered: @Sendable () -> Void = {}) async {
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
       insertDrainWaiter(continuation: cont)
+      onRegistered()
     }
   }
 
@@ -260,7 +261,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
         previous = Task { [weak self, weak actor] in
           await predecessor?.value
           guard let self, let actor else { return }
-          try? await self.handleIncomingMessage(message, on: actor)
+          await self.handleIncomingMessage(message, on: actor)
         }
       }
     }
@@ -322,7 +323,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       .thrownErrorType
   }
 
-  func handleIncomingMessage<Act>(_ message: XPCIncomingMessage, on actor: Act) async throws
+  func handleIncomingMessage<Act>(_ message: XPCIncomingMessage, on actor: Act) async
   where Act: DistributedActor, Act.ID == ActorID {
     let resultHandler = XPCInvocationResultHandler { envelope in
       message.reply(try envelope.marshal())
@@ -331,9 +332,23 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       let invocation = try XPCInvocationMessage.unmarshal(from: message.payload)
       let envelope = try await dispatchInvocation(invocation, on: actor)
       try resultHandler.send(envelope)
-    } catch let error as any ErrorXPCMarshal {
-      try resultHandler.send(
-        XPCReplyEnvelope(kind: .throwError, payload: try error.marshal()))
+    } catch {
+      replyToFailure(error, message: message)
+    }
+  }
+
+  /// Even an error whose custom encoder fails must complete the reply.
+  func replyToFailure(_ error: any Error, message: XPCIncomingMessage) {
+    do {
+      let payload: xpc_object_t
+      if let error = error as? any ErrorXPCMarshal {
+        payload = try error.marshal()
+      } else {
+        payload = try XPCDispatchError.targetExecutionFailed(String(describing: error)).marshal()
+      }
+      message.reply(try XPCReplyEnvelope(kind: .throwError, payload: payload).marshal())
+    } catch {
+      message.reply(XPCReplyEnvelope.encodingFailureReply())
     }
   }
 

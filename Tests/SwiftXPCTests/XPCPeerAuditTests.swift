@@ -59,7 +59,7 @@ private func ownSigningIdentifier() -> String? {
   await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
-  #expect(await log.wait(for: .didRejectPeer, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .didRejectConnection, timeout: .seconds(2)) != nil)
   // The requirement install failure must preempt the audit hook and surface
   // as a PeerRequirementError (fail-closed, no silent degradation).
   #expect(auditCalls.withLock { $0 } == 0)
@@ -128,7 +128,7 @@ private func ownSigningIdentifier() -> String? {
   await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
-  #expect(await log.wait(for: .didRejectPeer, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .didRejectConnection, timeout: .seconds(2)) != nil)
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   #expect(rejectionsSeen.first is AuditHookFailure)
@@ -150,7 +150,7 @@ private func ownSigningIdentifier() -> String? {
   await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
-  #expect(await log.wait(for: .didRejectPeer, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .didRejectConnection, timeout: .seconds(2)) != nil)
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   // Element type is (any Error)?; unwrap the array's outer optional first so

@@ -76,9 +76,24 @@ struct XPCActorServiceTests {
     #expect(try await b.bump() == 1)
   }
 
+  @Test func RootFactoryRejectsForeignActorSystem() async {
+    let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+      let foreign = XPCDistributedActorSystem()
+      foreign.reserveRootID()
+      let root = StatefulServiceRoot(actorSystem: foreign)
+      _ = XPCActorService(StatefulServiceRoot.self, makeRoot: { _ in root })
+    }
+    let output = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
+    #expect(
+      output.contains("The root factory must construct the first actor on the supplied system"))
+  }
+
   private func hostRegistryContains(_ id: XPCActorID, in system: XPCDistributedActorSystem) -> Bool
   {
-    system.activeActorsLock.withLock { $0[id] != nil }
+    if id == .root {
+      return (try? system.resolve(id: id, as: StatefulServiceRoot.self)) != nil
+    }
+    return (try? system.resolve(id: id, as: ExitWorker.self)) != nil
   }
 
   @Test func DrainWaiterResumesWhenSystemIsInvalidated() async throws {
@@ -90,26 +105,18 @@ struct XPCActorServiceTests {
     _ = try system.export(worker)  // Minted but never dialed: a live session.
     #expect(system.hasLiveExportPeers)
 
-    let waiter = Task { await system.waitForExportDrain() }
-    try await Task.sleep(for: .milliseconds(100))  // Let the waiter register.
-
+    // The registration callback fires only after the continuation is stored.
+    let registered = DispatchSemaphore(value: 0)
+    let resumed = DispatchSemaphore(value: 0)
+    let waiter = Task {
+      await system.waitForExportDrain(onRegistered: { registered.signal() })
+      resumed.signal()
+    }
+    #expect(await waitForTestSignal(registered))
     system.invalidate()
     #expect(!system.hasLiveExportPeers)
-
-    let resumed = await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        await waiter.value
-        return true
-      }
-      group.addTask {
-        try? await Task.sleep(for: .seconds(5))
-        return false
-      }
-      let first = await group.next()!
-      group.cancelAll()
-      return first
-    }
-    #expect(resumed)
+    #expect(await waitForTestSignal(resumed))
+    _ = waiter
   }
 
   @Test func ServiceRootServesAllPeersThroughOneInstance() async throws {
@@ -159,7 +166,7 @@ struct XPCActorServiceTests {
     let before = try await root.bump()
 
     channel.client.cancel()
-    try await Task.sleep(for: .milliseconds(100))
+    await channel.client.waitForDisconnection()
     #expect(try await worker.greet() == "worker")
 
     // A fresh client reaches the same service root — the counter continues —

@@ -78,14 +78,16 @@ public final class XPCActorService<Root: XPCRootActor>: Sendable {
     _ rootType: Root.Type = Root.self,
     transport: XPCChannelTransport,
     eventLog: XPCServiceEventLog? = nil,
+    onShutdown: @escaping @Sendable () -> Void = {},
     makeRoot: (XPCDistributedActorSystem) -> Root = { Root(actorSystem: $0) }
   ) {
     switch transport {
-    case .cConnection: self.init(rootType, eventLog: eventLog, makeRoot: makeRoot)
+    case .cConnection:
+      self.init(rootType, eventLog: eventLog, onShutdown: onShutdown, makeRoot: makeRoot)
     case .session:
       self.init(
         rootType, sessionDelegate: XPCSessionServiceConfiguration(),
-        eventLog: eventLog, makeRoot: makeRoot)
+        eventLog: eventLog, onShutdown: onShutdown, makeRoot: makeRoot)
     }
   }
 

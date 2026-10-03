@@ -54,9 +54,9 @@ private distributed actor SuspendedRoot: XPCRootActor {
 func SuspendedInvocationDoesNotBlockPeerInvalidation(transport: XPCChannelTransport) async throws {
   let gate = InvocationGate()
   let log = XPCServiceEventLog()
-  let service = XPCActorService(SuspendedRoot.self, transport: transport, eventLog: log) {
-    SuspendedRoot(gate: gate, actorSystem: $0)
-  }
+  let service = XPCActorService(
+    SuspendedRoot.self, transport: transport, eventLog: log,
+    makeRoot: { SuspendedRoot(gate: gate, actorSystem: $0) })
   let acceptor = try transport.acceptor()
   acceptor.setAcceptHandler { service.host.bind($0) }
   try acceptor.activate()

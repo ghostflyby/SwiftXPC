@@ -34,7 +34,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   // Gate on the pipeline itself first: without this, a broken requestShutdown
   // would still let the disconnect wait below resolve via the harness
   // watchdog, and the test would pass without exercising teardown.
-  #expect(await channel.host.expectShutdown(timeout: .seconds(2)))
+  #expect(await channel.host.waitForShutdown(timeout: .seconds(2)))
 
   // The server-side cancel races with in-flight sends; wait for the client
   // to observe the channel going down (a graceful cancel surfaces as an
@@ -45,11 +45,11 @@ distributed actor ShutdownRoot: XPCRootActor {
   }
 }
 
-@Test func ShutdownRejectsNewPeersThroughRejectHook() async throws {
+@Test func ShutdownClosesListenerToNewPeers() async throws {
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
-    XPCServiceConfiguration(),
+    XPCConnectionServiceConfiguration(),
     eventLog: log
   )
   defer { channel.close() }
@@ -58,18 +58,18 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
-  await #expect(throws: XPCChannelError.interrupted) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await lateRoot.ping()
   }
-  let rejection = await log.expectEvent(.didRejectPeer, timeout: .seconds(2))
-  #expect(rejection?.errorDescription == nil)
+  // Native listener closure prevents delivery of another incoming request.
+  #expect(log.events.filter { $0.kind == .shouldAcceptPeer }.isEmpty)
 }
 
 @Test func ShutdownRejectsBeforeAuditWindow() async throws {
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
-    XPCServiceConfiguration(),
+    XPCConnectionServiceConfiguration(),
     eventLog: log
   )
   defer { channel.close() }
@@ -81,12 +81,10 @@ distributed actor ShutdownRoot: XPCRootActor {
 
   let lateClient = try channel.makeClient()
   let lateRoot = try ShutdownRoot.connect(using: lateClient)
-  await #expect(throws: XPCChannelError.interrupted) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await lateRoot.ping()
   }
-  // The post-shutdown rejection happens before the audit window: the late
-  // peer never reached `shouldAccept`.
-  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
+  // Closing the service closes its listener, so no late native audit runs.
   #expect(log.events.filter { $0.kind == .shouldAcceptPeer }.count == 1)
 }
 
@@ -94,7 +92,7 @@ distributed actor ShutdownRoot: XPCRootActor {
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     ShutdownRoot.self,
-    XPCServiceConfiguration(),
+    XPCConnectionServiceConfiguration(),
     eventLog: log
   )
   defer { channel.close() }
@@ -105,21 +103,21 @@ distributed actor ShutdownRoot: XPCRootActor {
   channel.host.requestShutdown()
   channel.host.requestShutdown()
 
-  #expect(await log.expectEvent(.serviceWillShutdown, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .serviceWillShutdown, timeout: .seconds(2)) != nil)
   #expect(
     log.events.map(\.kind).filter { $0 == .serviceWillShutdown } == [.serviceWillShutdown]
   )
 }
 
 @Test func RequestServiceShutdownBridgesFromRootActor() async throws {
-  let channel = try RootChannel(ShutdownRoot.self, XPCServiceConfiguration())
+  let channel = try RootChannel(ShutdownRoot.self, XPCConnectionServiceConfiguration())
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
 
   // The reply to this very call is normally lost to the synchronous cancel;
   // fire it and observe the teardown instead of awaiting it.
   let reply = Task { try await root.shutdownService() }
-  #expect(await channel.host.expectShutdown(timeout: .seconds(2)))
+  #expect(await channel.host.waitForShutdown(timeout: .seconds(2)))
 
   await channel.client.waitForDisconnection()
   await #expect(throws: XPCChannelError.self) {

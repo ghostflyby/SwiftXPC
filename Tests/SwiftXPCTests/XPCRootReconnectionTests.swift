@@ -128,7 +128,7 @@ func RetryingDoesNotRetryTerminalChannelErrors(transport: XPCChannelTransport) a
 
   let channel = try RootChannel(
     ReconnectRoot.self,
-    XPCServiceConfiguration(
+    XPCConnectionServiceConfiguration(
       onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
       onPeerEnd: { _ in ended.withLock { $0 += 1 } }
     )

@@ -28,28 +28,34 @@ distributed actor ForwardRoot: XPCRootActor {
   }
 }
 
-@Test func ForwardedProxyRoundTripsThroughOwnerEndpoint() async throws {
-  let channel = try RootChannel(ForwardRoot.self)
-  defer { channel.close() }
-  let root = try ForwardRoot.connect(using: channel.client)
+@Test(arguments: [XPCChannelTransport.cConnection, .session])
+func ForwardedProxyRoundTripsThroughOwnerEndpoint(transport: XPCChannelTransport) async throws {
+  let service = try xpcTest(ForwardRoot.self, transport: transport)
+  defer { service.close() }
+  let root = service.client.root
   let worker = try await root.makeWorker()
 
   // The client-side proxy is sent back to the server and returned; each hop
   // re-emits the stored endpoint so the receiver dials the owner directly.
   let forwarded = try await root.forward(worker: worker)
 
+  #expect(forwarded.actorSystem.transport == transport)
   #expect(try await forwarded.work("forward") == "worked: forward")
   #expect(try await worker.work("original") == "worked: original")
 }
 
-@Test func SameProxyForwardedTwiceServesParallelPeers() async throws {
-  let channel = try RootChannel(ForwardRoot.self)
-  defer { channel.close() }
-  let root = try ForwardRoot.connect(using: channel.client)
+@Test(arguments: [XPCChannelTransport.cConnection, .session])
+func SameProxyForwardedTwiceServesParallelPeers(transport: XPCChannelTransport) async throws {
+  let service = try xpcTest(ForwardRoot.self, transport: transport)
+  defer { service.close() }
+  let root = service.client.root
   let worker = try await root.makeWorker()
 
   let first = try await root.forward(worker: worker)
   let second = try await root.forward(worker: worker)
+
+  #expect(first.actorSystem.transport == transport)
+  #expect(second.actorSystem.transport == transport)
 
   async let a: String = first.work("first")
   async let b: String = second.work("second")
@@ -65,7 +71,7 @@ distributed actor ForwardRoot: XPCRootActor {
 
 @Test func RootServerRejectsPeerBeforeActivation() async throws {
   let channel = try RootChannel(
-    ForwardRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
+    ForwardRoot.self, XPCConnectionServiceConfiguration(shouldAccept: { _ in false }))
   let connection = try #require(channel.client.connection)
   connection.setEventHandler { _ in }
   // The client side is the harness's already-active production channel;

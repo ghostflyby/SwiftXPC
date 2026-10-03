@@ -58,7 +58,7 @@ func SuspendedInvocationDoesNotBlockPeerInvalidation(transport: XPCChannelTransp
     SuspendedRoot(gate: gate, actorSystem: $0)
   }
   let acceptor = try transport.acceptor()
-  acceptor.setAcceptHandler { service.host.accept($0) }
+  acceptor.setAcceptHandler { service.host.bind($0) }
   try acceptor.activate()
   let client = try XPCRootConnection<SuspendedRoot>.connect(
     using: transport.channel(dialing: acceptor.wireEndpoint))
@@ -67,7 +67,7 @@ func SuspendedInvocationDoesNotBlockPeerInvalidation(transport: XPCChannelTransp
   #expect(gate.waitUntilStarted())
   client.close()
   service.host.cancel()
-  #expect(await log.expectEvent(.peerDidEnd, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .peerDidEnd, timeout: .seconds(2)) != nil)
   gate.release()
   await #expect(throws: XPCChannelError.self) { _ = try await call.value }
 }

@@ -4,8 +4,7 @@ import Foundation
 import Synchronization
 import XPC
 
-/// A peer code signing requirement install failure (errno-style `status`,
-/// e.g. `ENOTSUP` on backends without peer validation support).
+/// A peer requirement install failure, carrying its errno-style status.
 public struct XPCPeerRequirementError: Error, Sendable {
   public let status: Int32
   public init(status: Int32) {
@@ -73,19 +72,15 @@ public final class XPCChannel: Sendable {
   }
 
   private let backend: Backend
-  private let peerIdentity: (pid: pid_t, euid: uid_t, egid: gid_t, asid: au_asid_t)?
 
   /// Adopts a native C connection. The channel cancels it on deinitialization.
   public init(_ connection: XPCConnection) {
     backend = .connection(connection)
-    let pid = connection.pid
-    // Accepted peers have an identity already; preserve it through teardown.
-    peerIdentity = pid > 0 ? (pid, connection.euid, connection.egid, connection.asid) : nil
+
   }
 
   init(session: XPCSessionChannel) {
     backend = .session(session)
-    peerIdentity = nil
   }
 
   deinit { cancel() }
@@ -103,14 +98,6 @@ public final class XPCChannel: Sendable {
     return nil
   }
 
-  public var pid: pid_t? { peerIdentity?.pid ?? connection?.pid }
-  public var euid: uid_t? { peerIdentity?.euid ?? connection?.euid }
-  public var egid: gid_t? { peerIdentity?.egid ?? connection?.egid }
-  public var asid: au_asid_t? { peerIdentity?.asid ?? connection?.asid }
-
-  /// Only C channels can recover from an interruption. Invalid is terminal.
-  public var canReconnect: Bool { transport == .cConnection }
-
   public func setIncomingHandler(_ handler: @escaping @Sendable (XPCIncomingMessage) -> Void) {
     switch backend {
     case .connection(let connection): connection.setIncomingHandler(handler)
@@ -125,14 +112,9 @@ public final class XPCChannel: Sendable {
     }
   }
 
-  /// Registers a repeatable interruption handler on the C backend.
-  /// Session channels ignore this registration: their peer losses are terminal
-  /// and delivered through `addInvalidationHandler` instead.
-  public func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
-    switch backend {
-    case .connection(let connection): connection.addInterruptionHandler(handler)
-    case .session(let session): session.addInterruptionHandler(handler)
-    }
+  // C-only signal used by DistributedXPC's root handle; not a common API.
+  package func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
+    connection?.addInterruptionHandler(handler)
   }
 
   /// Waits for the first disconnection, including an earlier interruption.
@@ -171,13 +153,4 @@ public final class XPCChannel: Sendable {
     }
   }
 
-  /// Installs a requirement before activation. Unsupported backends fail closed.
-  public func applyPeerCodeSigningRequirement(_ requirement: String?)
-    throws(XPCPeerRequirementError)
-  {
-    switch backend {
-    case .connection(let connection): try connection.applyPeerCodeSigningRequirement(requirement)
-    case .session(let session): try session.applyPeerCodeSigningRequirement(requirement)
-    }
-  }
 }

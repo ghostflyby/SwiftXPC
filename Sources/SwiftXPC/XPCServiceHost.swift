@@ -4,254 +4,62 @@ import Foundation
 import Synchronization
 import XPC
 
-/// Channel-level lifecycle hooks for an `XPCServiceHost` — deliberately
-/// free of any actor machinery, so plain XPC services and actor services
-/// share one delegate vocabulary. Every requirement has a default
-/// implementation; state only what you customize.
-///
-/// Hooks fire from arbitrary threads: peer hooks on XPC event queues (or the
-/// accepting thread), `serviceWillShutdown` on the thread that drove the
-/// shutdown. Conformance requires `Sendable`; keep shared state behind a
-/// lock.
-///
-/// The hooks are backend-agnostic: `peer` is the accepted channel
-/// (C or session backend), and the identity properties (`pid`/`euid`/…) are
-/// nil on session-backed peers — the session model has no counterpart
-/// accessors, so identity-based audit is a C-backend capability.
-public protocol XPCServiceDelegate: Sendable {
-
-  /// Kernel-enforced code signing requirement installed on every peer
-  /// *before activation*. Read once per accepted peer, so class-type
-  /// conformers may vary it between peers. A requirement that cannot be
-  /// installed (including "the session backend cannot validate peers",
-  /// which fails closed with `ENOTSUP`) rejects the peer and reports the
-  /// error to `didRejectPeer(_:error:)`: enforcement never silently
-  /// degrades to none.
-  var peerCodeSigningRequirement: String? { get }
-
-  /// Audit window for each incoming peer, invoked after the requirement is
-  /// installed and still *before activation* — inspect `peer.pid` /
-  /// `peer.euid` here (C backend only; nil on session peers). Peers
-  /// arriving after `requestShutdown()` are rejected before this hook runs.
-  /// It may install a requirement via the `setPeer*Requirement` family on
-  /// `peer.connection` (C backend only), but a connection accepts at most
-  /// one member of that family (libxpc traps on a second install), so when
-  /// `peerCodeSigningRequirement` is set this hook must not install
-  /// another. Returning `false` rejects the peer; throwing rejects the peer
-  /// and reports the error to `didRejectPeer(_:error:)`.
-  func shouldAcceptPeer(_ peer: XPCChannel) throws -> Bool
-
-  /// Invoked once a peer is accepted (bound to the service, before
-  /// activation).
-  func didAcceptPeer(_ peer: XPCChannel)
-
-  /// Invoked when an accepted peer disconnects — including peers dropped by
-  /// XPC for failing a code signing requirement at activation. The channel
-  /// is already down at this point; only identity inspection is meaningful.
-  func peerDidEnd(_ peer: XPCChannel)
-
-  /// Invoked when a peer is rejected before ever being accepted:
-  /// `shouldAcceptPeer(_:)` returned `false` (error is `nil`), it threw, the
-  /// peer handler threw, the code signing requirement could not be
-  /// installed (including the session backend's fail-closed `ENOTSUP`), or
-  /// the host already shut down or was cancelled (error is `nil`). The
-  /// channel is already cancelled; only identity inspection is meaningful.
-  func didRejectPeer(_ peer: XPCChannel, error: (any Error)?)
-
-  /// Invoked by a hosted entry point once the host exists, before the event
-  /// loop starts — retain `host` here to reach `requestShutdown()` from
-  /// outside the accepted peers (e.g. a signal handler). Runs on the main
-  /// thread. Standalone hosts never fire it; the owner already holds the
-  /// reference.
-  func serviceWillStart(host: XPCServiceHost)
-
-  /// Invoked exactly once after a cooperative shutdown has initiated
-  /// teardown of every accepted peer, on the thread that drove it. Peer
-  /// cancellation is asynchronous, so `peerDidEnd` for those peers may
-  /// arrive after this hook. Whether the process then dies is launchd's
-  /// decision (on-demand reaping) or the hosting entry point's (which
-  /// installs the shutdown completion); this hook is only the notification.
-  func serviceWillShutdown()
-}
-
-extension XPCServiceDelegate {
-  public var peerCodeSigningRequirement: String? { nil }
-
-  public func shouldAcceptPeer(_ peer: XPCChannel) throws -> Bool { true }
-
-  public func didAcceptPeer(_ peer: XPCChannel) {}
-
-  public func peerDidEnd(_ peer: XPCChannel) {}
-
-  public func didRejectPeer(_ peer: XPCChannel, error: (any Error)?) {}
-
-  public func serviceWillStart(host: XPCServiceHost) {}
-
-  public func serviceWillShutdown() {}
-}
-
-/// A closure-based `XPCServiceDelegate` whose fields all default to
-/// "use the protocol default", so a service states only what it customizes.
-/// Closure properties mirror the delegate members they override; a `nil`
-/// closure falls through to the `XPCServiceDelegate` default.
-public struct XPCServiceConfiguration: XPCServiceDelegate {
-  /// See `XPCServiceDelegate.peerCodeSigningRequirement`.
-  public let peerCodeSigningRequirement: String?
-
-  /// See `XPCServiceDelegate.shouldAcceptPeer(_:)`.
-  public let shouldAccept: (@Sendable (XPCChannel) throws -> Bool)?
-
-  /// See `XPCServiceDelegate.didAcceptPeer(_:)`.
-  public let onPeerAccept: (@Sendable (XPCChannel) -> Void)?
-
-  /// See `XPCServiceDelegate.peerDidEnd(_:)`.
-  public let onPeerEnd: (@Sendable (XPCChannel) -> Void)?
-
-  /// See `XPCServiceDelegate.didRejectPeer(_:error:)`.
-  public let onPeerReject: (@Sendable (XPCChannel, (any Error)?) -> Void)?
-
-  /// See `XPCServiceDelegate.serviceWillStart(host:)`.
-  public let onStart: (@Sendable (XPCServiceHost) -> Void)?
-
-  /// See `XPCServiceDelegate.serviceWillShutdown()`.
-  public let onShutdown: (@Sendable () -> Void)?
-
-  /// - Parameters:
-  ///   - peerCodeSigningRequirement: `nil` installs nothing.
-  ///   - shouldAccept: `nil` accepts every peer.
-  public init(
-    peerCodeSigningRequirement: String? = nil,
-    shouldAccept: (@Sendable (XPCChannel) throws -> Bool)? = nil,
-    onPeerAccept: (@Sendable (XPCChannel) -> Void)? = nil,
-    onPeerEnd: (@Sendable (XPCChannel) -> Void)? = nil,
-    onPeerReject: (@Sendable (XPCChannel, (any Error)?) -> Void)? = nil,
-    onStart: (@Sendable (XPCServiceHost) -> Void)? = nil,
-    onShutdown: (@Sendable () -> Void)? = nil
-  ) {
-    self.peerCodeSigningRequirement = peerCodeSigningRequirement
-    self.shouldAccept = shouldAccept
-    self.onPeerAccept = onPeerAccept
-    self.onPeerEnd = onPeerEnd
-    self.onPeerReject = onPeerReject
-    self.onStart = onStart
-    self.onShutdown = onShutdown
-  }
-
-  public init() {
-    self.init(peerCodeSigningRequirement: nil)
-  }
-
-  public func shouldAcceptPeer(_ peer: XPCChannel) throws -> Bool {
-    guard let shouldAccept else { return true }
-    return try shouldAccept(peer)
-  }
-
-  public func didAcceptPeer(_ peer: XPCChannel) {
-    onPeerAccept?(peer)
-  }
-
-  public func peerDidEnd(_ peer: XPCChannel) {
-    onPeerEnd?(peer)
-  }
-
-  public func didRejectPeer(_ peer: XPCChannel, error: (any Error)?) {
-    onPeerReject?(peer, error)
-  }
-
-  public func serviceWillStart(host: XPCServiceHost) {
-    onStart?(host)
-  }
-
-  public func serviceWillShutdown() {
-    onShutdown?()
-  }
-}
-
-/// Channel-lifecycle plumbing for an XPC service: channel bookkeeping, the
-/// pre-activation audit window, rejection paths, and the cooperative
-/// shutdown pipeline — over any `XPCChannel` backend. Actor-free —
-/// an actor runtime layers on top by installing a `peerHandler` that binds
-/// accepted peers, exactly as `DistributedXPC`'s `XPCActorService`
-/// initializer does.
-///
-/// Lifecycle of an accepted peer: requirement install →
-/// `shouldAcceptPeer` → `peerHandler` (wire message routing) →
-/// bookkeeping → `didAcceptPeer` → activation. Rejections run before any of
-/// that and end in `didRejectPeer(_:error:)` on an already-cancelled
-/// channel.
-///
-/// Both backends defer incoming message delivery until the host activates
-/// the admitted channel. Session requirements still fail closed with ENOTSUP.
-///
-/// Whether the process retires when the service shuts down is launchd's
-/// decision (on-demand reaping) or the hosting entry point's
-/// (`setShutdownCompletion`); the host itself never exits the process.
+/// Owns admitted channels, message routing, and cooperative shutdown.
+/// Native connection/session admission belongs to `XPCChannelAcceptor`.
+/// Routing and shutdown completion are fixed at construction, so another
+/// layer cannot replace an actor service's routing or registry cleanup.
 public final class XPCServiceHost: Sendable {
   struct State {
     var channels: [UUID: XPCChannel] = [:]
     var cancelled = false
     var shutdownRequested = false
+    var shutdownNotified = false
+    var shutdownWaiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
   }
 
   private let state = Mutex(State())
   private let delegate: any XPCServiceDelegate
   private let eventLog: XPCServiceEventLog?
-  private let peerHandler = Mutex<@Sendable (XPCChannel) throws -> Void>({ _ in })
-  /// Installed by a hosting entry point; runs after
-  /// `delegate.serviceWillShutdown()` on the thread that drove the shutdown.
-  private let shutdownCompletion = Mutex<@Sendable () -> Void>({})
-  private struct ShutdownState {
-    var notified = false
-    var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
-  }
-
-  private let shutdownState = Mutex(ShutdownState())
-
-  /// - Parameters:
-  ///   - delegate: the channel-lifecycle customization.
-  ///   - eventLog: when non-nil, the host records every peer and shutdown hook
-  ///     invocation into it, in invocation order — the basis for hook
-  ///     assertions in tests.
+  private let peerHandler: @Sendable (XPCChannel) throws -> Void
+  private let shutdownCompletion: @Sendable () -> Void
+  /// The host never exits the process. `onShutdown` runs after the delegate
+  /// notification; hosted entry points use it to retire their process.
   public init(
     _ delegate: some XPCServiceDelegate,
-    eventLog: XPCServiceEventLog? = nil
+    eventLog: XPCServiceEventLog? = nil,
+    peerHandler: @escaping @Sendable (XPCChannel) throws -> Void = { _ in },
+    onShutdown: @escaping @Sendable () -> Void = {}
   ) {
     self.delegate = delegate
     self.eventLog = eventLog
+    self.peerHandler = peerHandler
+    self.shutdownCompletion = onShutdown
+  }
+
+  private struct DefaultDelegate: XPCServiceDelegate {}
+
+  public convenience init(
+    eventLog: XPCServiceEventLog? = nil,
+    peerHandler: @escaping @Sendable (XPCChannel) throws -> Void = { _ in },
+    onShutdown: @escaping @Sendable () -> Void = {}
+  ) {
+    self.init(
+      DefaultDelegate(), eventLog: eventLog, peerHandler: peerHandler, onShutdown: onShutdown)
   }
 
   private func record(_ kind: XPCServiceEvent.Kind, error: (any Error)? = nil) {
     eventLog?.append(kind, error: error)
   }
 
+  package var isAccepting: Bool {
+    state.withLock { !$0.cancelled && !$0.shutdownRequested }
+  }
+
   deinit { cancel() }
 
-  /// Installs the message-routing step for accepted peers — invoked for
-  /// each audited peer *before activation* and before `didAcceptPeer`.
-  /// Wire event handlers or bind service state here; the host activates
-  /// the channel. Throwing rejects the peer: it is reported to
-  /// `didRejectPeer(_:error:)` on an already-cancelled channel. Must be
-  /// installed before the host starts accepting; defaults to a no-op for
-  /// delegates that manage peers purely through the hooks.
-  public func setPeerHandler(
-    _ handler: @escaping @Sendable (XPCChannel) throws -> Void
-  ) {
-    peerHandler.withLock { $0 = handler }
-  }
-
-  /// Installs the hosting layer's post-shutdown step — the explicit
-  /// process-retirement control (e.g. `exit(0)` under a hosted entry
-  /// point). Runs after `serviceWillShutdown()`, on the shutdown-driving
-  /// thread. Without it, a cooperative shutdown only tears the peers down.
-  public func setShutdownCompletion(_ completion: @escaping @Sendable () -> Void) {
-    shutdownCompletion.withLock { $0 = completion }
-  }
-
-  /// Audits, accepts, and bookkeeps one incoming peer channel. The hosted
-  /// entry points (`xpcMain`, `xpcSessionMain`) feed this for each incoming
-  /// peer; on the C backend, feeders filter listener error events and only
-  /// forward real peer channels.
-  public func accept(_ channel: XPCChannel) {
+  /// Binds and activates a channel already admitted by its native backend.
+  /// Binding failure or a closed host cancels it and calls `didRejectPeer`.
+  public func bind(_ channel: XPCChannel) {
     let peer = channel
 
     func reject(_ error: (any Error)?) {
@@ -261,29 +69,13 @@ public final class XPCServiceHost: Sendable {
       delegate.didRejectPeer(peer, error: error)
     }
 
-    // A cancelled host takes no new peers: reject before the audit window,
-    // like a post-shutdown peer.
+    // Native admission already finished; a closed host must not install routing.
     if state.withLock({ $0.shutdownRequested || $0.cancelled }) {
       return reject(nil)
     }
 
-    if let requirement = delegate.peerCodeSigningRequirement {
-      do {
-        // Fail-closed on the session backend: applying a requirement throws
-        // ENOTSUP instead of silently hosting unvalidated.
-        try channel.applyPeerCodeSigningRequirement(requirement)
-      } catch {
-        return reject(error)
-      }
-    }
-    record(.shouldAcceptPeer)
     do {
-      guard try delegate.shouldAcceptPeer(peer) else { return reject(nil) }
-    } catch {
-      return reject(error)
-    }
-    do {
-      try peerHandler.withLock { $0 }(channel)
+      try peerHandler(channel)
     } catch {
       return reject(error)
     }
@@ -303,9 +95,6 @@ public final class XPCServiceHost: Sendable {
       let removed = self.state.withLock { $0.channels.removeValue(forKey: key) }
       withExtendedLifetime(removed) {}
     }
-    if let connection = channel.connection {
-      connection.addPeerCodeSigningErrorHandler { connection.cancel() }
-    }
     channel.activate()
   }
 
@@ -324,19 +113,18 @@ public final class XPCServiceHost: Sendable {
     cancel()
     record(.serviceWillShutdown)
     delegate.serviceWillShutdown()
-    let completion = shutdownCompletion.withLock { $0 }
-    completion()
+    shutdownCompletion()
     notifyShutdown()
   }
 
   /// Deterministically waits until a cooperative shutdown has run its
   /// pipeline and returns `true`. Returns immediately when the host already
   /// shut down; returns `false` when `timeout` elapses first or when the
-  /// host was cancelled without a shutdown request (a cancelled host never
-  /// runs the pipeline). A waiter arriving while the pipeline is mid-flight
+  /// host was cancelled before a shutdown request. A later explicit request
+  /// may still run the pipeline, but does not change completed waiter results. A waiter arriving while the pipeline is mid-flight
   /// — after cancellation, before the hook and completion have finished —
   /// resolves with `true` once the pipeline completes. Never polls.
-  public func expectShutdown(timeout: Duration? = nil) async -> Bool {
+  public func waitForShutdown(timeout: Duration? = nil) async -> Bool {
     await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
       insertShutdownWaiter(id: UUID(), continuation: cont, timeout: timeout)
     }
@@ -347,19 +135,18 @@ public final class XPCServiceHost: Sendable {
     continuation: CheckedContinuation<Bool, Never>,
     timeout: Duration?
   ) {
-    let immediateResult = shutdownState.withLock { shutdown -> Bool? in
-      if shutdown.notified {
+    let immediateResult = state.withLock { state -> Bool? in
+      if state.shutdownNotified {
         return true
       }
       // Only a bare cancel() — silent teardown with no pipeline — resolves
       // waiters with false. requestShutdown() cancels before running the
       // pipeline, so a waiter arriving in that window must not take the
       // false fast path; it waits for notifyShutdown() like any other.
-      let (cancelled, requested) = state.withLock { ($0.cancelled, $0.shutdownRequested) }
-      if cancelled && !requested {
+      if state.cancelled && !state.shutdownRequested {
         return false
       }
-      shutdown.waiters.append((id, continuation))
+      state.shutdownWaiters.append((id, continuation))
       if let timeout {
         let host = self
         let deadline =
@@ -377,31 +164,20 @@ public final class XPCServiceHost: Sendable {
     }
   }
 
-  private func cancelShutdownWaiters(resuming value: Bool) {
-    let waiters = shutdownState.withLock { shutdown in
-      let waiters = shutdown.waiters
-      shutdown.waiters.removeAll()
-      return waiters
-    }
-    for waiter in waiters {
-      waiter.continuation.resume(returning: value)
-    }
-  }
-
   private func cancelShutdownWaiter(id: UUID) {
-    let waiter = shutdownState.withLock { shutdown in
-      shutdown.waiters.firstIndex(where: { $0.id == id }).map {
-        shutdown.waiters.remove(at: $0)
+    let waiter = state.withLock { state in
+      state.shutdownWaiters.firstIndex(where: { $0.id == id }).map {
+        state.shutdownWaiters.remove(at: $0)
       }
     }
     waiter?.continuation.resume(returning: false)
   }
 
   private func notifyShutdown() {
-    let waiters = shutdownState.withLock { shutdown in
-      shutdown.notified = true
-      let waiters = shutdown.waiters
-      shutdown.waiters.removeAll()
+    let waiters = state.withLock { state in
+      state.shutdownNotified = true
+      let waiters = state.shutdownWaiters
+      state.shutdownWaiters.removeAll()
       return waiters
     }
     for waiter in waiters {
@@ -411,25 +187,26 @@ public final class XPCServiceHost: Sendable {
 
   /// Silently cancels every accepted peer and closes the host to new ones
   /// without running the shutdown pipeline. Also runs from `deinit`. Any
-  /// pending `expectShutdown` waiter is released with `false`: a cancelled
-  /// host never runs the pipeline. Peers arriving after cancellation are
+  /// pending `waitForShutdown` waiter is released with `false` unless shutdown
+  /// was already requested. A later explicit request may still run the pipeline.
+  /// Peers arriving after cancellation are
   /// rejected through the standard path (`didRejectPeer` with a nil error).
   public func cancel() {
-    let channels = state.withLock { state -> [XPCChannel] in
+    let (channels, waiters) = state.withLock { state in
       state.cancelled = true
       let channels = Array(state.channels.values)
       state.channels.removeAll()
-      return channels
+      // Detach exactly the waiters owned by this bare cancellation. A later
+      // shutdown request and its new waiters cannot be drained by this call.
+      let waiters = state.shutdownRequested ? [] : state.shutdownWaiters
+      if !state.shutdownRequested { state.shutdownWaiters.removeAll() }
+      return (channels, waiters)
+    }
+    for waiter in waiters {
+      waiter.continuation.resume(returning: false)
     }
     for channel in channels {
       channel.cancel()
-    }
-    // requestShutdown() drives the shutdown waiters itself (they resolve
-    // true after the pipeline runs); a bare cancel() — silent teardown —
-    // resolves them with false instead.
-    let requested = state.withLock { $0.shutdownRequested }
-    if !requested {
-      cancelShutdownWaiters(resuming: false)
     }
   }
 }

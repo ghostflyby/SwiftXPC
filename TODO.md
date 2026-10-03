@@ -443,7 +443,7 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
   `xpc_peer_requirement_*`、session 的 flags/handler typedef 均在其列。
 - Apple 为现代 API 提供 Swift overlay 类型（`XPCListener`/`XPCSession`/
   `XPCPeerRequirement`/`XPCRichError`/`XPCEndpoint`/`XPCReceivedMessage`），
-  但它们基于 session 模型，与本库基于 `xpc_connection_t` 的运行时不兼容。
+  它们基于 session 模型；本库现已通过 `XPCChannel` 将 Session 与 C connection 接入同一运行时。
 - 无 NOEXPORT 的 C 函数（`xpc_connection_get_pid`、14.4 requirement setter 家族、
   `xpc_copy_description`、`xpc_shmem_*` 等）可直接封装。
 
@@ -478,8 +478,11 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
 ### P2（现代 API 代际与能力补全）
 
 - [x] **双 transport runtime**（2026-10-03）：C 和 Session 经具体 `XPCChannel` 门面统一；
-  服务准入、actor registry、服务组装分别独立。Session requirement 当前仍 fail-closed；
-  完整复审与迁移见 `Docs/DualTransportRefactorModel.md`。
+  服务准入、actor registry、服务组装分别独立。准入协议按 C connection / Session request
+  拆分；Session 使用原生 request accept/reject，不能安装旧 C 字符串 requirement。
+  macOS 26+ named Session listener 提供 `XPCPeerRequirement` 专用构造器，类型检查已覆盖；
+  暂接受真实 launchd 服务上签名匹配/不匹配的内核强制集成测试缺口，不宣称匿名 listener
+  具有同等策略。完整复审与迁移见 `Docs/DualTransportRefactorModel.md`、`Docs/PublicAPIAudit.md`。
 - [ ] `xpc_shmem_create/map`（可直接封装）：共享内存零拷贝传输，大 payload 场景。
 - [ ] mach send right 传递（`xpc_dictionary_set_mach_send/copy_mach_send`、
   `xpc_array/dictionary_create_connection`）。

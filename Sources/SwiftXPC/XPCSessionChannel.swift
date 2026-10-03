@@ -72,10 +72,12 @@ final class XPCSessionChannel: @unchecked Sendable {
 
   private enum Source {
     case accepted(XPCSession)
-    case dialed(@Sendable () throws -> XPCSession)
+    case dialed(
+      make: @Sendable () throws -> XPCSession,
+      activate: @Sendable (XPCSession) throws -> Void)
   }
 
-  private enum Phase { case inactive, active, invalid }
+  private enum Phase { case inactive, activating, active, invalid }
   private struct Control {
     var phase = Phase.inactive
     var session: XPCSession?
@@ -94,12 +96,20 @@ final class XPCSessionChannel: @unchecked Sendable {
   private let invalidation = XPCInvalidationChain()
   private let sends = DispatchQueue(label: "SwiftXPC.session.sends")
 
-  init(dialing endpoint: XPCEndpoint) {
-    source = .dialed { try XPCSession(endpoint: endpoint, options: [.inactive]) }
+  convenience init(dialing endpoint: XPCEndpoint) {
+    self.init(makingSession: { try XPCSession(endpoint: endpoint, options: [.inactive]) })
   }
 
-  init(machServiceName: String) {
-    source = .dialed { try XPCSession(machService: machServiceName, options: [.inactive]) }
+  convenience init(machServiceName: String) {
+    self.init(makingSession: { try XPCSession(machService: machServiceName, options: [.inactive]) })
+  }
+
+  // Injectable native activation keeps reentrant callback/race tests deterministic.
+  init(
+    makingSession: @escaping @Sendable () throws -> XPCSession,
+    activateSession: @escaping @Sendable (XPCSession) throws -> Void = { try $0.activate() }
+  ) {
+    source = .dialed(make: makingSession, activate: activateSession)
   }
 
   /// Session handlers must be configured inside the listener's accept callback.
@@ -119,46 +129,49 @@ final class XPCSessionChannel: @unchecked Sendable {
     if invalidation.add(handler) { handler() }
   }
 
-  // Sessions do not reconnect; all losses are terminal invalidations.
-  func addInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {}
-
   func waitForDisconnection() async {
     await withCheckedContinuation { invalidation.waitForDisconnection(continuation: $0) }
   }
 
   func activate() {
-    var failed: [PendingSend] = []
-    var didFail = false
-    control.withLock { state in
-      guard state.phase == .inactive else { return }
-      do {
-        switch source {
-        case .accepted(let session): state.session = session
-        case .dialed(let make):
-          let session = try make()
-          installSessionHandler(session)
-          try session.activate()
-          state.session = session
-        }
-        state.phase = .active
-        // Enqueue under the same lock as subsequent sends to preserve FIFO.
-        for send in state.pending { enqueue(send, on: state.session!) }
-        state.pending = []
-      } catch {
-        state.phase = .invalid
-        state.session = nil
-        failed = state.pending
-        state.pending = []
-        state.inFlight = [:]
-        didFail = true
-      }
+    let start = control.withLock { state in
+      guard state.phase == .inactive else { return false }
+      state.phase = .activating
+      return true
     }
-    if didFail {
-      finishPending(failed)
-      incoming.cancel()
-      invalidation.take()()
-    } else {
+    guard start else { return }
+
+    let session: XPCSession
+    do {
+      switch source {
+      case .accepted(let accepted): session = accepted
+      case .dialed(let make, let activate):
+        session = try make()
+        installSessionHandler(session)
+        // The activation owner keeps the native session private until this
+        // returns. Cancellation can finish logical teardown immediately;
+        // native cancellation follows activation, as required by libxpc.
+        try activate(session)
+      }
+    } catch {
+      // Failed native activation automatically cancels its session.
+      cancel()
+      return
+    }
+
+    let activated = control.withLock { state in
+      guard state.phase == .activating else { return false }
+      state.session = session
+      state.phase = .active
+      // Enqueue under the same lock as subsequent sends to preserve FIFO.
+      for send in state.pending { enqueue(send, on: session) }
+      state.pending = []
+      return true
+    }
+    if activated {
       incoming.activate()
+    } else {
+      session.cancel(reason: "channel canceled during activation")
     }
   }
 
@@ -196,7 +209,7 @@ final class XPCSessionChannel: @unchecked Sendable {
       }
       switch state.phase {
       case .invalid: return true
-      case .inactive: state.pending.append(send)
+      case .inactive, .activating: state.pending.append(send)
       case .active: enqueue(send, on: state.session!)
       }
       return false
@@ -242,10 +255,6 @@ final class XPCSessionChannel: @unchecked Sendable {
       return removed
     }
     withExtendedLifetime(removed) {}
-  }
-
-  func applyPeerCodeSigningRequirement(_ requirement: String?) throws(XPCPeerRequirementError) {
-    if requirement != nil { throw XPCPeerRequirementError(status: ENOTSUP) }
   }
 
   func sendAndForget(_ message: xpc_object_t) {

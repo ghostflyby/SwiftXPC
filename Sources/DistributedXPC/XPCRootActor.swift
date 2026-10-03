@@ -20,7 +20,7 @@ public protocol XPCRootActor: XPCExportableActor,
 ///       typealias Root = ServiceRoot
 ///
 ///       var peerCodeSigningRequirement: String? { "identifier \"com.example.agent\"" }
-///       func shouldAcceptPeer(_ connection: XPCChannel) throws -> Bool {
+///       func shouldAcceptConnection(_ connection: XPCConnection) throws -> Bool {
 ///         connection.euid == 501
 ///       }
 ///     }
@@ -30,12 +30,15 @@ public protocol XPCRootActor: XPCExportableActor,
 /// serving one root per service, and exits the process after a cooperative
 /// shutdown. All customization lives in the conformer's own requirement
 /// implementations, exactly as in `xpcMain`.
-public protocol XPCApp: XPCServiceDelegate {
+public protocol XPCApp: XPCConnectionServiceDelegate {
   /// The root actor type constructed by the app.
   associatedtype Root: XPCRootActor
 
   /// Creates the delegate for hosting.
   init()
+
+  /// Hosted-process setup, before the event loop begins.
+  @MainActor func serviceWillStart(host: XPCServiceHost)
 
   /// Runs the XPC service event loop with `Self` as the delegate. Never
   /// returns. Provided by the library; this is the `@main` entry point.
@@ -43,9 +46,11 @@ public protocol XPCApp: XPCServiceDelegate {
 }
 
 extension XPCApp {
+  @MainActor public func serviceWillStart(host: XPCServiceHost) {}
   @MainActor
   public static func main() {
-    xpcMain(Self.Root.self, Self())
+    let app = Self()
+    xpcMain(Self.Root.self, app, onStart: { app.serviceWillStart(host: $0) })
   }
 }
 
@@ -53,7 +58,7 @@ extension XPCApp {
 /// one `rootType` instance on every accepted peer connection. Never returns.
 /// Must run on the main thread.
 ///
-/// Equivalent to `xpcMain(rootType, XPCServiceConfiguration())`: peers are
+/// Equivalent to `xpcMain(rootType, XPCConnectionServiceConfiguration())`: peers are
 /// accepted unconditionally unless gated by a `peerCodeSigningRequirement`.
 /// Customize via the delegate overload, or mark a delegate type `@main`
 /// via `XPCApp`.
@@ -67,56 +72,43 @@ extension XPCApp {
 @MainActor
 public func xpcMain<Root>(
   _ rootType: Root.Type,
-  _ delegate: any XPCServiceDelegate = XPCServiceConfiguration()
+  _ delegate: some XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
+  onStart: @MainActor (XPCServiceHost) -> Void = { _ in }
 ) -> Never where Root: XPCRootActor {
-  let service = XPCActorService(rootType, delegate)
+  let service = XPCActorService(rootType, delegate, onShutdown: { exit(0) })
   let server = service.host
-  // The hosted service *is* the process: retire it right after the
-  // delegate's shutdown hook has run.
-  server.setShutdownCompletion {
-    service.cancel(); exit(0)
+  onStart(server)
+  return withExtendedLifetime(service) {
+    SwiftXPC.xpcMain { connection in
+      guard server.isAccepting else {
+        rejectXPCConnection(connection, delegate: delegate, eventLog: nil, error: nil)
+        return
+      }
+      guard admitXPCConnection(connection, delegate: delegate) else { return }
+      server.bind(XPCChannel(connection))
+    }
   }
-  delegate.serviceWillStart(host: server)
-  return SwiftXPC.xpcMain { connection in server.accept(connection) }
 }
 
 extension XPCRootActor {
-  /// Connects to a launchd-managed XPC service by mach service name and
-  /// resolves its root actor.
-  ///
-  /// - Parameters:
-  ///   - serviceName: the launchd mach service name of the service.
-  ///   - peerCodeSigningRequirement: kernel-enforced requirement the service
-  ///     must satisfy, installed on the connection before activation. A
-  ///     service failing it is dropped by XPC; a requirement that cannot be
-  ///     installed makes `connect` throw (fail-closed).
+  /// Actor-only connection convenience. Use `XPCRootConnection` when lifecycle
+  /// observation, explicit close, or retry policy is required.
   public static func connect(
-    toService serviceName: String,
-    transport: XPCChannelTransport = .cConnection,
-    peerCodeSigningRequirement: String? = nil
+    toService serviceName: String, transport: XPCChannelTransport = .cConnection
   ) throws -> Self {
-    try XPCRootConnection<Self>.connect(
-      toService: serviceName,
-      transport: transport,
-      peerCodeSigningRequirement: peerCodeSigningRequirement
-    ).root
+    try XPCRootConnection<Self>.connect(toService: serviceName, transport: transport).root
   }
 
-  /// Connects through an existing connection. Note: only connections to a
-  /// *named* mach service re-establish after a service restart; endpoint-based
-  /// connections die permanently with the peer.
-  ///
-  /// `peerCodeSigningRequirement` authenticates the service and must be
-  /// installed on a *not-yet-activated* connection. On an already-activated
-  /// connection the install reports success but the channel then fails to
-  /// establish (hangs or interrupts) — pass a fresh connection.
+  public static func connect(using channel: XPCChannel) throws -> Self {
+    try XPCRootConnection<Self>.connect(using: channel).root
+  }
+
+  /// Native C authentication, before activation and channel adoption.
   public static func connect(
-    using channel: XPCChannel,
-    peerCodeSigningRequirement: String? = nil
+    using connection: XPCConnection, peerCodeSigningRequirement: String? = nil
   ) throws -> Self {
     try XPCRootConnection<Self>.connect(
-      using: channel,
-      peerCodeSigningRequirement: peerCodeSigningRequirement
+      using: connection, peerCodeSigningRequirement: peerCodeSigningRequirement
     ).root
   }
 }

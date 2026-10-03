@@ -220,7 +220,7 @@ struct XPCChannelTransportTests {
     client.setIncomingHandler { _ in }
     // Manual cancel is terminal: route to the invalidation chain.
     client.addInvalidationHandler { invalidated.signal() }
-    client.addInterruptionHandler {
+    client.connection?.addInterruptionHandler {
       Issue.record("interruption chain must not fire on cancel")
     }
     client.activate()
@@ -380,7 +380,7 @@ struct XPCChannelTransportTests {
     let client = try pair.client.channel(dialing: acceptor.wireEndpoint)
     #expect(client.transport == pair.client)
     #expect((client.connection != nil) == (pair.client == .cConnection))
-    #expect((client.pid != nil) == (pair.client == .cConnection))
+    #expect((client.connection != nil) == (pair.client == .cConnection))
     client.cancel()
     acceptor.cancel()
   }
@@ -464,22 +464,22 @@ struct XPCChannelTransportTests {
     let shutdown = FlagBox()
     let ended = FlagBox()
     let host = XPCServiceHost(
-      XPCServiceConfiguration(
+      XPCConnectionServiceConfiguration(
         onPeerEnd: { peer in
-          #expect(peer.pid == (serverTransport == .cConnection ? getpid() : nil))
+          #expect(peer.connection?.pid == (serverTransport == .cConnection ? getpid() : nil))
           ended.fire()
         },
-        onShutdown: { shutdown.fire() }))
-    host.setPeerHandler { channel in
-      channel.setIncomingHandler { message in
-        var response = XPCDictionary()
-        response["echo"] = XPCDictionary(message.payload)["ping", as: xpc_object_t.self]
-        message.reply(response.xpcObject)
-      }
-    }
+        onShutdown: { shutdown.fire() }),
+      peerHandler: { channel in
+        channel.setIncomingHandler { message in
+          var response = XPCDictionary()
+          response["echo"] = XPCDictionary(message.payload)["ping", as: xpc_object_t.self]
+          message.reply(response.xpcObject)
+        }
+      })
 
     let acceptor = try serverTransport.acceptor()
-    acceptor.setAcceptHandler { channel in host.accept(channel) }
+    acceptor.setAcceptHandler { channel in host.bind(channel) }
     try acceptor.activate()
 
     let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
@@ -503,30 +503,116 @@ struct XPCChannelTransportTests {
     try await runUnifiedHostEcho(serverTransport: pair.server, clientTransport: pair.client)
   }
 
-  @Test func RequirementFailsClosedOnSessionBackend() async throws {
-    // A non-nil requirement on the session backend must reject the peer
-    // with the install error (ENOTSUP) instead of silently hosting
-    // unvalidated — the unified host's fail-closed path.
-    let rejections = ErrorBox()
-    let host = XPCServiceHost(
-      XPCServiceConfiguration(
-        peerCodeSigningRequirement: "identifier \"com.example.anything\"",
-        onPeerReject: { _, error in rejections.store(error) }))
-
-    let acceptor = try XPCChannelTransport.session.acceptor()
-    acceptor.setAcceptHandler { channel in host.accept(channel) }
+  @Test(arguments: XPCBackendPair.all)
+  func BackendAdmissionFinishesBeforeBindingAndMessages(pair: XPCBackendPair) async throws {
+    let events = Mutex<[String]>([])
+    let log = XPCServiceEventLog()
+    let binding: @Sendable (XPCChannel) throws -> Void = { channel in
+      events.withLock { $0.append("bind") }
+      channel.setIncomingHandler { message in
+        events.withLock { $0.append("message") }
+        message.reply(message.payload)
+      }
+    }
+    let accepted: @Sendable (XPCChannel) -> Void = { _ in
+      events.withLock { $0.append("accepted") }
+    }
+    let host: XPCServiceHost
+    let acceptor: XPCChannelAcceptor
+    switch pair.server {
+    case .cConnection:
+      let delegate = XPCConnectionServiceConfiguration(
+        shouldAccept: { connection in
+          #expect(connection.pid == getpid())
+          events.withLock { $0.append("audit") }
+          return true
+        }, onPeerAccept: accepted)
+      host = XPCServiceHost(delegate, eventLog: log, peerHandler: binding)
+      acceptor = try XPCChannelAcceptor(delegate, eventLog: log)
+    case .session:
+      let delegate = XPCSessionServiceConfiguration(
+        shouldAccept: { _ in
+          events.withLock { $0.append("audit") }
+          return true
+        }, onPeerAccept: accepted)
+      host = XPCServiceHost(delegate, eventLog: log, peerHandler: binding)
+      acceptor = try XPCChannelAcceptor(sessionDelegate: delegate, eventLog: log)
+    }
+    acceptor.setAcceptHandler { host.bind($0) }
     try acceptor.activate()
-
-    let client = try XPCChannelTransport.session.channel(dialing: acceptor.wireEndpoint)
-    client.setIncomingHandler { _ in }
+    let client = try pair.client.channel(dialing: acceptor.wireEndpoint)
+    defer { client.cancel(); acceptor.cancel(); host.cancel() }
     client.activate()
-    var ping = XPCDictionary()
-    ping["ping"] = true
-    client.sendAndForget(ping.xpcObject)
+    _ = try await client.send(XPCDictionary().xpcObject)
+    #expect(events.withLock { $0 } == ["audit", "bind", "accepted", "message"])
+    #expect(log.events.map(\.kind) == [.shouldAcceptPeer, .didAcceptPeer])
+  }
 
-    let rejection = rejections.wait(2)
-    #expect(rejection != nil)
-    #expect(rejection is XPCPeerRequirementError)
+  @Test(arguments: XPCBackendPair.all)
+  func BindingFailureIsAServiceRejectionAfterNativeAdmission(pair: XPCBackendPair) async throws {
+    struct BindingFailure: Error {}
+    let rejected = ErrorBox()
+    let nativeRejections = Mutex(0)
+    let didReject: @Sendable (XPCChannel, (any Error)?) -> Void = { _, error in
+      rejected.store(error)
+    }
+    let host: XPCServiceHost
+    let acceptor: XPCChannelAcceptor
+    let binding: @Sendable (XPCChannel) throws -> Void = { _ in throw BindingFailure() }
+    switch pair.server {
+    case .cConnection:
+      let delegate = XPCConnectionServiceConfiguration(
+        onConnectionReject: { _, _ in nativeRejections.withLock { $0 += 1 } },
+        onPeerReject: didReject)
+      host = XPCServiceHost(delegate, peerHandler: binding)
+      acceptor = try XPCChannelAcceptor(delegate)
+    case .session:
+      let delegate = XPCSessionServiceConfiguration(
+        onSessionReject: { _, _ in nativeRejections.withLock { $0 += 1 } },
+        onPeerReject: didReject)
+      host = XPCServiceHost(delegate, peerHandler: binding)
+      acceptor = try XPCChannelAcceptor(sessionDelegate: delegate)
+    }
+    acceptor.setAcceptHandler { host.bind($0) }
+    try acceptor.activate()
+    let client = try pair.client.channel(dialing: acceptor.wireEndpoint)
+    defer { client.cancel(); acceptor.cancel(); host.cancel() }
+    client.activate()
+    client.sendAndForget(XPCDictionary().xpcObject)
+    #expect(rejected.wait(2) is BindingFailure)
+    #expect(nativeRejections.withLock { $0 } == 0)
+  }
+
+  @Test(arguments: XPCChannelTransport.allCases, [false, true])
+  func SessionNativeRejectionNeverCreatesAnAcceptedChannel(
+    clientTransport: XPCChannelTransport, throwsError: Bool
+  ) async throws {
+
+    let rejections = ErrorBox()
+    let nativeRejected = FlagBox()
+    let accepted = Mutex(0)
+    struct Rejected: Error {}
+    let delegate = XPCSessionServiceConfiguration(
+      shouldAccept: { _ in
+        if throwsError { throw Rejected() }
+        return false
+      },
+      onSessionReject: { _, error in
+        rejections.store(error)
+        nativeRejected.fire()
+      },
+      onPeerAccept: { _ in accepted.withLock { $0 += 1 } })
+    let host = XPCServiceHost(delegate)
+    let acceptor = try XPCChannelAcceptor(sessionDelegate: delegate)
+    acceptor.setAcceptHandler { host.bind($0) }
+    try acceptor.activate()
+    let client = try clientTransport.channel(dialing: acceptor.wireEndpoint)
+    client.activate()
+    client.sendAndForget(XPCDictionary().xpcObject)
+    #expect(nativeRejected.wait(2))
+    let error = rejections.wait(2)
+    if throwsError { #expect(error is Rejected) } else { #expect(error == nil) }
+    #expect(accepted.withLock { $0 } == 0)
     client.cancel()
     acceptor.cancel()
   }

@@ -52,26 +52,26 @@ import Testing
   }
 
   @Test func UnifiedHostAcceptsEchoesAndShutsDownCooperativelyOverSession() async throws {
-    let host = XPCServiceHost(XPCServiceConfiguration())
     let shutdown = ShutdownBox()
     let accepted = ChannelBox()
 
-    host.setPeerHandler { channel in
-      // An echo "service": the peer handler installs the incoming routing.
-      channel.setIncomingHandler { message in
-        // The lazy-dial wake message is fire-and-forget: never reply to it.
-        if XPCDictionary(message.payload)["wake"] != nil { return }
-        var response = XPCDictionary()
-        response["echo"] = XPCDictionary(message.payload)["ping", as: xpc_object_t.self]
-        message.reply(response.xpcObject)
-      }
-    }
-    host.setShutdownCompletion { shutdown.fire() }
+    let host = XPCServiceHost(
+      XPCSessionServiceConfiguration(),
+      peerHandler: { channel in
+        // An echo "service": the peer handler installs the incoming routing.
+        channel.setIncomingHandler { message in
+          // The lazy-dial wake message is fire-and-forget: never reply to it.
+          if XPCDictionary(message.payload)["wake"] != nil { return }
+          var response = XPCDictionary()
+          response["echo"] = XPCDictionary(message.payload)["ping", as: xpc_object_t.self]
+          message.reply(response.xpcObject)
+        }
+      }, onShutdown: { shutdown.fire() })
 
     let acceptor = try XPCChannelTransport.session.acceptor()
     acceptor.setAcceptHandler { channel in
       accepted.store(channel)
-      host.accept(channel)
+      host.bind(channel)
     }
     try acceptor.activate()
 

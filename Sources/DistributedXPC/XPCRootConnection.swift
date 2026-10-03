@@ -108,51 +108,32 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
     }
   }
 
-  /// Connects to a launchd-managed XPC service by mach service name and
-  /// resolves its root actor. This is the reconnection-capable path on the C
-  /// backend: after a service restart, calls on `root` transparently succeed
-  /// again (the session backend does not re-dial — a dropped session channel
-  /// is terminal).
-  ///
-  /// - Parameters:
-  ///   - serviceName: the launchd mach service name of the service.
-  ///   - transport: the backend to dial with; defaults to the
-  ///     C backend.
-  ///   - peerCodeSigningRequirement: kernel-enforced requirement the service
-  ///     must satisfy, installed on the channel before activation. A
-  ///     service failing it is dropped by XPC; a requirement that cannot be
-  ///     installed (including the session backend's fail-closed `ENOTSUP`)
-  ///     makes `connect` throw.
+  /// Dials a named service with the selected backend. C channels can recover
+  /// after interruptions; Session channels require a fresh connection.
   public static func connect(
     toService serviceName: String,
-    transport: XPCChannelTransport = .cConnection,
-    peerCodeSigningRequirement: String? = nil
+    transport: XPCChannelTransport = .cConnection
   ) throws -> Self {
-    try connect(
-      using: transport.channel(machService: serviceName),
-      peerCodeSigningRequirement: peerCodeSigningRequirement)
+    try connect(using: transport.channel(machService: serviceName))
   }
 
-  /// Connects through an existing channel. Note: only C-backend connections
-  /// to a *named* mach service survive a full service restart. An
-  /// endpoint-based channel re-dials across a dropped peer while the remote
-  /// listener lives (C backend), but dies permanently once the listener
-  /// itself goes away (anonymous endpoints are not re-established by
-  /// launchd).
-  ///
-  /// `peerCodeSigningRequirement` authenticates the service and must be
-  /// installed on a *not-yet-activated* channel. On an already-activated
-  /// channel the install reports success but the channel then fails to
-  /// establish (hangs or interrupts) — pass a fresh channel.
-  public static func connect(
-    using connection: XPCChannel,
-    peerCodeSigningRequirement: String? = nil
-  ) throws -> Self {
-    try connection.applyPeerCodeSigningRequirement(peerCodeSigningRequirement)
+  /// Binds a root proxy to a channel and activates it. Native backend security
+  /// must be configured before adoption; this API has no C-only options.
+  public static func connect(using connection: XPCChannel) throws -> Self {
     let system = XPCDistributedActorSystem(connection: connection)
     connection.activate()
     let root = try Root.resolve(id: .root, using: system)
     return self.init(root: root, connection: connection, system: system)
+  }
+
+  /// Authenticates a service over a fresh native C connection, then adopts it.
+  /// Do not pass an already activated connection when setting a requirement.
+  public static func connect(
+    using connection: XPCConnection,
+    peerCodeSigningRequirement: String? = nil
+  ) throws -> Self {
+    try connection.applyPeerCodeSigningRequirement(peerCodeSigningRequirement)
+    return try connect(using: XPCChannel(connection))
   }
 
   /// Runs `operation` against the root actor, retrying only when the
@@ -170,7 +151,7 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
         return try await operation(root)
       } catch let error as XPCChannelError {
         // Authentication failure is terminal, never a restart in progress.
-        guard error == .interrupted, connection.canReconnect else { throw error }
+        guard error == .interrupted, connection.transport == .cConnection else { throw error }
         if attempt >= policy.maxAttempts { throw error }
       }
       let delay = policy.delaySeconds(beforeAttempt: attempt + 1)

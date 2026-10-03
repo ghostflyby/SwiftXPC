@@ -6,39 +6,27 @@ import SwiftXPC
 
 /// The session-backend process entry point: serves one root instance over an
 /// `XPCListener` bound to the launchd mach service name `service`, through
-/// the same unified `XPCServiceHost` (delegate hooks, requirement
-/// enforcement, cooperative shutdown) as the C backend, and never returns.
+/// shared service binding and cooperative shutdown, with Session-specific
+/// native admission. Never returns.
 /// Requires the job's launchd configuration to advertise the mach service;
 /// bundled-`.xpc` services are C-backend-only (`xpcMain`).
 @MainActor
 public func xpcSessionMain<Root: XPCRootActor>(
   service: String,
   _ rootType: Root.Type = Root.self,
-  delegate: some XPCServiceDelegate = XPCServiceConfiguration()
+  delegate: some XPCSessionServiceDelegate = XPCSessionServiceConfiguration(),
+  onStart: @MainActor (XPCServiceHost) -> Void = { _ in }
 ) -> Never {
-  let actorService = XPCActorService(rootType, delegate, transport: .session)
-  let server = actorService.host
-  // The hosted service *is* the process: retire it right after the
-  // delegate's shutdown hook has run.
-  server.setShutdownCompletion {
-    actorService.cancel(); exit(0)
-  }
-  delegate.serviceWillStart(host: server)
-  let acceptor: XPCChannelAcceptor
+  let actorService = XPCActorService(rootType, sessionDelegate: delegate, onShutdown: { exit(0) })
+  onStart(actorService.host)
   do {
-    acceptor = try XPCChannelTransport.session.acceptor(service: service)
+    try actorService.listen(service: service)
   } catch {
     FileHandle.standardError.write(
-      Data("xpcSessionMain: cannot create listener for \(service): \(error)\n".utf8))
+      Data("xpcSessionMain: cannot start listener for \(service): \(error)\n".utf8))
     exit(1)
   }
-  acceptor.setAcceptHandler { channel in server.accept(channel) }
-  do {
-    try acceptor.activate()
-  } catch {
-    FileHandle.standardError.write(
-      Data("xpcSessionMain: cannot activate listener for \(service): \(error)\n".utf8))
-    exit(1)
+  withExtendedLifetime(actorService) {
+    dispatchMain()
   }
-  dispatchMain()
 }

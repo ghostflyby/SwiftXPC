@@ -37,7 +37,7 @@ final class RootChannel<Root: XPCRootActor>: Sendable {
 
   init(
     _ rootType: Root.Type,
-    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    _ delegate: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
     eventLog: XPCServiceEventLog? = nil
   ) throws {
     harness = try xpcTest(
@@ -70,24 +70,18 @@ final class ActorServiceChannel<Root: XPCRootActor>: @unchecked Sendable {
   let service: XPCActorService<Root>
   var server: XPCServiceHost { service.host }
   let client: XPCChannel
-  private let listener: XPCConnection
+  private let listener: XPCChannelAcceptor
   private let watchdog: DispatchWorkItem
 
   init(
     _ rootType: Root.Type,
-    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    _ delegate: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
     eventLog: XPCServiceEventLog? = nil
   ) throws {
-    let listener = XPCConnection(name: nil)
     let service = XPCActorService(rootType, delegate, eventLog: eventLog)
     let server = service.host
-    listener.setEventHandler { object in
-      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
-      server.accept(XPCChannel(XPCConnection(xpc_object: object)))
-    }
-    listener.activate()
-
-    let client = XPCChannel(try XPCConnection.unmarshal(from: listener.marshal()))
+    let listener = try service.listen()
+    let client = try XPCChannelTransport.cConnection.channel(dialing: listener.wireEndpoint)
     self.listener = listener
     self.service = service
     self.client = client
@@ -101,7 +95,7 @@ final class ActorServiceChannel<Root: XPCRootActor>: @unchecked Sendable {
 
   /// Dials a fresh, inactive client connection to the same listener.
   func makeClient() throws -> XPCChannel {
-    XPCChannel(try XPCConnection.unmarshal(from: listener.marshal()))
+    try XPCChannelTransport.cConnection.channel(dialing: listener.wireEndpoint)
   }
 
   func close() {

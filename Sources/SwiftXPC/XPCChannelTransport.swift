@@ -34,7 +34,16 @@ public enum XPCChannelTransport: CaseIterable, Sendable {
   /// Creates an acceptor over this transport: anonymous when `service` is
   /// nil, or serving the launchd-advertised mach service name (a
   /// `MachServices` entry in the job's launchd configuration) otherwise.
-  public func acceptor(service: String? = nil) throws -> XPCChannelAcceptor {
+  public func acceptor(
+    service: String? = nil,
+    handler: @escaping @Sendable (XPCChannel) -> Void
+  ) throws -> XPCChannelAcceptor {
+    let acceptor = try XPCChannelAcceptor(transport: self, service: service)
+    acceptor.setAcceptHandler(handler)
+    return acceptor
+  }
+
+  package func acceptor(service: String? = nil) throws -> XPCChannelAcceptor {
     try XPCChannelAcceptor(transport: self, service: service)
   }
 }

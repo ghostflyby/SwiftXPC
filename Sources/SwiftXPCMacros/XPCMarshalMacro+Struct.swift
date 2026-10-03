@@ -15,7 +15,7 @@ extension XPCMarshalMacro {
         return """
           let \(key): \(property.type)
           if let \(rawPtr) = dict["\(key)", as: xpc_object_t.self] {
-            if SwiftXPC.xpcGetType(\(rawPtr)) == SwiftXPC.xpcTypeNull {
+            if SwiftXPC.XPCMarshalRuntime.isNull(\(rawPtr)) {
               \(key) = nil
             } else {
               \(key) = try .unmarshal(from: \(rawPtr))
@@ -40,13 +40,7 @@ extension XPCMarshalMacro {
     return
       """
       \(access)static func unmarshal(from object: xpc_object_t) throws(SwiftXPC.XPCMarshalError) -> Self {
-        let type = SwiftXPC.xpcGetType(object)
-        guard type == SwiftXPC.xpcTypeDictionary else {
-          throw SwiftXPC.XPCMarshalError.typeMismatch(
-            expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeDictionary)),
-            actual: String(cString: SwiftXPC.xpcTypeGetName(type))
-          )
-        }
+        try SwiftXPC.XPCMarshalRuntime.requireDictionary(object)
         let dict = SwiftXPC.XPCDictionary(object)
         \(bindings)
         return Self.init(\(arguments))
@@ -68,7 +62,7 @@ extension XPCMarshalMacro {
             throw SwiftXPC.XPCMarshalError.outOfBounds(
               index: \(index), count: array.count)
           }
-          if SwiftXPC.xpcGetType(\(rawPtr)) == SwiftXPC.xpcTypeNull {
+          if SwiftXPC.XPCMarshalRuntime.isNull(\(rawPtr)) {
             \(property.name) = nil
           } else {
             \(property.name) = try .unmarshal(from: \(rawPtr))
@@ -91,13 +85,7 @@ extension XPCMarshalMacro {
     return
       """
       \(access)static func unmarshal(from object: xpc_object_t) throws(SwiftXPC.XPCMarshalError) -> Self {
-        let type = SwiftXPC.xpcGetType(object)
-        guard type == SwiftXPC.xpcTypeArray else {
-          throw SwiftXPC.XPCMarshalError.typeMismatch(
-            expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeArray)),
-            actual: String(cString: SwiftXPC.xpcTypeGetName(type))
-          )
-        }
+        try SwiftXPC.XPCMarshalRuntime.requireArray(object)
         let array = SwiftXPC.XPCArray(object)
         let count = array.count
         guard count >= \(properties.count) else {
@@ -117,7 +105,7 @@ extension XPCMarshalMacro {
           if let value = self.\(property.name) {
             array.append(try value.marshal())
           } else {
-            array.append(SwiftXPC.xpcNullCreate())
+            array.append(SwiftXPC.XPCMarshalRuntime.null())
           }
           """
       } else {
@@ -143,7 +131,7 @@ extension XPCMarshalMacro {
           if let value = self.\(property.name) {
             dict["\(property.name)"] = try value.marshal()
           } else {
-            dict["\(property.name)"] = SwiftXPC.xpcNullCreate()
+            dict["\(property.name)"] = SwiftXPC.XPCMarshalRuntime.null()
           }
           """
       } else {

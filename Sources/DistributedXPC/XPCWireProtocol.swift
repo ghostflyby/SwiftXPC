@@ -78,13 +78,7 @@ extension XPCReplyEnvelope: XPCMarshal {
   }
 
   static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> XPCReplyEnvelope {
-    let kindType = SwiftXPC.xpcGetType(object)
-    guard kindType == SwiftXPC.xpcTypeDictionary else {
-      throw XPCMarshalError.typeMismatch(
-        expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeDictionary)),
-        actual: String(cString: SwiftXPC.xpcTypeGetName(kindType))
-      )
-    }
+    try XPCMarshalRuntime.requireDictionary(object)
     let dictionary = XPCDictionary(object)
     guard let versionObject = dictionary["version", as: xpc_object_t.self] else {
       throw XPCMarshalError.missingKey("version")

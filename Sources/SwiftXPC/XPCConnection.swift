@@ -15,9 +15,19 @@ import XPC
 public struct XPCConnection: @unchecked Sendable {
   internal let xpc_object: xpc_connection_t
   internal let _handlerState = _ConnectionHandlerState()
+  private var peerIdentity: (pid: pid_t, euid: uid_t, egid: gid_t, asid: au_asid_t)?
 
   package init(xpc_object: xpc_connection_t) {
     self.xpc_object = xpc_object
+    if xpc_get_type(xpc_object) == XPC_TYPE_CONNECTION {
+      let pid = xpc_connection_get_pid(xpc_object)
+      if pid > 0 {
+        peerIdentity = (
+          pid, xpc_connection_get_euid(xpc_object),
+          xpc_connection_get_egid(xpc_object), xpc_connection_get_asid(xpc_object)
+        )
+      }
+    }
   }
 }
 
@@ -215,19 +225,8 @@ extension XPCConnection {
 
 }
 
-/// Signals to launchd that this process is busy. While a transaction is
-/// open the service is not considered idle-eligible. (C: xpc_transaction_begin)
-public func xpcTransactionBegin() {
-  xpc_transaction_begin()
-}
-
-/// Signals that a previously opened transaction finished. (C: xpc_transaction_end)
-public func xpcTransactionEnd() {
-  xpc_transaction_end()
-}
-
 extension XPCConnection {
-
+  /// Native diagnostic for a terminally invalid connection, when available.
   public var invalidationReason: String? {
     guard let reason = xpc_connection_copy_invalidation_reason(xpc_object) else { return nil }
     defer { free(reason) }
@@ -284,7 +283,7 @@ extension XPCConnection {
   }
 
   @available(*, noasync)
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
+  public func send(message: XPCDictionary)
     throws(XPCChannelError)
     -> xpc_object_t
   {
@@ -327,7 +326,7 @@ extension XPCConnection {
   /// The process identifier of the peer, or a value without meaning if the
   /// connection has no peer yet. Primary input for peer validation.
   public var pid: pid_t {
-    xpc_connection_get_pid(xpc_object)
+    peerIdentity?.pid ?? xpc_connection_get_pid(xpc_object)
   }
 }
 
@@ -353,50 +352,47 @@ extension XPCConnection {
 
   /// Effective user ID of the peer.
   public var euid: uid_t {
-    xpc_connection_get_euid(xpc_object)
+    peerIdentity?.euid ?? xpc_connection_get_euid(xpc_object)
   }
 
   /// Effective group ID of the peer.
   public var egid: gid_t {
-    xpc_connection_get_egid(xpc_object)
+    peerIdentity?.egid ?? xpc_connection_get_egid(xpc_object)
   }
 
   /// Audit session ID of the peer.
   public var asid: au_asid_t {
-    xpc_connection_get_asid(xpc_object)
+    peerIdentity?.asid ?? xpc_connection_get_asid(xpc_object)
   }
 
 }
 
 extension XPCConnection {
-  /// The reason a peer requirement could not be installed on this connection.
-  public typealias PeerRequirementError = XPCPeerRequirementError
-
   private func checkPeerRequirementStatus(
     _ status: Int32
   ) throws(XPCPeerRequirementError) {
     if status != 0 {
-      throw PeerRequirementError(status: status)
+      throw XPCPeerRequirementError(status: status)
     }
   }
 
   public func setPeerCodeSigningRequirement(
     _ requirement: String
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_code_signing_requirement(xpc_object, requirement))
   }
 
   public func setPeerEntitlementExistsRequirement(
     _ entitlement: String
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_entitlement_exists_requirement(xpc_object, entitlement))
   }
 
   private func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, object: xpc_object_t
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_entitlement_matches_value_requirement(
         xpc_object, entitlement, object))
@@ -404,28 +400,28 @@ extension XPCConnection {
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Int64
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try setPeerEntitlementMatchesValueRequirement(
       entitlement, object: xpc_int64_create(value))
   }
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Bool
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try setPeerEntitlementMatchesValueRequirement(
       entitlement, object: value ? XPC_BOOL_TRUE : XPC_BOOL_FALSE)
   }
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: String
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try setPeerEntitlementMatchesValueRequirement(
       entitlement, object: xpc_string_create(value))
   }
 
   private func setPeerLightweightCodeRequirement(
     _ requirement: xpc_object_t
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_lightweight_code_requirement(
         xpc_object, requirement))
@@ -433,14 +429,14 @@ extension XPCConnection {
 
   public func setPeerPlatformIdentityRequirement(
     _ signingIdentifier: String?
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_platform_identity_requirement(xpc_object, signingIdentifier))
   }
 
   public func setPeerTeamIdentityRequirement(
     _ teamIdentifier: String?
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_team_identity_requirement(xpc_object, teamIdentifier))
   }
@@ -461,7 +457,7 @@ extension XPCConnection: XPCMarshal {
 }
 
 extension XPCConnection {
-  func applyPeerCodeSigningRequirement(
+  package func applyPeerCodeSigningRequirement(
     _ requirement: String?
   ) throws(XPCPeerRequirementError) {
     guard let requirement else { return }

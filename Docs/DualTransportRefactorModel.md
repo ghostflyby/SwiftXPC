@@ -29,9 +29,9 @@
 ```mermaid
 flowchart TD
   Entry["xpcMain / xpcSessionMain / xpcTest"] --> Service["XPCActorService: root + registry"]
-  Service --> Host["XPCServiceHost: 准入与关闭"]
+  Service --> Host["XPCServiceHost: 绑定与关闭"]
   Service --> System["XPCDistributedActorSystem: actor identity / invocation / export"]
-  Listener["XPCChannelAcceptor: 接收通道"] --> Host
+  Listener["XPCChannelAcceptor: native 准入与接收通道"] --> Host
   Host --> Channel["XPCChannel: 生命周期与消息"]
   System --> Channel
   System --> Marshal["XPCMarshal: wire 编解码"]
@@ -44,24 +44,29 @@ flowchart TD
 |---|---|---|
 | 序列化 | `XPCMarshal` 和宏；原始 XPC payload / wire envelope | 编解码布局独立于连接与宿主；本次 wire version 不变 |
 | transport | `XPCChannel`、`XPCChannelTransport`、`XPCChannelAcceptor` | 一个具体 owned channel；后端只在内部 enum 中分派，不开放需要猜测能力的 existential 协议 |
-| 服务准入 | `XPCServiceHost` 与 `XPCServiceDelegate` | 只处理 requirement、audit、peer bookkeeping、shutdown；不构造 actor，也不选择 listener |
+| 服务绑定 | `XPCServiceHost` 与 `XPCServiceDelegate` | 绑定已准入 channel、peer bookkeeping、shutdown；native audit 由 acceptor 与 C/Session 专用协议处理 |
 | actor runtime | `XPCDistributedActorSystem` | 本地 registry 不需要 outbound channel；代理 system 从 channel 取得 transport；负责 dispatch / export / import |
 | 服务组装 | `XPCActorService<Root>` | 每实例一个 root、一个 local system、一个 host；root factory 支持依赖注入 |
 | 入口与测试 | `xpcMain`、`xpcSessionMain`、`xpcTest` | 选择 listener 与进程退出策略；测试只增加 watchdog、事件等待和模拟断连 |
 
-`XPCConnection` 保留为低层 native interop API。通用应用使用 `XPCChannel`；C 专属操作显式经
-`channel.connection` 访问。`pid/euid/egid/asid` 在 channel 上提供可选值，不再需要
-`XPCPeerContext`；accepted peer 的身份在 channel 中保留快照，关闭后仍可审计。宿主也不再用 `as? XPCConnection` 猜后端。
+`XPCConnection` 保留为 C 专属低层 API。通用通道不再复制 optional 身份或 no-op interruption /
+requirement 接口；accepted 身份快照保留在 native connection。C 与 Session 两个 Delegate 协议继承
+共同服务通知，通过专用构造入口在编译期选择后端，没有 runtime downcast。
 
-服务 delegate 不再要求 `init()`，也不承担 `@main` 的入口职责；只有 `XPCApp` 要求可默认构造。
+服务 delegate 不要求 `init()` 或 `@main`；只有 `XPCApp` 要求无参构造与 hosted start hook。
+完整公开 API 的逐面审计、替代方案、收拢决定与迁移见 [PublicAPIAudit.md](PublicAPIAudit.md)。
 
 ## 生命周期契约
 
 - channel 的逻辑状态是 inactive → active → invalid，cancel 可在任何状态调用；activate 幂等。
 - 两种 acceptor 都交付需要逻辑 activate 的 channel。Session 在 native callback 返回后已由系统激活，
-  但库层在准入完成前缓冲 incoming messages，避免 handler 安装与交付竞争。
+  但库层在服务绑定完成前缓冲 incoming messages，避免 handler 安装与交付竞争。
 - acceptor 状态锁只决定原生操作的执行方，`activate/cancel` 均在锁外执行；取消与激活重叠时，
   先停止准入，再由激活调用完成原生取消，避免取消先于激活或重复激活。
+- dialed Session 的创建、handler 安装和原生激活在 control lock 外执行；activating 状态
+  唯一指定执行方。并发 cancel 立即终止库层通道、释放发送等待者，由激活方完成原生取消。
+- host 的取消/关闭状态与 shutdown waiters 由同一把锁维护；bare cancel 原子地取走自己的
+  waiters，不会清理后来 shutdown request 注册的 waiters。恢复 continuation 与取消 peer 均在锁外。
 - listener 的 Session handler 配置仍在 accept callback 内完成；交付排到同一 target queue，确保
   native decision 已返回。[Apple 的 accept 文档](https://developer.apple.com/documentation/xpc/xpclistener/incomingsessionrequest/accept(incomingmessagehandler:cancellationhandler:)-48c3k)
   明确返回的 inactive session 是用于这个配置窗口。
@@ -82,7 +87,7 @@ root 是 **每个服务实例一次构造**，所有接受的 root peers 绑定�
 同一进程内各自拥有 `.root`，因为 identity 的命名空间是各自的 system。生产和测试使用同一组装路径。
 
 `XPCActorService(makeRoot:)` 在构造时保留 root identity，调用 factory 后校验 root 及所属 system。
-`cancel()` 结束 peers 和 export sessions，并释放 registry pins。peer 断开不会结束整个服务，也不会
+`cancel()` 结束自己创建的 listeners、peers 和 export sessions，并释放 registry pins。peer 断开不会结束整个服务，也不会
 使别的客户端或已导出的子 actor 失效。
 
 system 的 transport 构造后不可变。返回值中的引用在 reply decoding 范围继承客户端 system 的策略；
@@ -106,10 +111,10 @@ actor system 保留所用的 channel，省去 `ownsConnection` / `allowsChildRec
 |---|---|
 | `any XPCMessageChannel` | `XPCChannel` |
 | 公共 `XPCSessionChannel(...)` | `XPCChannelTransport.session.channel(...)` |
-| delegate 的 `XPCPeerContext` | delegate 的 `XPCChannel` |
+| delegate 的 `XPCPeerContext` | 生命周期使用 `XPCChannel`；准入使用 native connection / request |
 | `peer.channel` | `peer` |
 | transport 上的 `processDefault` | 显式 transport；runtime 嵌套引用自动继承 |
-| `XPCRootActor.shared` / `XPCDistributedActorSystem.serviceHost` | `XPCActorService.root` / `.system` |
+| `XPCRootActor.shared` / `XPCDistributedActorSystem.serviceHost` | `XPCActorService.root` / `.root.actorSystem` |
 | `XPCServiceHost(rootType, delegate)` | `XPCActorService(rootType, delegate).host`；必须保留 service |
 | 用 idle connection 创建本地 system | `XPCDistributedActorSystem(transport:)` |
 | `system.connection` 永远非空 | 代理 system 非空；本地 registry 为 nil |
@@ -118,8 +123,10 @@ actor system 保留所用的 channel，省去 `ownsConnection` / `allowsChildRec
 | `XPCServiceDelegate.main()` | `XPCApp` 或显式 `xpcMain` |
 | 对 invalid / session 错误重试 | 仅 C `.interrupted` 重试 |
 
-Session adapter 目前对任何非 nil requirement 都以 `ENOTSUP` 失败；新的系统版本拥有 native
-requirement API 不代表本库已经支持。身份审计或强鉴权服务使用 C backend。
+C 的字符串 requirement 留在 native connection 专用 API。Session 的 native request 在 accept
+之前审核；不再先原生 accept 再用 cancel 模拟拒绝。macOS 26 named Listener 的 typed requirement
+使用 Session 专用 constructor，不混入通用 channel。库内 actor service.listen 负责完整监听器组装
+及所有权；routing / shutdown cleanup 在构造时固定，不能被 setter 替换。
 
 ## 验证
 
@@ -134,12 +141,15 @@ requirement API 不代表本库已经支持。身份审计或强鉴权服务使�
 - 私有 actor 哈希干扰方法解析；
 - 悬挂 invocation 时 peer invalidation 与本地 in-flight send 结束；
 - 多个服务实例 registry 隔离及同一服务 root 共享；
-- Session 子引用继承 backend 和终局错误不重试。
+- Session 子引用继承 backend 和终局错误不重试；
+- C/C、Session/Session 两种 actor proxy forwarding 与并发 re-export；
+- Session 激活同步取消/重入、激活期间并发取消及创建失败；
+- bare cancel 后显式 shutdown 的等待语义及 shutdown 管线期间并发 cancel。
 
 最终验证已通过：
 
-- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 160 tests；transport 套件 13 tests，
-  其中 11 项运行四种 backend 组合、一项并发生命周期测试运行两后端，另有 Session requirement fail-closed 测试。
+- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 163 tests；transport 套件 18 tests，
+  新增准入与 binding 顺序 / 拒绝阶段测试运行四种 backend 组合；Session false/throw 原生拒绝覆盖两种 client backend。
 - `swift format lint --strict --recursive Sources Tests`、`git diff --check` 无问题。
 - `Examples/DistributedXPCDemo` 的 warnings-as-errors 独立 package 构建通过。
 

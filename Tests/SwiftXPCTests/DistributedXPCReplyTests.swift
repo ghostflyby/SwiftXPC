@@ -176,12 +176,12 @@ distributed actor SampleReplyActorWithoutMetadata {
   // "有载荷且为 null",不得折叠成"无载荷"(否则客户端报 missingPayload)。
   let envelope = XPCReplyEnvelope(
     kind: .returnValue,
-    payload: SwiftXPC.xpcNullCreate())
+    payload: xpc_null_create())
 
   let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
   #expect(decoded.kind == .returnValue)
   #expect(decoded.payload != nil)
-  #expect(SwiftXPC.xpcGetType(decoded.payload!) == SwiftXPC.xpcTypeNull)
+  #expect(xpc_get_type(decoded.payload!) == XPC_TYPE_NULL)
 }
 
 @Test func ReplyEnvelopeRoundTripsAbsentPayload() throws {

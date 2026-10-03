@@ -11,11 +11,11 @@ public struct XPCServiceEvent: Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
     /// The audit window was entered for an incoming peer.
     case shouldAcceptPeer
-    /// A peer was accepted (bound to the service, before activation).
+    /// A peer was bound to the service, before business message dispatch.
     case didAcceptPeer
     /// An accepted peer disconnected.
     case peerDidEnd
-    /// A peer was rejected before ever being accepted.
+    /// Native admission or subsequent service binding rejected a peer.
     case didRejectPeer
     /// The cooperative shutdown pipeline ran its delegate hook.
     case serviceWillShutdown
@@ -36,14 +36,14 @@ public struct XPCServiceEvent: Equatable, Sendable {
 /// assert the delegate-hook sequence:
 ///
 ///     let log = XPCServiceEventLog()
-///     let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(), eventLog: log)
+///     let service = try xpcTest(ServiceRoot.self, XPCConnectionServiceConfiguration(), eventLog: log)
 ///     _ = try await service.client.root.ping()
 ///     service.host.requestShutdown()
-///     #expect(await log.expectEvent(.serviceWillShutdown) != nil)
-///     #expect(log.events.map(\.kind) == [
-///       .shouldAcceptPeer, .didAcceptPeer, .serviceWillShutdown])
+///     #expect(await log.wait(for: .serviceWillShutdown) != nil)
+///     #expect(log.events.map(\.kind).prefix(2) == [.shouldAcceptPeer, .didAcceptPeer])
+///     // peerDidEnd may arrive before or after serviceWillShutdown.
 ///
-/// `expectEvent(_:timeout:)` never polls: it returns immediately when the
+/// `wait(for:occurrence:timeout:)` never polls: it returns immediately when the
 /// event is already recorded, otherwise it suspends and is resumed by the
 /// recording itself — a missed edge-triggered event is impossible.
 public final class XPCServiceEventLog: Sendable {
@@ -68,10 +68,8 @@ public final class XPCServiceEventLog: Sendable {
     state.withLock { $0.recordedEvents }
   }
 
-  /// Appends one event. Intentionally public: a service can append custom
-  /// marker events between hook invocations, and tests can assert on the
-  /// combined timeline. Appending resumes any waiter for this kind.
-  public func append(
+  /// Only production admission/host plumbing writes this timeline.
+  package func append(
     _ kind: XPCServiceEvent.Kind,
     error: (any Error)? = nil
   ) {
@@ -92,24 +90,23 @@ public final class XPCServiceEventLog: Sendable {
     released.forEach { $0.resume(returning: true) }
   }
 
-  /// Deterministically waits until an event of `kind` has been recorded and
-  /// returns it. Returns immediately when one is already in the log;
-  /// otherwise suspends until the append that records it. Returns `nil`
-  /// when `timeout` elapses first. Never polls — use `expectCount` for
-  /// occurrences beyond the first.
-  public func expectEvent(
-    _ kind: XPCServiceEvent.Kind,
+  /// Waits for the 1-based occurrence of a hook event. Returns nil on timeout.
+  /// Replaces separate single-event/count and coordinator forwarding APIs.
+  public func wait(
+    for kind: XPCServiceEvent.Kind,
+    occurrence: Int = 1,
     timeout: Duration? = nil
   ) async -> XPCServiceEvent? {
-    guard await expectCount(kind, atLeast: 1, timeout: timeout) else { return nil }
-    return recorded(kind)
+    precondition(occurrence >= 1, "occurrence is 1-based")
+    guard await expectCount(kind, atLeast: occurrence, timeout: timeout) else { return nil }
+    return state.withLock { $0.recordedEvents.filter { $0.kind == kind }[occurrence - 1] }
   }
 
   /// Deterministically waits until `count` events of `kind` have been
   /// recorded. Returns immediately when already satisfied; otherwise
   /// suspends until the append that reaches the threshold. Returns `false`
   /// when `timeout` elapses first. Never polls.
-  public func expectCount(
+  private func expectCount(
     _ kind: XPCServiceEvent.Kind,
     atLeast count: Int,
     timeout: Duration? = nil
@@ -118,10 +115,6 @@ public final class XPCServiceEventLog: Sendable {
     return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
       insertWaiter(kind: kind, atLeast: count, continuation: cont, timeout: timeout)
     }
-  }
-
-  private func recorded(_ kind: XPCServiceEvent.Kind) -> XPCServiceEvent? {
-    state.withLock { $0.recordedEvents.first(where: { $0.kind == kind }) }
   }
 
   private func satisfied(_ kind: XPCServiceEvent.Kind, atLeast count: Int) -> Bool {

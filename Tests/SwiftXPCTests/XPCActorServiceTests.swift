@@ -68,7 +68,7 @@ struct XPCActorServiceTests {
     #expect(first.service.root !== second.service.root)
     #expect(first.service.root.id == .root)
     #expect(second.service.root.id == .root)
-    #expect(first.service.system.connection == nil)
+    #expect(first.service.root.actorSystem.connection == nil)
     let a = try StatefulServiceRoot.connect(using: first.client)
     let b = try StatefulServiceRoot.connect(using: second.client)
     #expect(try await a.bump() == 1)
@@ -174,7 +174,7 @@ struct XPCActorServiceTests {
     let channel = try ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
     let root = try StatefulServiceRoot.connect(using: channel.client)
-    let host = channel.service.system
+    let host = channel.service.root.actorSystem
 
     var worker: ExitWorker? = try await root.makeWorker()
     let workerID = worker?.id
@@ -196,7 +196,7 @@ struct XPCActorServiceTests {
     let channel = try ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
     let root = try StatefulServiceRoot.connect(using: channel.client)
-    let host = channel.service.system
+    let host = channel.service.root.actorSystem
 
     var worker: ExitWorker? = try await root.makeOrReuseWorker()
     #expect(try await worker?.bump() == 1)
@@ -217,7 +217,7 @@ struct XPCActorServiceTests {
     let channel = try ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
     let root = try StatefulServiceRoot.connect(using: channel.client)
-    let host = channel.service.system
+    let host = channel.service.root.actorSystem
 
     var handedOut: StatefulServiceRoot? = try await root.me()
     _ = try await handedOut?.bump()

@@ -42,7 +42,7 @@ flowchart TD
 
 | 层 | 负责 | 边界 |
 |---|---|---|
-| 序列化 | `XPCMarshal` 和宏；原始 XPC payload / wire envelope | 编解码布局独立于连接与宿主；本次 wire version 不变 |
+| 序列化 | `XPCMarshal` 和宏；原始 XPC payload / wire envelope | 业务载荷布局独立于连接与宿主；取消回复扩展使 wire version 升至 2 |
 | transport | `XPCChannel`、`XPCChannelTransport`、`XPCChannelAcceptor` | 一个具体 owned channel；后端只在内部 enum 中分派，不开放需要猜测能力的 existential 协议 |
 | 服务绑定 | `XPCServiceHost` 与 `XPCServiceDelegate` | 绑定已准入 channel、peer bookkeeping、shutdown；native audit 由 acceptor 与 C/Session 专用协议处理 |
 | actor runtime | `XPCDistributedActorSystem` | 本地 registry 不需要 outbound channel；代理 system 从 channel 取得 transport；负责 dispatch / export / import |
@@ -150,11 +150,15 @@ C 的字符串 requirement 留在 native connection 专用 API。Session 的 nat
 
 最终验证已通过：
 
-- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 167 tests；transport 套件 21 tests，
+- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 169 tests；transport 套件 21 tests，
   新增准入与 binding 顺序 / 拒绝阶段测试运行四种 backend 组合；Session false/throw 原生拒绝覆盖两种 client backend。
 - `python3 Scripts/check-public-api.py` 运行包外正例、12 个反例及 public symbol graph；
-  `.build/public-api-verification` 保留 probe、诊断与 owned API 清单，CI 上传为 artifact。
+  负例检查编译失败与诊断中的核心符号，不依赖具体措辞。symbol graph 仅检查 6 个 required / 3 个 removed 名称，
+  没有基线 diff，不自动阻止任意新增 public 符号；`.build/public-api-verification` 保留 probe、诊断与 owned API 清单，CI 上传供人工审查。
 - `swift format lint --strict --recursive Sources Tests`、`git diff --check` 无问题。
 - `Examples/DistributedXPCDemo` 的 warnings-as-errors 独立 package 构建通过。
 
 这些结果来自当前 macOS 26 本机；未以旧 PR HEAD 的 CI 结果替代本地验证。
+
+后续取消语义修复增加无载荷 `cancelled` 回复，wire version 升至 2，两端需同时升级。
+服务端 Task 的 CancellationError 在客户端保持为 CancellationError，不再转换成目标执行失败，且不关闭通道。

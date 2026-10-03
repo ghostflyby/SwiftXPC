@@ -3,7 +3,7 @@
 审计基线是 `b5c75d5`，覆盖两个 runtime product 的自有公开声明、标准类型扩展和宏生成代码的支撑符号。
 以 `swift package dump-symbol-graph --minimum-access-level public --skip-synthesized-members` 核对声明集合；
 Apple XPC / Swift 标准库的再导出不逐个视为本库的新抽象，compiler plugin 的实现类型也不属于 runtime product。
-序列化 wire 布局与 version 不变。
+业务载荷序列化布局不变。取消回复新增 `XPCReplyKind.cancelled`；wire version 升至 2，旧版本 peer 明确拒绝。
 
 判断顺序是：接口实际解决什么问题；能否由现有接口可靠替代；保留它带来的调用便利是否值得；
 是否把只有某一后端或某一生命周期阶段才成立的操作放到了通用类型上。
@@ -80,7 +80,7 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `XPCActorID` | actor identity 的可比较 wire 值与 root ID | 保留一个类型，不增加 per-peer context / root identity wrapper |
 | `XPCInvocationEncoder/Decoder/ResultHandler` | compiler 关联类型及对应记录、解码、结果输出协议 | 保留 compiler 必需的 public type/method；routing closure、transport context、构造细节保持内部，不作为可独立装配的 public 层 |
 | `XPCDistributedTargetMetadata` / `…Providing` / `@XPCService` | 外部模块的宏必须生成可访问的 method whitelist 和 typed-throws metadata | 保留；内部解析与查表仍是内部函数。metadata、export、service 并非三套不同 dispatch registry |
-| `XPCReplyKind` / `XPCRemoteCallError` / `XPCDispatchError` | wire error 中可判别的 reply kind、客户端解码错误与服务端派发错误 | 保留分别可编码、可比较的错误域；invocation/reply envelope 和 version negotiation 不公开成另一个 wire API 产品 |
+| `XPCReplyKind` / `XPCRemoteCallError` / `XPCDispatchError` | wire error 中可判别的 reply kind、客户端解码错误与服务端派发错误 | 保留分别可编码、可比较的错误域；取消独立为无载荷的 cancelled 回复，客户端抛 CancellationError，不使用业务错误类型解码；invocation/reply envelope 和 version negotiation 不公开成另一个 wire API 产品 |
 | low-level `SwiftXPC.xpcMain` / actor `xpcMain` / `XPCApp` | C 进程入口、actor service 组装、`@main` 声明方式 | 保留不同使用级别；low-level entry 交付 native `XPCConnection`，actor entry 静态要求 C Delegate。默认 main 只在 `XPCApp`，不再要求所有 Delegate 可无参构造 |
 | `xpcSessionMain` | 必须有 mach service 名的 Session 进程入口 | 保留专用入口，不用 runtime flag 假装能替换 bundled C xpc_main。Session Delegate 不继承 C-hosted app 协议 |
 | hosted `onStart` / `XPCApp.serviceWillStart` | 进程运行循环开始前拿到 host、安装业务控制 | 仅在真正 hosted 的 API 出现；没有在 standalone service / xpcTest 的公共 Delegate 留一个永远不触发的方法 |
@@ -153,7 +153,7 @@ let listener = try XPCChannelAcceptor(
 
 ## 验证与边界
 
-- warnings-as-errors 全量测试：主套件 167 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
+- warnings-as-errors 全量测试：主套件 169 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
 - 新增/调整测试覆盖 native audit → binding → notification → message 的顺序、Session false/throw
   原生拒绝、两个后端的绑定失败与 native rejection 区分、直接 Session conformer、service 持有及关闭 listeners。
 - Session 激活的同步取消/重入、激活过程中并发取消、创建失败后的发送结束，以及 shutdown 管线期间
@@ -164,7 +164,7 @@ let listener = try XPCChannelAcceptor(
 - 独立 `Examples/DistributedXPCDemo` warnings-as-errors build 通过。
 - `swift format lint --strict --recursive Sources Tests` 与 `git diff --check` 通过。
 
-这次没有改变业务消息 wire layout，也没有把 anonymous export endpoint 的 capability 模型升级为
+这次没有改变业务载荷布局；取消回复扩展使 wire version 升至 2，需要两端同时升级。没有把 anonymous export endpoint 的 capability 模型升级为
 named listener 的 typed peer requirement 策略。新增 macOS 26 constructor 已通过包外类型检查；
 这轮明确接受真实 launchd named listener 的签名策略集成测试缺口。现有测试使用匿名监听器；
 仍需用 launchd 注册的服务和签名匹配/不匹配进程验证 kernel enforcement，当前类型检查不能代替它。
@@ -185,4 +185,5 @@ named listener 的 typed peer requirement 策略。新增 macOS 26 constructor �
 | 重复/白盒/无 watchdog 测试 | 删除重复 Session host 文件并将 completion 断言并入矩阵；重命名并删除重复 backend 断言。registry 验证改用 resolve；保留 SendSink 白盒测试以确定性覆盖 continuation 安装前的 first-result 竞态。service/coordinator fixture 增加 watchdog |
 | sleep 与超时误报 | accept delivery、drain waiter 注册、延迟 reply 取消和 client 断连改用信号。并发 listener 测试的超时取消允许 CancellationError；其余短暂 sleep 仅扩大 pre-activation 窗口，不作为通过条件 |
 | 外来 root factory | 进程外 exit test 验证 foreign system 触发指定 precondition，检查 stderr 原因 |
-| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、12 个负例（校验诊断原因）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据；symbol graph 自动记录 owned 声明清单，逐面必要性分析仍由本文给出 |
+| 服务端 Task 取消 | onThrow、派发 catch 与错误回复均保留 CancellationError；无载荷 cancelled 回复在返回值/void 客户端路径都还原 CancellationError。C/Session 真实 Task 取消与随后调用成功均有覆盖 |
+| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、12 个负例（编译失败且诊断包含核心符号，不匹配编译器措辞）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 6 个 required / 3 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |

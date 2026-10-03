@@ -63,19 +63,19 @@ checks={
  'mutable_host_routing':common+'func invalid(_ host: XPCServiceHost) { host.setPeerHandler { _ in } }',
  'mutable_listener_routing':common+'func invalid(_ listener: XPCChannelAcceptor) { listener.setAcceptHandler { _ in } }',
 }
-expected = {
- 'session_with_c_delegate': "requires.*XPCSessionServiceDelegate",
- 'c_with_session_delegate': "requires.*XPCConnectionServiceDelegate",
- 'delegate_with_runtime_transport': "incorrect argument labels|extra argument",
- 'session_listener_with_c_delegate': "requires.*XPCSessionServiceDelegate",
- 'secure_listener_without_service': "missing argument.*service",
- 'secure_listener_with_nil_service': "nil.*not compatible.*String",
- 'handlerless_listener': "missing argument.*handler",
- 'channel_c_identity': "no member 'pid'",
- 'channel_interruption': "addInterruptionHandler.*inaccessible",
- 'channel_requirement': "no member 'applyPeerCodeSigningRequirement'",
- 'mutable_host_routing': "no member 'setPeerHandler'",
- 'mutable_listener_routing': "setAcceptHandler.*inaccessible",
+expected_symbols = {
+ 'session_with_c_delegate': ('XPCSessionServiceDelegate',),
+ 'c_with_session_delegate': ('XPCConnectionServiceDelegate',),
+ 'delegate_with_runtime_transport': ('transport',),
+ 'session_listener_with_c_delegate': ('XPCSessionServiceDelegate',),
+ 'secure_listener_without_service': ('service',),
+ 'secure_listener_with_nil_service': ('String',),
+ 'handlerless_listener': ('handler',),
+ 'channel_c_identity': ('pid',),
+ 'channel_interruption': ('addInterruptionHandler',),
+ 'channel_requirement': ('applyPeerCodeSigningRequirement',),
+ 'mutable_host_routing': ('setPeerHandler',),
+ 'mutable_listener_routing': ('setAcceptHandler',),
 }
 cmd = [
     "swiftc", "-typecheck", "-swift-version", "6", "-warnings-as-errors",
@@ -92,8 +92,9 @@ for name, source in checks.items():
     result = subprocess.run(cmd + [str(probe)], capture_output=True, text=True)
     (out / (name + ".log")).write_text(result.stdout + result.stderr)
     valid = result.returncode == 0 if name == "positive" else (
-        result.returncode != 0
-        and re.search(r"error:.*" + expected[name], result.stderr) is not None
+        result.returncode > 0
+        and 'error:' in result.stderr
+        and all(symbol in result.stderr for symbol in expected_symbols[name])
     )
     print(name + ": " + ("PASS" if valid else "FAIL"))
     if not valid:
@@ -102,7 +103,8 @@ for name, source in checks.items():
 if failures:
     raise SystemExit(1)
 
-# Keep the symbol-graph command and filtered inventory reproducible in CI.
+# Record the inventory and check selected names. This is not a baseline diff:
+# arbitrary new public declarations still require manual artifact review.
 result = subprocess.run(
     ["swift", "package", "dump-symbol-graph", "--minimum-access-level", "public",
      "--skip-synthesized-members"],
@@ -148,5 +150,6 @@ dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=works
 (out / "public-symbols.json").write_text(json.dumps({
     "revision": revision, "working_tree_dirty": dirty, "symbols": inventory,
 }, indent=2) + "\n")
-print(f"symbol graph: PASS ({len(inventory)} owned declarations)")
+print(f"symbol graph: PASS (selected-name guards; {len(inventory)} owned declarations recorded)")
+print("symbol graph: no baseline diff; new public declarations require manual review")
 print(f"verification evidence: {out}")

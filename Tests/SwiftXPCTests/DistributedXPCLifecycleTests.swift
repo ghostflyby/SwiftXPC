@@ -17,7 +17,7 @@ private final class InvocationGate: Sendable {
     }
   }
 
-  func waitUntilStarted() -> Bool { started.wait(timeout: .now() + 3) == .success }
+  func waitUntilStarted() async -> Bool { await waitForTestSignal(started) }
 
   func release() {
     let waiter = continuation.withLock { value in
@@ -64,7 +64,7 @@ func SuspendedInvocationDoesNotBlockPeerInvalidation(transport: XPCChannelTransp
     using: transport.channel(dialing: acceptor.wireEndpoint))
   defer { gate.release(); client.close(); acceptor.cancel(); service.cancel() }
   let call = Task { try await client.root.hold() }
-  #expect(gate.waitUntilStarted())
+  try #require(await gate.waitUntilStarted())
   client.close()
   service.host.cancel()
   #expect(await log.wait(for: .peerDidEnd, timeout: .seconds(2)) != nil)

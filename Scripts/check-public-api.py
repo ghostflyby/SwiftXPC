@@ -79,8 +79,12 @@ expected = {
 }
 cmd = [
     "swiftc", "-typecheck", "-swift-version", "6", "-warnings-as-errors",
-    "-target", f"{platform.machine()}-apple-macos15.0", "-I", str(bin_path),
+    "-target", f"{platform.machine()}-apple-macos15.0",
 ]
+# SwiftBuild places modules beside products; native SwiftPM uses Modules/.
+for module_path in (bin_path, bin_path / "Modules"):
+    if module_path.is_dir():
+        cmd.extend(["-I", str(module_path)])
 failures = []
 for name, source in checks.items():
     probe = out / (name + ".swift")

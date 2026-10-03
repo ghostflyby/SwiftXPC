@@ -6,8 +6,8 @@ import SwiftXPC
 import Synchronization
 
 /// How often and with which backoff a flaky transport operation is retried.
-/// Only infrastructure failures (`XPCConnection.ConnectionError`) are retried;
-/// errors thrown by the operation itself propagate immediately.
+/// Only recoverable C-channel interruptions are retried; terminal and business errors
+/// propagate immediately.
 public struct XPCRetryPolicy: Sendable {
   /// Total number of attempts, including the first one. Must be >= 1.
   public let maxAttempts: Int
@@ -51,8 +51,8 @@ public struct XPCRetryPolicy: Sendable {
 
 /// Lifecycle events of a root connection.
 public enum XPCRootConnectionEvent: Sendable {
-  /// The connection to the service is established.
-  case connected
+  /// The local root proxy is ready. Establishment is lazy until the first call.
+  case ready
   /// The underlying connection was invalidated or interrupted (service
   /// exited, crashed, or was cancelled). May be delivered multiple times for
   /// repeated service deaths. Named-service connections re-establish
@@ -70,10 +70,10 @@ public enum XPCRootConnectionEvent: Sendable {
 /// observe `events` to rebuild dependent child-actor state after
 /// `.disconnected`.
 public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
-  /// The permanent root proxy. Never needs replacement: after a service
-  /// restart the next call on it succeeds against the relaunched instance.
+  /// The root proxy. C named-service channels can recover across restarts;
+  /// session proxies require a new connection after peer loss.
   public let root: Root
-  public let connection: XPCConnection
+  public let connection: XPCChannel
   public let events: AsyncStream<XPCRootConnectionEvent>
 
   /// Retained so the owned connection outlives proxies created from it.
@@ -86,7 +86,7 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   private let state = Mutex(State())
 
   private init(
-    root: Root, connection: XPCConnection, system: XPCDistributedActorSystem
+    root: Root, connection: XPCChannel, system: XPCDistributedActorSystem
   ) {
     self.root = root
     self.connection = connection
@@ -94,10 +94,10 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
     var continuation: AsyncStream<XPCRootConnectionEvent>.Continuation!
     self.events = AsyncStream { continuation = $0 }
     state.withLock { $0.continuation = continuation }
-    emit(.connected)
+    emit(.ready)
     // Peer death arrives as INVALID on hard crashes and INTERRUPTED when the
     // service cancels the peer gracefully; both mean "channel is down". The
-    // invalidation handler additionally fires immediately if the connection
+    // invalidation handler additionally fires immediately if the channel
     // was already invalidated before this install (connect resolved the root
     // on an activated channel), so `.disconnected` is never missed.
     connection.addInvalidationHandler { [weak self] in
@@ -108,49 +108,38 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
     }
   }
 
-  /// Connects to a launchd-managed XPC service by mach service name and
-  /// resolves its root actor. This is the reconnection-capable path: after a
-  /// service restart, calls on `root` transparently succeed again.
-  ///
-  /// - Parameters:
-  ///   - serviceName: the launchd mach service name of the service.
-  ///   - peerCodeSigningRequirement: kernel-enforced requirement the service
-  ///     must satisfy, installed on the connection before activation. A
-  ///     service failing it is dropped by XPC; a requirement that cannot be
-  ///     installed makes `connect` throw (fail-closed).
+  /// Dials a named service with the selected backend. C channels can recover
+  /// after interruptions; Session channels require a fresh connection.
   public static func connect(
     toService serviceName: String,
-    peerCodeSigningRequirement: String? = nil
+    transport: XPCChannelTransport = .cConnection
   ) throws -> Self {
-    try connect(
-      using: XPCConnection(name: serviceName),
-      peerCodeSigningRequirement: peerCodeSigningRequirement)
+    try connect(using: transport.channel(machService: serviceName))
   }
 
-  /// Connects through an existing connection. Note: only connections to a
-  /// *named* mach service survive a full service restart. An endpoint-based
-  /// connection re-dials across a dropped peer while the remote listener
-  /// lives, but dies permanently once the listener itself goes away
-  /// (anonymous endpoints are not re-established by launchd).
-  ///
-  /// `peerCodeSigningRequirement` authenticates the service and must be
-  /// installed on a *not-yet-activated* connection. On an already-activated
-  /// connection the install reports success but the channel then fails to
-  /// establish (hangs or interrupts) — pass a fresh connection.
-  public static func connect(
-    using connection: XPCConnection,
-    peerCodeSigningRequirement: String? = nil
-  ) throws -> Self {
-    try connection.applyPeerCodeSigningRequirement(peerCodeSigningRequirement)
-    let system = XPCDistributedActorSystem(connection: connection, ownsConnection: true)
+  /// Binds a root proxy to a channel and activates it. Native backend security
+  /// must be configured before adoption; this API has no C-only options.
+  public static func connect(using connection: XPCChannel) throws -> Self {
+    let system = XPCDistributedActorSystem(connection: connection)
     connection.activate()
     let root = try Root.resolve(id: .root, using: system)
     return self.init(root: root, connection: connection, system: system)
   }
 
+  /// Authenticates a service over a fresh native C connection, then adopts it.
+  /// Do not pass an already activated connection when setting a requirement.
+  public static func connect(
+    using connection: XPCConnection,
+    peerCodeSigningRequirement: String? = nil
+  ) throws -> Self {
+    try connection.applyPeerCodeSigningRequirement(peerCodeSigningRequirement)
+    return try connect(using: XPCChannel(connection))
+  }
+
   /// Runs `operation` against the root actor, retrying only when the
-  /// infrastructure fails (`ConnectionError.invalid`/`.interrupted`), which
-  /// covers a service restart in progress. Business errors propagate at once.
+  /// C channel is interrupted (`XPCChannelError.interrupted`), which
+  /// can cover a service restart in progress. Invalid and session channels
+  /// fail immediately. Business errors propagate at once.
   public func retrying<T>(
     _ policy: XPCRetryPolicy = .resilient,
     _ operation: @Sendable (Root) async throws -> T
@@ -160,9 +149,9 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
       attempt += 1
       do {
         return try await operation(root)
-      } catch let error as XPCConnection.ConnectionError {
+      } catch let error as XPCChannelError {
         // Authentication failure is terminal, never a restart in progress.
-        if case .peerCodeSigningRequirement = error { throw error }
+        guard error == .interrupted, connection.transport == .cConnection else { throw error }
         if attempt >= policy.maxAttempts { throw error }
       }
       let delay = policy.delaySeconds(beforeAttempt: attempt + 1)

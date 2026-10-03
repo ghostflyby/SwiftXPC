@@ -8,8 +8,8 @@ Two products ship from this package:
 
 | Product | Contents |
 |---|---|
-| `SwiftXPC` | Swift vocabulary over Apple's XPC: the `XPCDictionary`/`XPCArray` containers (re-exported from Apple's `XPC` module, extended with reply, endpoint, and element accessors), `xpc_object_t` as the marshal currency behind the `XPCMarshal` serialization protocol + macro, `XPCConnection`, and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
-| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCRootActor` singleton, `XPCApp` `@main`), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
+| `SwiftXPC` | Swift vocabulary over Apple's XPC: the `XPCDictionary`/`XPCArray` containers (re-exported from Apple's `XPC` module, extended with reply, endpoint, and element accessors), `xpc_object_t` as the marshal currency behind the `XPCMarshal` serialization protocol + macro, `XPCConnection`, the dual-backend transport layer (`XPCChannel`, `XPCChannelTransport`, `XPCChannelAcceptor`), and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
+| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCActorService` with one `XPCRootActor` per service, `XPCApp` `@main`, `xpcSessionMain` for session-backed services), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
 
 ## Raw handles and Sendability
 
@@ -46,6 +46,85 @@ struct SendableHandle: @unchecked Sendable {
 Equality, hashing, and description are available as free functions:
 `xpc_equal`/`xpc_hash` (C API) and `SwiftXPC.xpcCopyDescription(_:)`.
 
+## Transport backends
+
+Channels ride one of two backends, selected through `XPCChannelTransport`
+(`.cConnection` by default):
+
+| | C backend (`XPCConnection`) | Session backend (`XPCSession`) |
+|---|---|---|
+| Peer validation | kernel-enforced C requirements | typed requirements on named listeners (macOS 26+), through the Session-specific constructor |
+| Peer identity | native connection pid / euid / egid / asid | no equivalent identity accessors |
+| Hosting | `xpcMain` / `XPCApp` (bundled `.xpc`, launchd) | `xpcSessionMain` (LaunchDaemon-style mach service) |
+| Re-dial after peer loss | transparent (named services, live listeners) | terminal — never re-establishes |
+
+Both backends share one contract:
+
+- Endpoints are backend-agnostic — either backend can dial an endpoint
+  minted by the other (covered by the parameterized test matrix).
+- Pre-activation sends buffer and issue on `activate()`; awaiting a reply
+  supports Swift task cancellation (the late reply is dropped, the channel
+  stays usable).
+- One error vocabulary (`XPCChannelError`) and one service host
+  (`XPCServiceHost`, common lifecycle hooks over `XPCChannel`). Native admission uses
+  `XPCConnectionServiceDelegate` or `XPCSessionServiceDelegate`.
+
+Transport selection is explicit and defaults to `.cConnection`. Each actor
+system keeps an immutable backend policy. Nested actor references inherit the
+receiving system's policy during invocation or reply decoding; standalone
+imports can use `Worker.unmarshal(from: payload, transport: .session)`.
+
+Service-side invocation cancellation reaches the caller as `CancellationError`
+and leaves the channel usable. The distributed wire protocol is version 2;
+upgrade both peers together. Version 1 peers are rejected explicitly.
+
+`XPCChannel` owns its native resource and cancels on deinitialization. Use
+`channel.connection` for C-specific operations; identity, signing requirements,
+and interruption handlers stay on `XPCConnection`. Session admission runs inside
+its native incoming-request callback. Accepted messages buffer until service
+binding and logical activation finish.
+
+## Service ownership
+
+`XPCActorService` owns one root, a local actor registry, and an actor-free
+`XPCServiceHost`. Multiple clients share that root; separate service instances
+have separate roots, even within one process. Local registries need no idle
+XPC connection. To inject root dependencies, supply a root factory:
+
+```swift
+let service = XPCActorService(
+  ServiceRoot.self, transport: .session,
+  makeRoot: { system in ServiceRoot(dependencies: dependencies, actorSystem: system) })
+try service.listen(service: "com.example.service")
+// This name must be advertised by the process's launchd MachServices entry.
+// Retain service; it owns the listener and root for the serving lifetime.
+```
+
+For an anonymous listener, use `service.listen()` and pass its `wireEndpoint` to
+clients explicitly; it cannot be dialed by a service name.
+
+`service.cancel()` ends listeners, peers, and exports. `service.host.requestShutdown()`
+runs the cooperative shutdown hooks and invalidates the service registry.
+Hosted entry points also exit the process; embedders control that policy.
+
+## Breaking migration
+
+- Replace `any XPCMessageChannel` and `XPCPeerContext` with `XPCChannel`.
+- Construct Session channels through `XPCChannelTransport.session`.
+- Replace `Root.shared` / `.serviceHost` with `XPCActorService.root` / `.root.actorSystem`.
+- Use `XPCDistributedActorSystem()` for a local actor registry;
+  `system.connection` is optional and only exists for channel-bound systems.
+- Channel sends use `send(payload)`; C native sends keep their queue options.
+- `.ready` replaces `.connected`: local proxy creation precedes connection
+  establishment. Retry only recoverable C interruptions, not terminal errors.
+- `XPCServiceDelegate` no longer requires `init()` or supplies `main()`;
+  `XPCApp` remains the actor-service entry-point protocol.
+
+The delegate/API cleanup also removes channel-level C identity and security
+methods, mutable host/listener routing setters, and duplicate test wait helpers.
+See [the public API audit](Docs/PublicAPIAudit.md) for each surface's purpose,
+alternatives, retention/removal decisions, and migration examples.
+
 ## Requirements
 
 - macOS 15+
@@ -77,7 +156,7 @@ distributed actor ServiceRoot: XPCRootActor {
 ```
 
 Serve it from the XPC service process — mark the delegate `@main` via
-`XPCApp` (the root actor is the service's process-wide singleton):
+`XPCApp` (the root actor is constructed once for that service):
 
 ```swift
 @main
@@ -87,30 +166,30 @@ struct ServiceMain: XPCApp {
 ```
 
 Customize how peers are audited and accepted by implementing the
-`XPCServiceDelegate` hooks directly on the app type; every hook defaults to
+`XPCConnectionServiceDelegate` hooks directly on the app type; every hook defaults to
 the protocol behavior, so you only state what you customize. The functional
-form `xpcMain(ServiceRoot.self, XPCServiceConfiguration(
+form `xpcMain(ServiceRoot.self, XPCConnectionServiceConfiguration(
   peerCodeSigningRequirement: "identifier \"com.example.agent\""))` is
 equivalent.
 
 For in-process tests, spawn the same service over an anonymous channel with
-`xpcTest` — identical delegate semantics, but nothing exits the process, and
-each coordinator serves a **fresh, isolated** root instance so tests never
-share state. The client side is a full production `XPCRootConnection`, so
+`xpcTest` — the same peer and shutdown hooks, with no process exit, and
+each coordinator uses the production service assembly with its own root and
+registry, so tests never share state. The client side is a full production `XPCRootConnection`, so
 `events` and `retrying` behave exactly as against a launchd service. A
 watchdog force-closes a hung test, and an `XPCServiceEventLog` records every
 delegate-hook invocation for order and count assertions:
 
 ```swift
 let log = XPCServiceEventLog()
-let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
+let service = try xpcTest(ServiceRoot.self, XPCConnectionServiceConfiguration(
   onPeerAccept: { connection in /* hooks fire here too */ }),
   eventLog: log, watchdog: .seconds(10))
 defer { service.close() }
 let root = service.client.root
 #expect(log.events.map(\.kind).contains(.didAcceptPeer))
 // Deterministic waiting: suspends until the hook fires — no polling.
-#expect(await log.expectEvent(.peerDidEnd, timeout: .seconds(2)) != nil)
+#expect(await log.wait(for: .peerDidEnd, timeout: .seconds(2)) != nil)
 // service.host.requestShutdown(), service.dropServerPeer(), ...
 ```
 
@@ -128,24 +207,25 @@ print(try await worker.greet(name: "world"))
 
 ## Model
 
-- **One process, one root.** The root actor is a process-wide singleton
-  (`XPCRootActor.shared`): every accepted client channel serves the same
-  instance, and one service process hosts one root type — the shape of a
-  typical launchd-managed XPC service. Per-connection state belongs in the
-  child actors the root hands out.
+- **One service, one root.** An `XPCActorService` owns the root and actor
+  registry. Each accepted root channel serves that same instance. Per-client
+  state belongs in the child actors the root hands out.
 - **One channel, one actor.** The initial mach-service channel serves the root
   actor (`XPCActorID.root`); every returned actor reference exports a fresh
-  anonymous channel. Calls on a channel are FIFO-ordered.
-- **Self-healing root.** The root proxy rides a named connection: when the
+  anonymous channel. Calls on a channel execute in FIFO order through async tasks; suspended
+  calls do not block the XPC event queue.
+- **Recoverable C root.** A C root proxy rides a named connection: when the
   service dies, launchd relaunches it and the same proxy works again on its
   next call. Child proxies do not survive a restart — re-acquire them via the
-  root (see `XPCRootConnection.retrying` and the `events` stream).
+  root (see `XPCRootConnection.retrying` and the `events` stream). Session
+  channels require a fresh root connection after peer loss.
 - **Typed errors.** Serialization failures throw `XPCMarshalError`; dispatch
   and remote-call failures throw `XPCDispatchError` / `XPCRemoteCallError`.
 
 See [Docs/XPCSessionMigrationFeasibility.md](Docs/XPCSessionMigrationFeasibility.md)
 for the study comparing this implementation with the newer `XPCSession`
-API family, and `TODO.md` for the current roadmap.
+API family. [Architecture review and migration](Docs/DualTransportRefactorModel.md)
+records the redesigned layers and regression coverage; `TODO.md` tracks the roadmap.
 
 ## Platform support
 

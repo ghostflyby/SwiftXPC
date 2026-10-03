@@ -33,51 +33,28 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   let importedReferencesLock = Mutex<[XPCActorID: StoredActorReference]>([:])
   let invalidated = Mutex(false)
   private let serviceShutdownHandler = Mutex<(@Sendable () -> Void)?>(nil)
-  private let ownsConnection: Bool
-  /// Whether fully drained export sessions release their child's registry
-  /// pin. Enabled only on the service host system; per-session systems
-  /// reclaim through their own invalidation cascade instead.
-  private let allowsChildReclamation: Bool
-  public let connection: XPCConnection
+  /// Immutable export and import policy for this actor system.
+  public let transport: XPCChannelTransport
+  /// Outbound routing exists only on proxy systems; local registries need no channel.
+  public let connection: XPCChannel?
 
-  private static let _serviceHost: XPCDistributedActorSystem = {
-    let connection = XPCConnection(name: nil)
-    connection.setEventHandler { _ in }
-    connection.activate()
-    let system = XPCDistributedActorSystem(
-      connection: connection,
-      ownsConnection: true,
-      allowsChildReclamation: true)
-    // The singleton root is the first actor on the host: reserving `.root`
-    // at creation makes its identity independent of when `shared` is first
-    // materialized relative to the first accepted connection.
-    system.reserveRootID()
-    return system
-  }()
-
-  /// The process-owned long-lived system hosting `XPCRootActor` singleton
-  /// roots. Its connection is a process-lifetime idle channel kept activated
-  /// so the system — and the actors registered in it — never loses its
-  /// transport; real traffic rides each bound peer connection and each
-  /// exported or imported actor's own channel.
-  public static var serviceHost: XPCDistributedActorSystem { _serviceHost }
-
-  public convenience init(connection: XPCConnection) {
-    self.init(connection: connection, ownsConnection: false)
+  /// Creates a local registry for actors and their exported references.
+  public convenience init(transport: XPCChannelTransport = .cConnection) {
+    self.init(connection: nil, transport: transport)
   }
 
-  init(connection: XPCConnection, ownsConnection: Bool, allowsChildReclamation: Bool = false) {
+  public convenience init(connection: XPCChannel) {
+    self.init(connection: connection, transport: connection.transport)
+  }
+
+  private init(connection: XPCChannel?, transport: XPCChannelTransport) {
     self.connection = connection
-    self.ownsConnection = ownsConnection
-    self.allowsChildReclamation = allowsChildReclamation
-    self.connection.addInvalidationHandler { [weak self] in
-      self?.invalidate()
-    }
-    installEventHandler()
+    self.transport = transport
+    connection?.addInvalidationHandler { [weak self] in self?.invalidate() }
+    connection?.setIncomingHandler { _ in }
   }
 
   deinit {
-    if ownsConnection { connection.cancel() }
     // Drain sessions and actors before stored properties (and their locks)
     // are destroyed: releasing registered actors later would re-enter
     // resignID on half-destroyed Mutexes.
@@ -144,14 +121,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     return id
   }
 
-  /// Reserves `.root` for the next actor created on this system. Only call
-  /// on a freshly created system before any concurrent `assignID` (the
-  /// root-binding peer handler does this before materializing `shared`).
-  /// A no-op when `.root` is already assigned: the long-lived service host
-  /// system re-reserves on every accept, but only the first accept — the
-  /// one that materializes the singleton — may consume a reservation; a
-  /// dangling reservation would hand `.root` to the next child actor
-  /// created on the host.
+  /// Reserves the root identity before the service constructs its first actor.
   func reserveRootID() {
     _ = reservedIDLock.withLock { reserved -> Bool in
       let taken = assignedIDsLock.withLock { $0.contains(.root) }
@@ -159,14 +129,6 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       reserved = .root
       return true
     }
-  }
-
-  /// Drops a pending `.root` reservation without consuming it. Called when
-  /// the root-binding guard fails: the reservation was armed for a
-  /// singleton that turned out not to own `.root`, and leaving it pending
-  /// would let the next unrelated `assignID` claim the identity.
-  func clearRootReservation() {
-    reservedIDLock.withLock { $0 = nil }
   }
 
   /// Registers a freshly created local actor under its assigned ID.
@@ -212,9 +174,10 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// Waits until no export session of this system has live peers — every
   /// export session fully drained (child reclamation attempted). Returns
   /// immediately when already drained. Never polls.
-  func waitForExportDrain() async {
+  func waitForExportDrain(onRegistered: @Sendable () -> Void = {}) async {
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
       insertDrainWaiter(continuation: cont)
+      onRegistered()
     }
   }
 
@@ -253,13 +216,13 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   }
 
   /// Called when an export session for `id` drains to zero live peers.
-  /// With child reclamation enabled, releases the registry pin of `id` when
+  /// Local registries release the pin of `id` when
   /// every session minted for it is fully drained (zero live peers, none of
   /// them an un-dialed in-flight wire) — an actor nobody references anymore,
   /// locally or remotely.
   func exportSessionDrained(_ id: ActorID) {
-    // The singleton root is permanent: never evict its registry entry.
-    if allowsChildReclamation && id != .root {
+    // The service root is permanent: never evict its registry entry.
+    if connection == nil && id != .root {
       let removed = activeActorsLock.withLock { actors -> (any DistributedActor)? in
         guard actors[id] != nil else { return nil }
         let reclaimable = exportSessionsLock.withLock { sessions in
@@ -288,29 +251,18 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     serviceShutdownHandler.withLock { $0 }?()
   }
 
-  /// Installs the connection's event plumbing. Unbound systems only ever see
-  /// lifecycle error objects here (there is no actor to dispatch messages to);
-  /// channels serving an actor overwrite this handler via `bind`.
-  func installEventHandler() {
-    connection.setEventHandler { _ in }
-  }
-
-  private func runIncomingHandler(_ operation: @escaping @Sendable () async throws -> Void) {
-    let done = DispatchSemaphore(value: 0)
-    Task {
-      try? await operation()
-      done.signal()
-    }
-    done.wait()
-  }
-
-  func bind<Act>(_ connection: XPCConnection, to actor: Act)
+  /// Serializes invocations per channel without blocking the XPC event queue.
+  func bind<Act>(_ connection: XPCChannel, to actor: Act)
   where Act: DistributedActor, Act.ID == ActorID {
-    connection.setEventHandler { [weak self, weak actor] object in
-      guard let self, let actor else { return }
-      let object = SendableXPCObject(object)
-      self.runIncomingHandler {
-        try await self.handleIncomingMessage(object.raw, on: actor)
+    let tail = Mutex<Task<Void, Never>?>(nil)
+    connection.setIncomingHandler { [weak self, weak actor] message in
+      tail.withLock { previous in
+        let predecessor = previous
+        previous = Task { [weak self, weak actor] in
+          await predecessor?.value
+          guard let self, let actor else { return }
+          await self.handleIncomingMessage(message, on: actor)
+        }
       }
     }
   }
@@ -338,7 +290,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     {
       throw XPCDispatchError.unknownTarget(message.method)
     }
-    var decoder = XPCInvocationDecoder(array: message.arguments)
+    var decoder = XPCInvocationDecoder(array: message.arguments, transport: transport)
     let replyLock = Mutex<XPCReplyEnvelope?>(nil)
     let resultHandler = XPCInvocationResultHandler { envelope in
       replyLock.withLock { $0 = envelope }
@@ -347,6 +299,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       try await executeDistributedTarget(
         on: actor, target: message.target,
         invocationDecoder: &decoder, handler: resultHandler)
+    } catch let error as CancellationError {
+      throw error
     } catch let error as any ErrorXPCMarshal {
       throw error
     } catch {
@@ -371,17 +325,36 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
       .thrownErrorType
   }
 
-  func handleIncomingMessage<Act>(_ object: xpc_object_t, on actor: Act) async throws
+  func handleIncomingMessage<Act>(_ message: XPCIncomingMessage, on actor: Act) async
   where Act: DistributedActor, Act.ID == ActorID {
-    let received = try XPCDictionary.unmarshal(from: object)
-    let resultHandler = XPCInvocationResultHandler(received: received)
+    let resultHandler = XPCInvocationResultHandler { envelope in
+      message.reply(try envelope.marshal())
+    }
     do {
-      let invocation = try XPCInvocationMessage.unmarshal(from: object)
+      let invocation = try XPCInvocationMessage.unmarshal(from: message.payload)
       let envelope = try await dispatchInvocation(invocation, on: actor)
       try resultHandler.send(envelope)
-    } catch let error as any ErrorXPCMarshal {
-      try resultHandler.send(
-        XPCReplyEnvelope(kind: .throwError, payload: try error.marshal()))
+    } catch {
+      replyToFailure(error, message: message)
+    }
+  }
+
+  /// Even an error whose custom encoder fails must complete the reply.
+  func replyToFailure(_ error: any Error, message: XPCIncomingMessage) {
+    do {
+      if error is CancellationError {
+        message.reply(try XPCReplyEnvelope(kind: .cancelled).marshal())
+        return
+      }
+      let payload: xpc_object_t
+      if let error = error as? any ErrorXPCMarshal {
+        payload = try error.marshal()
+      } else {
+        payload = try XPCDispatchError.targetExecutionFailed(String(describing: error)).marshal()
+      }
+      message.reply(try XPCReplyEnvelope(kind: .throwError, payload: payload).marshal())
+    } catch {
+      message.reply(XPCReplyEnvelope.encodingFailureReply())
     }
   }
 
@@ -429,16 +402,21 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     Act: DistributedActor, Act.ID == ActorID,
     Err: Error, Res: SerializationRequirement
   {
-    let method = parseTargetIdentifier(target.identifier) ?? target.identifier
+    let metadata = (Act.self as? any XPCDistributedTargetMetadataProviding.Type)?
+      .xpcDistributedTargetMetadata
+    let method = parseTargetIdentifier(target.identifier, matching: metadata) ?? target.identifier
     let message = XPCInvocationMessage(
       method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
     let xpcDict = XPCDictionary(payload)
-    let result = try await connection.send(message: xpcDict)
+    guard let connection else { throw XPCChannelError.invalid }
+    let result = try await connection.send(xpcDict.xpcObject)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
-    return try decodeRemoteCallReply(
-      envelope, for: Act.self, target: target, method: method,
-      throwing: errorType, returning: returnType)
+    return try XPCActorDecodingContext.$transport.withValue(transport) {
+      try decodeRemoteCallReply(
+        envelope, for: Act.self, target: target, method: method,
+        throwing: errorType, returning: returnType)
+    }
   }
 
   /// Sends a void invocation over the connection. Called by
@@ -450,14 +428,19 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     throwing errorType: Err.Type
   ) async throws
   where Act: DistributedActor, Act.ID == ActorID, Err: Error {
-    let method = parseTargetIdentifier(target.identifier) ?? target.identifier
+    let metadata = (Act.self as? any XPCDistributedTargetMetadataProviding.Type)?
+      .xpcDistributedTargetMetadata
+    let method = parseTargetIdentifier(target.identifier, matching: metadata) ?? target.identifier
     let message = XPCInvocationMessage(
       method: method, actorID: actor.id, target: target, arguments: invocation.array)
     let payload = try message.marshal()
     let xpcDict = XPCDictionary(payload)
-    let result = try await connection.send(message: xpcDict)
+    guard let connection else { throw XPCChannelError.invalid }
+    let result = try await connection.send(xpcDict.xpcObject)
     let envelope = try XPCReplyEnvelope.unmarshal(from: result)
-    try decodeRemoteCallVoidReply(
-      envelope, for: Act.self, target: target, method: method, throwing: errorType)
+    try XPCActorDecodingContext.$transport.withValue(transport) {
+      try decodeRemoteCallVoidReply(
+        envelope, for: Act.self, target: target, method: method, throwing: errorType)
+    }
   }
 }

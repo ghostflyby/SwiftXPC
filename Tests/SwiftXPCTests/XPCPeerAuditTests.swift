@@ -44,28 +44,28 @@ private func ownSigningIdentifier() -> String? {
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     AuditRoot.self,
-    XPCServiceConfiguration(
+    XPCConnectionServiceConfiguration(
       peerCodeSigningRequirement: "not a code signing requirement !!",
       shouldAccept: { _ in
         auditCalls.withLock { $0 += 1 }
         return true
       },
-      onPeerReject: { _, error in
+      onConnectionReject: { _, error in
         rejections.withLock { $0.append(error) }
       }),
     eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
-  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .didRejectConnection, timeout: .seconds(2)) != nil)
   // The requirement install failure must preempt the audit hook and surface
   // as a PeerRequirementError (fail-closed, no silent degradation).
   #expect(auditCalls.withLock { $0 } == 0)
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
-  #expect(rejectionsSeen.first is XPCConnection.PeerRequirementError)
+  #expect(rejectionsSeen.first is XPCPeerRequirementError)
 }
 
 @Test func UnsatisfiableRequirementDropsPeerAtActivation() async throws {
@@ -75,22 +75,22 @@ private func ownSigningIdentifier() -> String? {
   let log = XPCServiceEventLog()
   let channel = try RootChannel(
     AuditRoot.self,
-    XPCServiceConfiguration(
+    XPCConnectionServiceConfiguration(
       peerCodeSigningRequirement: "identifier \"com.example.definitely.not.us\"",
-      onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
-      onPeerEnd: { _ in ends.withLock { $0 += 1 } },
-      onPeerReject: { _, error in
+      onConnectionReject: { _, error in
         rejections.withLock { $0.append(error) }
-      }),
+      },
+      onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
+      onPeerEnd: { _ in ends.withLock { $0 += 1 } }),
     eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
   // The requirement installs cleanly; the kernel drops the peer when the
   // signature fails at activation, which surfaces server-side as a peer end.
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
-  #expect(await log.expectCount(.peerDidEnd, atLeast: 1, timeout: .seconds(2)))
+  #expect(await log.wait(for: .peerDidEnd, occurrence: 1, timeout: .seconds(2)) != nil)
   #expect(accepted.withLock { $0 } == 1)
   #expect(rejections.withLock { $0 }.isEmpty)
 }
@@ -102,7 +102,7 @@ private func ownSigningIdentifier() -> String? {
   }
   let channel = try RootChannel(
     AuditRoot.self,
-    XPCServiceConfiguration(
+    XPCConnectionServiceConfiguration(
       peerCodeSigningRequirement: "identifier \"\(identifier)\""))
   let root = try AuditRoot.connect(using: channel.client)
 
@@ -117,18 +117,18 @@ private func ownSigningIdentifier() -> String? {
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
     AuditRoot.self,
-    XPCServiceConfiguration(
+    XPCConnectionServiceConfiguration(
       shouldAccept: { _ in throw AuditHookFailure() },
-      onPeerReject: { _, error in
+      onConnectionReject: { _, error in
         rejections.withLock { $0.append(error) }
       }),
     eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
-  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .didRejectConnection, timeout: .seconds(2)) != nil)
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   #expect(rejectionsSeen.first is AuditHookFailure)
@@ -139,18 +139,18 @@ private func ownSigningIdentifier() -> String? {
   let rejections = Mutex<[(any Error)?]>([])
   let channel = try RootChannel(
     AuditRoot.self,
-    XPCServiceConfiguration(
+    XPCConnectionServiceConfiguration(
       shouldAccept: { _ in false },
-      onPeerReject: { _, error in
+      onConnectionReject: { _, error in
         rejections.withLock { $0.append(error) }
       }),
     eventLog: log)
   let root = try AuditRoot.connect(using: channel.client)
 
-  await #expect(throws: XPCConnection.ConnectionError.self) {
+  await #expect(throws: XPCChannelError.self) {
     _ = try await root.ping()
   }
-  #expect(await log.expectEvent(.didRejectPeer, timeout: .seconds(2)) != nil)
+  #expect(await log.wait(for: .didRejectConnection, timeout: .seconds(2)) != nil)
   let rejectionsSeen = rejections.withLock { $0 }
   #expect(rejectionsSeen.count == 1)
   // Element type is (any Error)?; unwrap the array's outer optional first so
@@ -167,12 +167,14 @@ private func ownSigningIdentifier() -> String? {
 /// is a libxpc programming error that traps the process.
 @Test func SyncSendSurfacesInterruptionFromRejectedPeer() async throws {
   let channel = try RootChannel(
-    AuditRoot.self, XPCServiceConfiguration(shouldAccept: { _ in false }))
-  channel.client.setEventHandler { _ in }
+    AuditRoot.self, XPCConnectionServiceConfiguration(shouldAccept: { _ in false }))
+  defer { channel.close() }
+  let connection = try #require(channel.client.connection)
+  connection.setEventHandler { _ in }
   channel.client.activate()
 
-  #expect(throws: XPCConnection.ConnectionError.interrupted) {
-    _ = try channel.client.send(message: XPCDictionary())
+  #expect(throws: XPCChannelError.interrupted) {
+    _ = try connection.send(message: XPCDictionary())
   }
 }
 
@@ -185,7 +187,7 @@ private func ownSigningIdentifier() -> String? {
   }
   let channel = try RootChannel(AuditRoot.self)
   let root = try AuditRoot.connect(
-    using: channel.client,
+    using: try #require(channel.client.connection),
     peerCodeSigningRequirement: "identifier \"\(identifier)\"")
 
   #expect(try await root.ping() == "root")
@@ -194,12 +196,12 @@ private func ownSigningIdentifier() -> String? {
 @Test func UnsatisfiableClientRequirementRejectsService() async throws {
   let channel = try RootChannel(AuditRoot.self)
   let root = try AuditRoot.connect(
-    using: channel.client,
+    using: try #require(channel.client.connection),
     peerCodeSigningRequirement: "identifier \"com.example.definitely.not.us\"")
 
   // The kernel delivers the requirement failure through the reply path; send
   // surfaces it as the typed connection error.
-  await #expect(throws: XPCConnection.ConnectionError.peerCodeSigningRequirement) {
+  await #expect(throws: XPCChannelError.peerCodeSigningRequirement) {
     _ = try await root.ping()
   }
 }

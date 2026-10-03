@@ -100,10 +100,11 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   listener.setEventHandler { object in
     guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
     let server = XPCConnection(xpc_object: object)
-    let serverSystem = XPCDistributedActorSystem(connection: server)
+    let serverChannel = XPCChannel(server)
+    let serverSystem = XPCDistributedActorSystem(connection: serverChannel)
     serverSystem.reserveRootID()
     let root = IntegrationGreeter(actorSystem: serverSystem)
-    serverSystem.bind(server, to: root)
+    serverSystem.bind(serverChannel, to: root)
     acceptedPeer.withLock {
       $0 = AcceptedPeer(connection: server, system: serverSystem, root: root)
     }
@@ -114,7 +115,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 
   let endpoint = try listener.marshal()
   let client = try XPCConnection.unmarshal(from: endpoint)
-  let clientSystem = XPCDistributedActorSystem(connection: client)
+  let clientSystem = XPCDistributedActorSystem(connection: XPCChannel(client))
   client.activate()
   client.sendAndForget(message: XPCDictionary())
 
@@ -251,7 +252,7 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
   do {
     _ = try await pair.client.send(message: XPCDictionary())
     Issue.record("Expected send on invalidated connection to throw")
-  } catch XPCConnection.ConnectionError.invalid {
+  } catch XPCChannelError.invalid {
     // expected
   } catch {
     Issue.record("Expected .invalid, got \(error)")
@@ -260,17 +261,15 @@ private func makeConnectionPair() throws -> IntegrationConnectionPair {
 
 @Test func ConnectionInvalidationClearsActorRegistry() async throws {
   let pair = try makeConnectionPair()
-  let root = pair.serverRoot!
+  defer { pair.client.cancel(); pair.server.cancel(); pair.listener.cancel() }
+  let root = try #require(pair.serverRoot)
   #expect(try pair.serverSystem.resolve(id: root.id, as: IntegrationGreeter.self) != nil)
 
+  // The system's invalidation handler was registered first, so this signal
+  // observes its completed cleanup without a polling deadline.
+  let invalidated = DispatchSemaphore(value: 0)
+  pair.server.addInvalidationHandler { invalidated.signal() }
   pair.client.cancel()
-
-  let deadline = ContinuousClock.now + .seconds(2)
-  while ContinuousClock.now < deadline {
-    if try pair.serverSystem.resolve(id: root.id, as: IntegrationGreeter.self) == nil {
-      return
-    }
-    try await Task.sleep(for: .milliseconds(20))
-  }
-  Issue.record("Server actor registry was not cleared after connection invalidation")
+  try #require(await waitForTestSignal(invalidated))
+  #expect(try pair.serverSystem.resolve(id: root.id, as: IntegrationGreeter.self) == nil)
 }

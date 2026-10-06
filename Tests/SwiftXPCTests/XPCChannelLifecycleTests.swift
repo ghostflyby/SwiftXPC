@@ -29,3 +29,47 @@ func DialRejectsMalformedEndpoint(transport: XPCChannelTransport) {
     _ = try transport.channel(dialing: xpc_dictionary_create(nil, nil, 0))
   }
 }
+
+private final class CancelSessionOnDeinit: @unchecked Sendable {
+  weak var channel: XPCChannel?
+
+  init(_ channel: XPCChannel) { self.channel = channel }
+
+  deinit { channel?.cancel() }
+}
+
+private func verifySessionHandlerRelease(replacing: Bool) {
+  // Run in a child process so a recursive-lock abort or hang fails this test alone.
+  DispatchQueue.global().asyncAfter(deadline: .now() + 10) { exit(77) }
+  let channel = XPCChannel(
+    session: XPCSessionChannel(makingSession: { throw XPCChannelError.invalid }))
+  let invalidations = Mutex(0)
+  channel.addInvalidationHandler { invalidations.withLock { $0 += 1 } }
+  weak var captured: CancelSessionOnDeinit?
+  do {
+    let cleanup = CancelSessionOnDeinit(channel)
+    captured = cleanup
+    channel.setIncomingHandler { [cleanup] _ in withExtendedLifetime(cleanup) {} }
+  }
+  if replacing {
+    channel.setIncomingHandler { _ in }
+  } else {
+    channel.cancel()
+  }
+  guard captured == nil, invalidations.withLock({ $0 }) == 1 else { exit(1) }
+  channel.cancel()
+  guard invalidations.withLock({ $0 }) == 1 else { exit(1) }
+  exit(0)
+}
+
+@Test func SessionCancellationReleasesIncomingHandlerOutsideLock() async {
+  await #expect(processExitsWith: .success) {
+    verifySessionHandlerRelease(replacing: false)
+  }
+}
+
+@Test func SessionHandlerReplacementReleasesPreviousHandlerOutsideLock() async {
+  await #expect(processExitsWith: .success) {
+    verifySessionHandlerRelease(replacing: true)
+  }
+}

@@ -19,8 +19,14 @@ final class XPCSessionChannel: @unchecked Sendable {
     let queue = DispatchQueue(label: "SwiftXPC.session.incoming")
 
     func setHandler(_ handler: @escaping @Sendable (XPCIncomingMessage) -> Void) {
-      state.withLock { $0.handler = handler }
+      let previous = state.withLock { state in
+        let previous = state.handler
+        state.handler = handler
+        return previous
+      }
       scheduleDrain()
+      // Releasing handler captures can re-enter channel cancellation.
+      withExtendedLifetime(previous) {}
     }
 
     func receive(_ message: XPCIncomingMessage) {
@@ -34,14 +40,14 @@ final class XPCSessionChannel: @unchecked Sendable {
     }
 
     func cancel() {
-      let pending = state.withLock { state in
+      let retained = state.withLock { state in
         state.cancelled = true
+        let retained = (state.handler, state.pending)
         state.handler = nil
-        let pending = state.pending
         state.pending = []
-        return pending
+        return retained
       }
-      withExtendedLifetime(pending) {}
+      withExtendedLifetime(retained) {}
     }
 
     private func scheduleDrain() {

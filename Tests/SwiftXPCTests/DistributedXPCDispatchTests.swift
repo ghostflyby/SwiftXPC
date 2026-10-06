@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
 import Distributed
-import SwiftXPC
+@testable import SwiftXPC
 import SwiftXPCMacros
 import Testing
 
@@ -33,7 +33,7 @@ private let sampleActorWithoutMetadataPingTargetIdentifier =
   "$s13SwiftXPCTests26SampleActorWithoutMetadataC4pingyyYaKFTE"
 
 private func makeSystem() -> XPCDistributedActorSystem {
-  XPCDistributedActorSystem(connection: makeIdleConnection())
+  XPCDistributedActorSystem()
 }
 
 @Test func DispatchInvocationExecutesDistributedTarget() async throws {
@@ -152,7 +152,8 @@ private func makeSystem() -> XPCDistributedActorSystem {
     arguments: arguments
   )
 
-  try await system.handleIncomingMessage(try message.marshal(), on: actor)
+  let incoming = XPCIncomingMessage(payload: try message.marshal(), replyer: { _ in })
+  await system.handleIncomingMessage(incoming, on: actor)
 }
 
 @Test func HandleIncomingMessageEncodesDispatchErrors() async throws {
@@ -166,7 +167,8 @@ private func makeSystem() -> XPCDistributedActorSystem {
     arguments: XPCArray()
   )
 
-  try await system.handleIncomingMessage(try message.marshal(), on: actor)
+  let incoming = XPCIncomingMessage(payload: try message.marshal(), replyer: { _ in })
+  await system.handleIncomingMessage(incoming, on: actor)
 }
 
 @Test func DispatchInvocationRejectsWrongArgumentType() async throws {
@@ -232,4 +234,11 @@ private func makeSystem() -> XPCDistributedActorSystem {
   let identifier =
     "$s7RimeKit0A11ServiceRootC12selectSchema_3forSbSS_AA0A9SessionIDVtYaAA0A5ErrorOYKF"
   #expect(parseTargetIdentifier(identifier) == "selectSchema(for:)")
+}
+
+@Test func PrivateActorDiscriminatorDoesNotBecomeMethodName() {
+  let target =
+    "$s13SwiftXPCTests13SuspendedRoot33_4A1D767A288444EBE4C03F0BF5431DB0LLC4holdSiyYaKFTE"
+  let metadata = ["hold()": XPCDistributedTargetMetadata()]
+  #expect(parseTargetIdentifier(target, matching: metadata) == "hold()")
 }

@@ -27,7 +27,7 @@ private func assertRouting(
   let state = _ConnectionHandlerState()
   let log = EventLog()
   state.setGenericHandler { _ in log.record("generic") }
-  state.chain(\.invalidation, { log.record("invalid") })
+  _ = state.chainInvalidation { log.record("invalid") }
   state.chain(\.interruption, { log.record("interrupted") })
   configured(state, log)
   state.route(object)

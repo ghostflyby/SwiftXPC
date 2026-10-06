@@ -8,7 +8,7 @@ extension XPCMarshalMacro {
       if enumCase.associatedValues.isEmpty {
         return """
           case .\(enumCase.name):
-            array.append(SwiftXPC.xpcStringCreate(\"\(enumCase.name)\"))
+            array.append(SwiftXPC.XPCMarshalRuntime.string(\"\(enumCase.name)\"))
           """
       }
 
@@ -34,7 +34,7 @@ extension XPCMarshalMacro {
 
       return """
         case .\(enumCase.name)(\(bindingList)):
-          array.append(SwiftXPC.xpcStringCreate(\"\(enumCase.name)\"))
+          array.append(SwiftXPC.XPCMarshalRuntime.string(\"\(enumCase.name)\"))
           \(payloadEncoding)
         """
     }.joined(separator: "\n")
@@ -83,9 +83,19 @@ extension XPCMarshalMacro {
           return value.binding
         }
       }.joined(separator: ", ")
+      let payloadDecoding =
+        allUnlabeled
+        ? ""
+        : """
+          guard let payloadPtr = array[1, as: xpc_object_t.self] else {
+            throw SwiftXPC.XPCMarshalError.outOfBounds(index: 1, count: array.count)
+          }
+          try SwiftXPC.XPCMarshalRuntime.requireArray(payloadPtr)
+          let payloadArray = SwiftXPC.XPCArray(payloadPtr)
+        """
       return """
         case \"\(enumCase.name)\":
-          \(allUnlabeled ? "" : "  guard let payloadPtr = array[1, as: xpc_object_t.self] else {\n    throw SwiftXPC.XPCMarshalError.outOfBounds(index: 1, count: array.count)\n  }\n  let payloadType = SwiftXPC.xpcGetType(payloadPtr)\n  guard payloadType == SwiftXPC.xpcTypeArray else {\n    throw SwiftXPC.XPCMarshalError.typeMismatch(\n      expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeArray)),\n      actual: String(cString: SwiftXPC.xpcTypeGetName(payloadType))\n    )\n  }\n  let payloadArray = SwiftXPC.XPCArray(payloadPtr)\n")
+          \(payloadDecoding)
           \(valuesDecoding)
           return .\(enumCase.name)(\(argumentList))
         """
@@ -93,13 +103,7 @@ extension XPCMarshalMacro {
 
     return """
       \(access)static func unmarshal(from object: xpc_object_t) throws(SwiftXPC.XPCMarshalError) -> Self {
-        let type = SwiftXPC.xpcGetType(object)
-        guard type == SwiftXPC.xpcTypeArray else {
-          throw SwiftXPC.XPCMarshalError.typeMismatch(
-            expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeArray)),
-            actual: String(cString: SwiftXPC.xpcTypeGetName(type))
-          )
-        }
+        try SwiftXPC.XPCMarshalRuntime.requireArray(object)
         let array = SwiftXPC.XPCArray(object)
         guard let casePtr = array[0, as: xpc_object_t.self] else {
           throw SwiftXPC.XPCMarshalError.outOfBounds(index: 0, count: array.count)

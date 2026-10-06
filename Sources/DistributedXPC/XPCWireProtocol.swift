@@ -4,7 +4,7 @@ import Distributed
 import SwiftXPC
 
 enum XPCWireProtocol {
-  public static let currentVersion: UInt64 = 1
+  public static let currentVersion: UInt64 = 2
 }
 
 @XPCMarshal
@@ -36,6 +36,8 @@ public enum XPCReplyKind: Sendable, Hashable, Equatable {
   case returnValue
   case returnVoid
   case throwError
+  /// The service-side invocation ended with CancellationError.
+  case cancelled
 }
 
 struct XPCReplyEnvelope: @unchecked Sendable {
@@ -78,13 +80,7 @@ extension XPCReplyEnvelope: XPCMarshal {
   }
 
   static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> XPCReplyEnvelope {
-    let kindType = SwiftXPC.xpcGetType(object)
-    guard kindType == SwiftXPC.xpcTypeDictionary else {
-      throw XPCMarshalError.typeMismatch(
-        expected: String(cString: SwiftXPC.xpcTypeGetName(SwiftXPC.xpcTypeDictionary)),
-        actual: String(cString: SwiftXPC.xpcTypeGetName(kindType))
-      )
-    }
+    try XPCMarshalRuntime.requireDictionary(object)
     let dictionary = XPCDictionary(object)
     guard let versionObject = dictionary["version", as: xpc_object_t.self] else {
       throw XPCMarshalError.missingKey("version")
@@ -111,6 +107,18 @@ extension XPCReplyEnvelope: XPCMarshal {
 }
 
 extension XPCReplyEnvelope {
+  /// Nonthrowing last resort: a valid error envelope with no encodable payload.
+  /// The client deterministically reports missingPayload(.throwError).
+  static func encodingFailureReply() -> xpc_object_t {
+    let dictionary = xpc_dictionary_create(nil, nil, 0)
+    xpc_dictionary_set_uint64(dictionary, "version", XPCWireProtocol.currentVersion)
+    let kind = xpc_array_create(nil, 0)
+    xpc_array_append_value(kind, xpc_string_create("throwError"))
+    xpc_dictionary_set_value(dictionary, "kind", kind)
+    xpc_dictionary_set_bool(dictionary, "hasPayload", false)
+    return dictionary
+  }
+
   func decodeReturnValue<Res, Err>(
     throwing errorType: Err.Type,
     returning returnType: Res.Type,
@@ -130,6 +138,8 @@ extension XPCReplyEnvelope {
         throw XPCRemoteCallError.missingPayload(.throwError)
       }
       throw try decodeThrownError(payload, as: errorType, fallback: fallbackErrorType)
+    case .cancelled:
+      throw CancellationError()
     }
   }
 
@@ -148,6 +158,8 @@ extension XPCReplyEnvelope {
         throw XPCRemoteCallError.missingPayload(.throwError)
       }
       throw try decodeThrownError(payload, as: errorType, fallback: fallbackErrorType)
+    case .cancelled:
+      throw CancellationError()
     }
   }
 

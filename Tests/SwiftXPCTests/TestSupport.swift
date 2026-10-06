@@ -17,16 +17,6 @@ func roundTrip<T: XPCEquatable>(_ value: T) throws {
   assert(value == decoded)
 }
 
-/// Creates an activated, idle connection for in-process systems that never
-/// carry XPC traffic. A never-activated connection traps in libxpc when its
-/// last reference is released, so test-only systems must activate their dummies.
-func makeIdleConnection() -> XPCConnection {
-  let connection = XPCConnection(name: nil)
-  connection.setEventHandler { _ in }
-  connection.activate()
-  return connection
-}
-
 /// An in-process XPC channel carrying real mach traffic between a server side
 /// hosted on an anonymous listener and a client side dialed from its endpoint,
 /// so root-actor tests need no launchd-managed service. A thin test harness
@@ -35,18 +25,19 @@ func makeIdleConnection() -> XPCConnection {
 /// exercise launchd-relaunch reconnection, which only named-service
 /// connections have.
 ///
-/// The client connection starts inactive: activate it via
-/// `XPCRootActor.connect(using:)` or manually before sending on it.
+/// The coordinator has already activated the client channel.
 /// `close()` cancels every connection; it also runs from `deinit` and the
 /// watchdog.
 final class RootChannel<Root: XPCRootActor>: Sendable {
   let harness: XPCRootTestCoordinator<Root>
   var host: XPCServiceHost { harness.host }
-  var client: XPCConnection { harness.client.connection }
+  /// The coordinator's client channel is C-backed, so the C-specific test
+  /// surface (setEventHandler, the sync send) stays reachable.
+  var client: XPCChannel { harness.client.connection }
 
   init(
     _ rootType: Root.Type,
-    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    _ delegate: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
     eventLog: XPCServiceEventLog? = nil
   ) throws {
     harness = try xpcTest(
@@ -56,8 +47,8 @@ final class RootChannel<Root: XPCRootActor>: Sendable {
       watchdog: .seconds(10))
   }
 
-  /// Dials a fresh, inactive client connection to the same listener.
-  func makeClient() throws -> XPCConnection {
+  /// Dials a fresh, inactive client channel to the same listener.
+  func makeClient() throws -> XPCChannel {
     try harness.makeClient()
   }
 
@@ -74,33 +65,25 @@ final class RootChannel<Root: XPCRootActor>: Sendable {
   deinit { close() }
 }
 
-/// Drives the **production** singleton path: `XPCServiceHost(rootType,
-/// delegate)` binds `Root.shared` on the process-global service host,
-/// exactly as a hosted `xpcMain` service does. The service host is
-/// process-global — one root type per test process — so suites using this
-/// fixture must be `.serialized`.
-final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
-  let server: XPCServiceHost
-  let client: XPCConnection
-  private let listener: XPCConnection
+/// Directly drives the production actor-service assembly with multiple peers.
+final class ActorServiceChannel<Root: XPCRootActor>: @unchecked Sendable {
+  let service: XPCActorService<Root>
+  var server: XPCServiceHost { service.host }
+  let client: XPCChannel
+  private let listener: XPCChannelAcceptor
   private let watchdog: DispatchWorkItem
 
   init(
     _ rootType: Root.Type,
-    _ delegate: any XPCServiceDelegate = XPCServiceConfiguration(),
+    _ delegate: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
     eventLog: XPCServiceEventLog? = nil
   ) throws {
-    let listener = XPCConnection(name: nil)
-    let server = XPCServiceHost(rootType, delegate, eventLog: eventLog)
-    listener.setEventHandler { object in
-      guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
-      server.accept(XPCConnection(xpc_object: object))
-    }
-    listener.activate()
-
-    let client = try XPCConnection.unmarshal(from: listener.marshal())
+    let service = XPCActorService(rootType, delegate, eventLog: eventLog)
+    let server = service.host
+    let listener = try service.listen()
+    let client = try XPCChannelTransport.cConnection.channel(dialing: listener.wireEndpoint)
     self.listener = listener
-    self.server = server
+    self.service = service
     self.client = client
     watchdog = DispatchWorkItem {
       client.cancel()
@@ -111,16 +94,25 @@ final class SharedSingletonChannel<Root: XPCRootActor>: @unchecked Sendable {
   }
 
   /// Dials a fresh, inactive client connection to the same listener.
-  func makeClient() throws -> XPCConnection {
-    try XPCConnection.unmarshal(from: listener.marshal())
+  func makeClient() throws -> XPCChannel {
+    try XPCChannelTransport.cConnection.channel(dialing: listener.wireEndpoint)
   }
 
   func close() {
     watchdog.cancel()
     client.cancel()
     listener.cancel()
-    server.cancel()
+    service.cancel()
   }
 
   deinit { close() }
+}
+
+/// Waits on a dedicated queue so a stalled regression reports a bounded failure.
+func waitForTestSignal(_ signal: DispatchSemaphore, seconds: Double = 5) async -> Bool {
+  await withCheckedContinuation { continuation in
+    DispatchQueue.global().async {
+      continuation.resume(returning: signal.wait(timeout: .now() + seconds) == .success)
+    }
+  }
 }

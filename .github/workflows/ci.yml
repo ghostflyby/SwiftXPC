@@ -23,7 +23,17 @@ jobs:
       - name: Build
         run: swift build --build-tests
       - name: Test
-        run: swift test
+        # Catch cooperative-executor blocking even on runners with many cores.
+        run: LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test
+      - name: Verify external API and public symbol inventory
+        run: python3 Scripts/check-public-api.py
+      - name: Save API verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-api-verification
+          path: .build/public-api-verification
+          if-no-files-found: ignore
 
   demo:
     name: Build demo (out-of-package consumer)

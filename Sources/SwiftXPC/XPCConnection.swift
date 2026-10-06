@@ -4,6 +4,14 @@ import Foundation
 import Synchronization
 import XPC
 
+/// A peer requirement install failure, carrying its errno-style status.
+public struct XPCPeerRequirementError: Error, Sendable {
+  public let status: Int32
+  public init(status: Int32) {
+    self.status = status
+  }
+}
+
 /// A handle to an XPC connection: the named or anonymous channel over which
 /// dictionaries travel between processes.
 ///
@@ -15,9 +23,19 @@ import XPC
 public struct XPCConnection: @unchecked Sendable {
   internal let xpc_object: xpc_connection_t
   internal let _handlerState = _ConnectionHandlerState()
+  private var peerIdentity: (pid: pid_t, euid: uid_t, egid: gid_t, asid: au_asid_t)?
 
   package init(xpc_object: xpc_connection_t) {
     self.xpc_object = xpc_object
+    if xpc_get_type(xpc_object) == XPC_TYPE_CONNECTION {
+      let pid = xpc_connection_get_pid(xpc_object)
+      if pid > 0 {
+        peerIdentity = (
+          pid, xpc_connection_get_euid(xpc_object),
+          xpc_connection_get_egid(xpc_object), xpc_connection_get_asid(xpc_object)
+        )
+      }
+    }
   }
 }
 
@@ -26,11 +44,14 @@ public struct XPCConnection: @unchecked Sendable {
 /// queue, so all access is lock-protected. Handlers should be installed
 /// before `activate()`; later additions take effect for subsequent events,
 /// except invalidation handlers, which run immediately when invalidation was
-/// already delivered (it is terminal and never repeats).
+/// already delivered (it is terminal and never repeats). The terminal
+/// invalidation chain (once, clear-on-delivery, disconnection waiters) is
+/// the shared `XPCInvalidationChain`; the C-specific slots here are the
+/// generic event handler, the repeatable interruption chain, and the
+/// termination-imminent / peer-code-signing-error chains.
 final class _ConnectionHandlerState: Sendable {
   struct Handlers: Sendable {
     var generic: (@Sendable (xpc_object_t) -> Void)?
-    var invalidation: (@Sendable () -> Void)?
     var interruption: (@Sendable () -> Void)?
     var terminationImminent: (@Sendable () -> Void)?
     var peerCodeSigningError: (@Sendable () -> Void)?
@@ -38,11 +59,10 @@ final class _ConnectionHandlerState: Sendable {
 
   private struct State: Sendable {
     var handlers = Handlers()
-    var invalidationDelivered = false
-    var interruptionDelivered = false
-    var disconnectionWaiters: [CheckedContinuation<Void, Never>] = []
   }
 
+  let activated = Mutex(false)
+  let invalidation = XPCInvalidationChain()
   private let state = Mutex(State())
 
   private func withHandlers<T>(_ body: (inout Handlers) -> T) -> T {
@@ -68,35 +88,15 @@ final class _ConnectionHandlerState: Sendable {
     }
   }
 
-  /// Registers an invalidation handler. Invalidation is terminal and
-  /// delivered once, so a handler installed after delivery would otherwise
-  /// never run: returns `true` in that case and the caller invokes it.
+  /// Registers an invalidation handler; see `XPCInvalidationChain.add`.
   func chainInvalidation(_ handler: @escaping @Sendable () -> Void) -> Bool {
-    state.withLock { state in
-      if state.invalidationDelivered {
-        return true
-      }
-      let previous = state.handlers.invalidation
-      state.handlers.invalidation = {
-        previous?()
-        handler()
-      }
-      return false
-    }
+    invalidation.add(handler)
   }
 
-  /// Registers a continuation resumed when the connection goes down —
-  /// invalidation or interruption. Resumes immediately when either event
-  /// was already delivered.
+  /// Registers a continuation resumed when the connection goes down; see
+  /// `XPCInvalidationChain.waitForDisconnection`.
   func waitForDisconnection(continuation: CheckedContinuation<Void, Never>) {
-    let down: Bool = state.withLock { state in
-      if state.invalidationDelivered || state.interruptionDelivered { return true }
-      state.disconnectionWaiters.append(continuation)
-      return false
-    }
-    if down {
-      continuation.resume()
-    }
+    invalidation.waitForDisconnection(continuation: continuation)
   }
 
   /// Routes one connection event object to the matching dedicated handler.
@@ -108,32 +108,19 @@ final class _ConnectionHandlerState: Sendable {
     let snapshot = withHandlers { $0 }
     let raw = object
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
-      let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
-        state.invalidationDelivered = true
-        // Invalidation is terminal: nothing can invoke these two handlers
-        // afterwards. Dropping them here releases what they captured —
-        // including the connection itself, which service-host handlers
-        // capture strongly and which would otherwise form a
-        // connection -> event-handler block -> closure -> connection cycle.
-        state.handlers.invalidation = nil
-        state.handlers.peerCodeSigningError = nil
-        let waiters = state.disconnectionWaiters
-        state.disconnectionWaiters.removeAll()
-        return waiters
-      }
-      snapshot.invalidation?()
-      waiters.forEach { $0.resume() }
+      // Invalidation is terminal: nothing can invoke the peer-code-signing
+      // handler afterwards. Dropping it here releases what it captured —
+      // including the connection itself, which service-host handlers capture
+      // strongly and which would otherwise form a connection ->
+      // event-handler block -> closure -> connection cycle. (The invalidation
+      // chain clears itself on delivery.)
+      withHandlers { $0 = Handlers() }
+      invalidation.take()()
       return
     }
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INTERRUPTED) {
-      let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
-        state.interruptionDelivered = true
-        let waiters = state.disconnectionWaiters
-        state.disconnectionWaiters.removeAll()
-        return waiters
-      }
+      invalidation.markDisconnected()
       snapshot.interruption?()
-      waiters.forEach { $0.resume() }
       return
     }
     if xpc_equal(raw, XPC_ERROR_TERMINATION_IMMINENT) {
@@ -246,47 +233,22 @@ extension XPCConnection {
 
 }
 
-/// Signals to launchd that this process is busy. While a transaction is
-/// open the service is not considered idle-eligible. (C: xpc_transaction_begin)
-public func xpcTransactionBegin() {
-  xpc_transaction_begin()
-}
-
-/// Signals that a previously opened transaction finished. (C: xpc_transaction_end)
-public func xpcTransactionEnd() {
-  xpc_transaction_end()
-}
-
 extension XPCConnection {
-
+  /// Native diagnostic for a terminally invalid connection, when available.
   public var invalidationReason: String? {
-    if let s = xpc_connection_copy_invalidation_reason(xpc_object) {
-      String(cString: s)
-    } else {
-      nil
-    }
+    guard let reason = xpc_connection_copy_invalidation_reason(xpc_object) else { return nil }
+    defer { free(reason) }
+    return String(cString: reason)
   }
 }
 
 extension XPCConnection {
-  /// The reason an asynchronous send failed. A named service connection may
-  /// recover from `.interrupted` on a later send (launchd relaunches the
-  /// service); `.invalid` and `.peerCodeSigningRequirement` are terminal,
-  /// though retries may still cover brief cold-start or registration gaps.
-  public enum ConnectionError: Error, Sendable {
-    case invalid
-    case interrupted
-    /// The peer failed this connection's code signing requirement
-    /// (`XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT`); XPC delivers the error
-    /// through the reply path as well, so sends surface it here.
-    case peerCodeSigningRequirement
-  }
-
   public func sendAndForget(message: XPCDictionary) {
     xpc_connection_send_message(xpc_object, message.xpcObject)
   }
 
-  private static func connectionError(forReply raw: xpc_object_t) -> ConnectionError? {
+  /// Maps a reply-path error object to the backend-agnostic channel error.
+  private static func channelError(forReply raw: xpc_object_t) -> XPCChannelError? {
     if xpc_equal(raw, XPC_ERROR_CONNECTION_INVALID) {
       return .invalid
     }
@@ -299,32 +261,42 @@ extension XPCConnection {
     return nil
   }
 
+  /// Sends `message` and awaits its reply. Suspending on a cancelled task
+  /// throws `CancellationError` without retracting the request: the reply,
+  /// when it eventually arrives, is dropped. Messages sent before
+  /// `activate()` are buffered by libxpc and issued on activation.
   public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
-    async throws(ConnectionError)
-    -> xpc_object_t
+    async throws -> xpc_object_t
   {
-    let boxed = await withCheckedContinuation { continuation in
-      xpc_connection_send_message_with_reply(
-        xpc_object,
-        message.xpcObject,
-        replyQueue,
-        { continuation.resume(returning: SendableXPCObject($0)) }
-      )
+    let sink = XPCSendSink()
+    let boxed = try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        sink.install(continuation)
+        xpc_connection_send_message_with_reply(
+          xpc_object,
+          message.xpcObject,
+          replyQueue,
+          { raw in
+            if let error = Self.channelError(forReply: raw) {
+              sink.finish(.failure(error))
+            } else {
+              sink.finish(.reply(SendableXPCObject(raw)))
+            }
+          })
+      }
+    } onCancel: {
+      sink.finish(.failure(CancellationError()))
     }
-    let r = boxed.raw
-    if let error = Self.connectionError(forReply: r) {
-      throw error
-    }
-    return r
+    return boxed.raw
   }
 
   @available(*, noasync)
-  public func send(message: XPCDictionary, replyQueue: DispatchQueue? = nil)
-    throws(ConnectionError)
+  public func send(message: XPCDictionary)
+    throws(XPCChannelError)
     -> xpc_object_t
   {
     let r = xpc_connection_send_message_with_reply_sync(xpc_object, message.xpcObject)
-    if let error = Self.connectionError(forReply: r) {
+    if let error = Self.channelError(forReply: r) {
       throw error
     }
     return r
@@ -334,6 +306,21 @@ extension XPCConnection {
 
 extension XPCConnection {
   public func activate() {
+    guard
+      _handlerState.activated.withLock({ activated in
+        if activated { return false }
+        activated = true
+        return true
+      })
+    else { return }
+    // libxpc traps (_xpc_api_misuse, "Activation of a connection without an
+    // event handler.") when a connection is activated before any event
+    // handler was installed. Install the routing handler eagerly; a later
+    // setEventHandler replaces it with no state loss (both capture the same
+    // handler-state box).
+    xpc_connection_set_event_handler(xpc_object) { [state = _handlerState] object in
+      state.route(object)
+    }
     xpc_connection_activate(xpc_object)
   }
 
@@ -347,7 +334,7 @@ extension XPCConnection {
   /// The process identifier of the peer, or a value without meaning if the
   /// connection has no peer yet. Primary input for peer validation.
   public var pid: pid_t {
-    xpc_connection_get_pid(xpc_object)
+    peerIdentity?.pid ?? xpc_connection_get_pid(xpc_object)
   }
 }
 
@@ -373,54 +360,47 @@ extension XPCConnection {
 
   /// Effective user ID of the peer.
   public var euid: uid_t {
-    xpc_connection_get_euid(xpc_object)
+    peerIdentity?.euid ?? xpc_connection_get_euid(xpc_object)
   }
 
   /// Effective group ID of the peer.
   public var egid: gid_t {
-    xpc_connection_get_egid(xpc_object)
+    peerIdentity?.egid ?? xpc_connection_get_egid(xpc_object)
   }
 
   /// Audit session ID of the peer.
   public var asid: au_asid_t {
-    xpc_connection_get_asid(xpc_object)
+    peerIdentity?.asid ?? xpc_connection_get_asid(xpc_object)
   }
 
 }
 
 extension XPCConnection {
-  /// The reason a peer requirement could not be installed on this connection.
-  public struct PeerRequirementError: Error, Sendable {
-    /// The raw status returned by XPC (errno-style, e.g. `ENOTSUP` on
-    /// platforms without code signing requirement support).
-    public let status: Int32
-  }
-
   private func checkPeerRequirementStatus(
     _ status: Int32
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     if status != 0 {
-      throw PeerRequirementError(status: status)
+      throw XPCPeerRequirementError(status: status)
     }
   }
 
   public func setPeerCodeSigningRequirement(
     _ requirement: String
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_code_signing_requirement(xpc_object, requirement))
   }
 
   public func setPeerEntitlementExistsRequirement(
     _ entitlement: String
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_entitlement_exists_requirement(xpc_object, entitlement))
   }
 
   private func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, object: xpc_object_t
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_entitlement_matches_value_requirement(
         xpc_object, entitlement, object))
@@ -428,28 +408,28 @@ extension XPCConnection {
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Int64
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try setPeerEntitlementMatchesValueRequirement(
       entitlement, object: xpc_int64_create(value))
   }
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: Bool
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try setPeerEntitlementMatchesValueRequirement(
       entitlement, object: value ? XPC_BOOL_TRUE : XPC_BOOL_FALSE)
   }
 
   public func setPeerEntitlementMatchesValueRequirement(
     _ entitlement: String, value: String
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try setPeerEntitlementMatchesValueRequirement(
       entitlement, object: xpc_string_create(value))
   }
 
   private func setPeerLightweightCodeRequirement(
     _ requirement: xpc_object_t
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_lightweight_code_requirement(
         xpc_object, requirement))
@@ -457,14 +437,14 @@ extension XPCConnection {
 
   public func setPeerPlatformIdentityRequirement(
     _ signingIdentifier: String?
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_platform_identity_requirement(xpc_object, signingIdentifier))
   }
 
   public func setPeerTeamIdentityRequirement(
     _ teamIdentifier: String?
-  ) throws(PeerRequirementError) {
+  ) throws(XPCPeerRequirementError) {
     try checkPeerRequirementStatus(
       xpc_connection_set_peer_team_identity_requirement(xpc_object, teamIdentifier))
   }
@@ -482,4 +462,40 @@ extension XPCConnection: XPCMarshal {
     }
     return XPCConnection(xpc_object: xpc_connection_create_from_endpoint(object))
   }
+}
+
+extension XPCConnection {
+  package func applyPeerCodeSigningRequirement(
+    _ requirement: String?
+  ) throws(XPCPeerRequirementError) {
+    guard let requirement else { return }
+    try setPeerCodeSigningRequirement(requirement)
+  }
+}
+
+extension XPCConnection {
+  func setIncomingHandler(_ handler: @escaping @Sendable (XPCIncomingMessage) -> Void) {
+    setEventHandler { object in
+      guard xpc_get_type(object) == XPC_TYPE_DICTIONARY else { return }
+      // libxpc handles are thread-safe: the box carries the raw handle
+      // across the reply closure's isolation boundary.
+      let box = SendableXPCObject(object)
+      handler(
+        XPCIncomingMessage(
+          payload: box.raw,
+          replyer: { replyPayload in
+            let received = XPCDictionary(box.raw)
+            guard var reply = XPCDictionary(replyTo: XPCDictionary(box.raw)),
+              let remote = received.remoteConnection
+            else { return }
+            // create_reply only binds the destination; merge the envelope
+            // payload keys into it before sending.
+            XPCDictionary(replyPayload).forEach { key, value in
+              reply[key] = value
+            }
+            remote.sendAndForget(message: reply)
+          }))
+    }
+  }
+
 }

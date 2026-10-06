@@ -3,6 +3,7 @@
 import Distributed
 import SwiftXPC
 import Testing
+import Synchronization
 
 @testable import DistributedXPC
 @testable import SwiftXPC
@@ -29,6 +30,42 @@ distributed actor SampleReplyActorWithoutMetadata {
   distributed func replyError() throws(SampleReplyError) -> String {
     throw SampleReplyError.boom
   }
+}
+
+@XPCService
+distributed actor CancellationReplyRoot: XPCRootActor {
+  typealias ActorSystem = XPCDistributedActorSystem
+
+  distributed func cancelValue() throws -> String {
+    withUnsafeCurrentTask { $0?.cancel() }
+    try Task.checkCancellation()
+    return "unreachable"
+  }
+
+  distributed func cancelVoid() throws {
+    withUnsafeCurrentTask { $0?.cancel() }
+    try Task.checkCancellation()
+  }
+
+  distributed func ping() -> String { "alive" }
+}
+
+@Test(arguments: XPCChannelTransport.allCases, [false, true])
+func ServiceTaskCancellationReachesCaller(
+  transport: XPCChannelTransport, returningVoid: Bool
+) async throws {
+  let service = try xpcTest(
+    CancellationReplyRoot.self, transport: transport, watchdog: .seconds(10))
+  defer { service.close() }
+  await #expect(throws: CancellationError.self) {
+    if returningVoid {
+      try await service.client.root.cancelVoid()
+    } else {
+      _ = try await service.client.root.cancelValue()
+    }
+  }
+  // Cancelling one invocation must not terminate its channel or the next task.
+  #expect(try await service.client.root.ping() == "alive")
 }
 
 @Test func DecodeReplyReturnsValue() throws {
@@ -106,7 +143,7 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeRemoteCallReplyUsesMetadataFallbackThrownErrorType() throws {
-  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
+  let system = XPCDistributedActorSystem()
   _ = SampleReplyMetadataActor(actorSystem: system)
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
@@ -126,7 +163,7 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @Test func DecodeRemoteCallReplyDoesNotRequireMetadataForMarshalableError() throws {
-  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
+  let system = XPCDistributedActorSystem()
   _ = SampleReplyActorWithoutMetadata(actorSystem: system)
   let envelope = XPCReplyEnvelope(
     kind: .throwError,
@@ -176,12 +213,12 @@ distributed actor SampleReplyActorWithoutMetadata {
   // "有载荷且为 null",不得折叠成"无载荷"(否则客户端报 missingPayload)。
   let envelope = XPCReplyEnvelope(
     kind: .returnValue,
-    payload: SwiftXPC.xpcNullCreate())
+    payload: xpc_null_create())
 
   let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
   #expect(decoded.kind == .returnValue)
   #expect(decoded.payload != nil)
-  #expect(SwiftXPC.xpcGetType(decoded.payload!) == SwiftXPC.xpcTypeNull)
+  #expect(xpc_get_type(decoded.payload!) == XPC_TYPE_NULL)
 }
 
 @Test func ReplyEnvelopeRoundTripsAbsentPayload() throws {
@@ -190,4 +227,65 @@ distributed actor SampleReplyActorWithoutMetadata {
   let decoded = try XPCReplyEnvelope.unmarshal(from: envelope.marshal())
   #expect(decoded.kind == .returnVoid)
   #expect(decoded.payload == nil)
+}
+
+private enum UnencodableReplyError: Error, XPCMarshal {
+  case failure
+  func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    throw .missingKey("intentional encoding failure")
+  }
+  static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self { .failure }
+}
+
+@Test func ErrorEncodingFailureStillCompletesReply() throws {
+  let replies = Mutex<[SendableXPCObject]>([])
+  let message = XPCIncomingMessage(payload: XPCDictionary().xpcObject) { reply in
+    replies.withLock { $0.append(SendableXPCObject(reply)) }
+  }
+  XPCDistributedActorSystem().replyToFailure(UnencodableReplyError.failure, message: message)
+  #expect(replies.withLock { $0.count } == 1)
+  let raw = try #require(replies.withLock { $0.first })
+  let envelope = try XPCReplyEnvelope.unmarshal(from: raw.raw)
+  #expect(envelope.kind == .throwError)
+  #expect(throws: XPCRemoteCallError.missingPayload(.throwError)) {
+    try envelope.decodeReturnVoid(throwing: UnencodableReplyError.self)
+  }
+}
+
+@Test func NonmarshalableFailureStillCompletesReply() throws {
+  struct PlainFailure: Error {}
+  let replies = Mutex<[SendableXPCObject]>([])
+  let message = XPCIncomingMessage(payload: XPCDictionary().xpcObject) { reply in
+    replies.withLock { $0.append(SendableXPCObject(reply)) }
+  }
+  XPCDistributedActorSystem().replyToFailure(PlainFailure(), message: message)
+  let raw = try #require(replies.withLock { $0.first })
+  let envelope = try XPCReplyEnvelope.unmarshal(from: raw.raw)
+  let error = try XPCDispatchError.unmarshal(from: #require(envelope.payload))
+  guard case .targetExecutionFailed = error else {
+    Issue.record("Unexpected fallback error: \(error)")
+    return
+  }
+}
+
+@Test func CancellationFailureStillCompletesReply() throws {
+  let replies = Mutex<[SendableXPCObject]>([])
+  let message = XPCIncomingMessage(payload: XPCDictionary().xpcObject) { reply in
+    replies.withLock { $0.append(SendableXPCObject(reply)) }
+  }
+  XPCDistributedActorSystem().replyToFailure(CancellationError(), message: message)
+  #expect(replies.withLock { $0.count } == 1)
+  let raw = try #require(replies.withLock { $0.first })
+  let envelope = try XPCReplyEnvelope.unmarshal(from: raw.raw)
+  #expect(envelope.kind == .cancelled)
+  #expect(envelope.payload == nil)
+  #expect(throws: CancellationError.self) {
+    let _: String = try envelope.decodeReturnValue(
+      throwing: SampleReplyError.self, returning: String.self,
+      fallbackErrorType: SampleReplyError.self)
+  }
+  #expect(throws: CancellationError.self) {
+    try envelope.decodeReturnVoid(
+      throwing: SampleReplyError.self, fallbackErrorType: SampleReplyError.self)
+  }
 }

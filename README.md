@@ -107,6 +107,11 @@ clients explicitly; it cannot be dialed by a service name.
 runs the cooperative shutdown hooks and invalidates the service registry.
 Hosted entry points also exit the process; embedders control that policy.
 
+A standalone `XPCDistributedActorSystem()` is intended for process/static
+lifetime: its registry retains actors, so dropping external references does not
+tear it down. For a service-owned registry, use `XPCActorService`; ending the
+service releases its registry. Proxy systems follow their outbound channel.
+
 ## Breaking migration
 
 - Replace `any XPCMessageChannel` and `XPCPeerContext` with `XPCChannel`.

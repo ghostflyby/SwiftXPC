@@ -66,6 +66,7 @@ requirement 接口；accepted 身份快照保留在 native connection。C 与 Se
   已 claim 的回调可在取消返回后结束，关闭 host 会拒绝其迟到绑定；重叠 activate 抛 inProgress。
 - dialed Session 的创建、handler 安装和原生激活在 control lock 外执行；activating 状态
   唯一指定执行方。并发 cancel 立即终止库层通道、释放发送等待者，由激活方完成原生取消。
+- Session 替换或取消 incoming handler 时，锁内取走旧 closure，锁外释放，允许 captures 析构重入 cancel。
 - host 的取消/关闭状态与 shutdown waiters 由同一把锁维护；bare cancel 原子地取走自己的
   waiters，不会清理后来 shutdown request 注册的 waiters。恢复 continuation 与取消 peer 均在锁外。
 - listener 的 Session handler 配置仍在 accept callback 内完成；交付排到同一 target queue，确保
@@ -106,6 +107,8 @@ let actor = try Worker.unmarshal(from: payload, transport: .session)
 `XPCChannel` 是拥有资源的引用类型，最后一个 channel 引用销毁时取消 native channel。
 actor system 保留所用的 channel，省去 `ownsConnection` / `allowsChildReclamation` 配置组合。
 本地 registry 在 export peers 全部 drain 后尝试释放子 actor 的 pin；root 保留至 service 结束。
+独立构造的本地 registry 按进程/静态生命周期使用，丢弃外部引用不会清理其持有的 actor；
+需要随服务结束清理时使用 `XPCActorService`。代理 system 则随其 outbound channel 生命周期结束。
 
 ## 破坏性迁移
 

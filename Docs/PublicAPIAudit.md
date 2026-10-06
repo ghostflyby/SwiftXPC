@@ -153,7 +153,7 @@ let listener = try XPCChannelAcceptor(
 
 ## 验证与边界
 
-- warnings-as-errors 全量测试：主套件 169 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
+- warnings-as-errors 全量测试：主套件 170 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
 - 新增/调整测试覆盖 native audit → binding → notification → message 的顺序、Session false/throw
   原生拒绝、两个后端的绑定失败与 native rejection 区分、直接 Session conformer、service 持有及关闭 listeners。
 - Session 激活的同步取消/重入、激活过程中并发取消、创建失败后的发送结束，以及 shutdown 管线期间
@@ -165,9 +165,12 @@ let listener = try XPCChannelAcceptor(
 - `swift format lint --strict --recursive Sources Tests` 与 `git diff --check` 通过。
 
 这次没有改变业务载荷布局；取消回复扩展使 wire version 升至 2，需要两端同时升级。没有把 anonymous export endpoint 的 capability 模型升级为
-named listener 的 typed peer requirement 策略。新增 macOS 26 constructor 已通过包外类型检查；
-这轮明确接受真实 launchd named listener 的签名策略集成测试缺口。现有测试使用匿名监听器；
-仍需用 launchd 注册的服务和签名匹配/不匹配进程验证 kernel enforcement，当前类型检查不能代替它。
+named listener 的 typed peer requirement 策略。macOS 26 constructor 除包外类型检查外，现有
+`@available(macOS 26.0, *)` 的真实 launchd 集成测试。fixture 直接调用带 requirement 的构造器；
+临时注册 named Mach service，用 ad-hoc 签名客户端验证 `.hasEntitlement`：携带 debug entitlement
+的 peer 可以收发，缺失该 entitlement 的 peer 被拒绝，且没有进入准入/交付/拒绝钩子；随后匹配 peer
+仍可调用。测试不依赖开发者证书，卸载 job 并清理临时文件，超时必失败。
+覆盖的是该构造器安装 typed requirement 的内核强制行为，不据此宣称所有 team/platform requirement 均已集成覆盖。
 
 
 ## 后续 P2/P3 核验（2026-10-03）

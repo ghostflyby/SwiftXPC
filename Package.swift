@@ -59,7 +59,13 @@ let package = Package(
     ),
     .testTarget(
       name: "SwiftXPCTests",
-      dependencies: ["SwiftXPC", "DistributedXPC", "SwiftXPCMacros"]
+      dependencies: ["SwiftXPC", "DistributedXPC", "SwiftXPCMacros", "XPCPeerRequirementProbe"]
+    ),
+    // Test-only launchd server and signed clients; no library API additions.
+    .executableTarget(
+      name: "XPCPeerRequirementProbe",
+      dependencies: ["SwiftXPC"],
+      path: "Tests/XPCPeerRequirementProbe"
     ),
     // Own test process: the parameterized backend-matrix suite churns many
     // anonymous listeners, and each test bundle runs in a fresh process with

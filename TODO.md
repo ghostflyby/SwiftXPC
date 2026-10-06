@@ -480,9 +480,10 @@ launchd on-demand 服务的真实重启语义（bundle 探针实跑验证，含�
 - [x] **双 transport runtime**（2026-10-03）：C 和 Session 经具体 `XPCChannel` 门面统一；
   服务准入、actor registry、服务组装分别独立。准入协议按 C connection / Session request
   拆分；Session 使用原生 request accept/reject，不能安装旧 C 字符串 requirement。
-  macOS 26+ named Session listener 提供 `XPCPeerRequirement` 专用构造器，类型检查已覆盖；
-  暂接受真实 launchd 服务上签名匹配/不匹配的内核强制集成测试缺口，不宣称匿名 listener
-  具有同等策略。完整复审与迁移见 `Docs/DualTransportRefactorModel.md`、`Docs/PublicAPIAudit.md`。
+  macOS 26+ named Session listener 提供 `XPCPeerRequirement` 专用构造器；类型检查及带 `@available`
+  的真实 launchd 集成测试已覆盖（2026-10-06）：签名客户端携带/缺失 required entitlement 分别
+  放行/内核拒绝，不宣称匿名 listener 具有同等策略，也不把单条策略覆盖推广到全部 team/platform 策略。
+  完整复审与迁移见 `Docs/DualTransportRefactorModel.md`、`Docs/PublicAPIAudit.md`。
 - [ ] `xpc_shmem_create/map`（可直接封装）：共享内存零拷贝传输，大 payload 场景。
 - [ ] mach send right 传递（`xpc_dictionary_set_mach_send/copy_mach_send`、
   `xpc_array/dictionary_create_connection`）。

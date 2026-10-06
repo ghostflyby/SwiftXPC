@@ -150,7 +150,7 @@ C 的字符串 requirement 留在 native connection 专用 API。Session 的 nat
 
 最终验证已通过：
 
-- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 169 tests；transport 套件 21 tests，
+- `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 170 tests；transport 套件 21 tests，
   新增准入与 binding 顺序 / 拒绝阶段测试运行四种 backend 组合；Session false/throw 原生拒绝覆盖两种 client backend。
 - `python3 Scripts/check-public-api.py` 运行包外正例、12 个反例及 public symbol graph；
   负例检查编译失败与诊断中的核心符号，不依赖具体措辞。symbol graph 仅检查 6 个 required / 3 个 removed 名称，
@@ -162,3 +162,8 @@ C 的字符串 requirement 留在 native connection 专用 API。Session 的 nat
 
 后续取消语义修复增加无载荷 `cancelled` 回复，wire version 升至 2，两端需同时升级。
 服务端 Task 的 CancellationError 在客户端保持为 CancellationError，不再转换成目标执行失败，且不关闭通道。
+
+macOS 26 typed requirement 的构造与运行时安装现由带 `@available` 的 launchd 集成测试覆盖：
+临时 named Session 服务对两种 ad-hoc 签名客户端执行 `.hasEntitlement` 策略，分别验证放行、
+内核拒绝不进入 Delegate/交付 handler，以及拒绝后服务仍可用。不需开发者证书，结束后卸载 job；
+该用例验证 requirement 的实际安装，不代替 team/platform 身份策略各自的集成矩阵。

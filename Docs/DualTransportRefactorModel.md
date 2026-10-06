@@ -107,8 +107,6 @@ let actor = try Worker.unmarshal(from: payload, transport: .session)
 `XPCChannel` 是拥有资源的引用类型，最后一个 channel 引用销毁时取消 native channel。
 actor system 保留所用的 channel，省去 `ownsConnection` / `allowsChildReclamation` 配置组合。
 本地 registry 在 export peers 全部 drain 后尝试释放子 actor 的 pin；root 保留至 service 结束。
-独立构造的本地 registry 按进程/静态生命周期使用，丢弃外部引用不会清理其持有的 actor；
-需要随服务结束清理时使用 `XPCActorService`。代理 system 则随其 outbound channel 生命周期结束。
 
 ## 破坏性迁移
 

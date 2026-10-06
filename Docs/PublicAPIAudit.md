@@ -74,7 +74,7 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `XPCRootActor.connect` 与 `XPCRootConnection.connect` | 只要 actor 的简洁用法，与需要 events/retry/close 的资源 handle 用法 | 保留这两种调用模式；不是两套连接实现。native C authentication 仅在 `using: XPCConnection` overload，通用 channel / transport connect 不再接收 C-only requirement 字符串 |
 | `XPCRootConnection.root/connection/events/close` | actor 调用、通道控制、观察断连、结束 stream 与连接 | 保留一个客户端 owner。`.ready` 只说明本地 proxy 已创建，不代表握手或 native connection 已建立；`.disconnected` 通知可用于重建 child 状态 |
 | `XPCRetryPolicy` 与 `retrying` | 调用方控制次数/backoff，处理可恢复 C interruption | 保留一个值与一种操作。`once/resilient` 是常用策略，不额外新增 retry controller 或 Session 重连模式 |
-| `XPCDistributedActorSystem` 的构造、transport、可选 connection | 本地 registry 与 remote proxy 两种 compiler runtime 用途；immutable import/export 后端策略 | 保留同一个编译器要求的 actor system。拆成两个 system 类型会扩散到 actor 的关联类型与跨服务 forwarding；只有 proxy 有 outbound connection，nil 在这里是实际状态，不是假身份能力。独立本地 registry 按进程/静态生命周期使用；服务拥有的 registry 由 `XPCActorService` 清理，不新增 system 关闭 API |
+| `XPCDistributedActorSystem` 的构造、transport、可选 connection | 本地 registry 与 remote proxy 两种 compiler runtime 用途；immutable import/export 后端策略 | 保留同一个编译器要求的 actor system。拆成两个 system 类型会扩散到 actor 的关联类型与跨服务 forwarding；只有 proxy 有 outbound connection，nil 在这里是实际状态，不是假身份能力 |
 | actor system 的 assign/resolve/ready/resign/encoder/remoteCall 等 | Swift DistributedActorSystem conformance，编译器直接依赖 | 必须 public，不能用隐藏内部路由来替代。内部 bind/export/registry/metadata lookup 不增加 public 管理器 |
 | `requestServiceShutdown` | actor 业务代码触发所属服务的 cooperative shutdown，而无须知道 listener / 进程入口 | 保留一个桥接操作；未挂载服务的 local/proxy system 不会拥有服务关闭入口 |
 | `XPCActorID` | actor identity 的可比较 wire 值与 root ID | 保留一个类型，不增加 per-peer context / root identity wrapper |

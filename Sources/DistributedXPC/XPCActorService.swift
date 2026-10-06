@@ -7,6 +7,8 @@ import Synchronization
 /// delegate governs both native admission and service lifecycle.
 /// Retain the service for its entire serving lifetime; it owns its listeners.
 /// Keeping only the host or root does not retain the service.
+/// Cancellation, cooperative shutdown, or deinitialization cleans up its registry
+/// and exported references; individual peer disconnections do not end the service.
 public final class XPCActorService<Root: XPCRootActor>: Sendable {
   public let root: Root
   public let host: XPCServiceHost

@@ -12,14 +12,12 @@ import XPC
 ///
 /// Every inbound XPC channel serves exactly one bound actor: the initial
 /// mach service channel serves a root actor (ID `.root`), and each exported
-/// actor reference mints its own channel. Outbound calls ride the named
-/// connection, which launchd re-establishes transparently after a service
-/// restart.
+/// actor reference mints its own channel. Named C connections may transparently
+/// re-establish after a service restart; Session channels never re-dial.
 ///
-/// Local registries retain registered actors and follow the XPC service's lifetime.
-/// `XPCActorService` tears down its registry when the service ends; standalone
-/// local registries are intended for process/static lifetime. Dropping external
-/// references does not tear them down. Proxy systems follow their outbound channel.
+/// Standalone local registries use process/static lifetime. Service-owned
+/// registries are cleaned up by `XPCActorService` when the service ends.
+/// Proxy systems retain their outbound channel and are invalidated when it ends.
 public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   public typealias ActorID = XPCActorID
   public typealias ResultHandler = XPCInvocationResultHandler
@@ -43,12 +41,15 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   /// Outbound routing exists only on proxy systems; local registries need no channel.
   public let connection: XPCChannel?
 
-  /// Creates a local registry for actors and their exported references.
-  /// Use for process/static lifetime; use `XPCActorService` for an owned service registry.
+  /// Creates a local registry for process/static lifetime.
+  /// Registered actors keep the registry alive; dropping external references
+  /// does not tear it down. Use `XPCActorService` for a service-owned registry.
   public convenience init(transport: XPCChannelTransport = .cConnection) {
     self.init(connection: nil, transport: transport)
   }
 
+  /// Creates a proxy system that retains the outbound channel.
+  /// Terminal channel invalidation releases its registry and exported references.
   public convenience init(connection: XPCChannel) {
     self.init(connection: connection, transport: connection.transport)
   }

@@ -12,7 +12,7 @@ DistributedXPCDemo.app/
 Build the bundle:
 
 ```sh
-sh Examples/DistributedXPCDemo/Scripts/build-demo-bundle.sh
+bash Examples/DistributedXPCDemo/Scripts/build-demo-bundle.sh
 ```
 
 The script ad-hoc signs the app and XPC service by default. Set
@@ -25,12 +25,14 @@ Run the demo app executable from the assembled bundle:
 Examples/DistributedXPCDemo/.build/demo/DistributedXPCDemo.app/Contents/MacOS/DemoApp
 ```
 
+Pass `--session` to run the same embedded XPC service calls over the Session backend.
+
 The shared actors use `@XPCService` to generate distributed-target metadata and
 actor-reference marshaling. No experimental SPI or hand-written metadata table
 is required.
 
 `DemoRoot` is the service root actor hosted by the `DemoServiceMain` `XPCApp` entry point.
-`DemoApp` connects with `DemoRoot.connect(toService:)`, obtains the remote root proxy,
+`DemoApp` connects with `XPCRootConnection<DemoRoot>.connect(toService:)`, obtains the remote root proxy,
 and calls `makeGreeter()`; the returned `DemoGreeter` lives on its own independent
 XPC channel created by actor-reference export. The greet/ping/error calls all run
 across process boundaries.

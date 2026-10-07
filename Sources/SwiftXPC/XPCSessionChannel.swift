@@ -110,6 +110,10 @@ final class XPCSessionChannel: @unchecked Sendable {
     self.init(makingSession: { try XPCSession(machService: machServiceName, options: [.inactive]) })
   }
 
+  convenience init(xpcServiceName: String) {
+    self.init(makingSession: { try XPCSession(xpcService: xpcServiceName, options: [.inactive]) })
+  }
+
   // Injectable native activation keeps reentrant callback/race tests deterministic.
   init(
     makingSession: @escaping @Sendable () throws -> XPCSession,

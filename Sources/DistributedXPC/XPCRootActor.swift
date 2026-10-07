@@ -91,12 +91,20 @@ public func xpcMain<Root>(
 }
 
 extension XPCRootActor {
-  /// Actor-only connection convenience. Use `XPCRootConnection` when lifecycle
-  /// observation, explicit close, or retry policy is required.
+  /// Connects to an XPC service by bundle identifier, such as an embedded `.xpc` bundle.
+  /// Use `XPCRootConnection` for lifecycle observation, explicit close, or retries.
   public static func connect(
     toService serviceName: String, transport: XPCChannelTransport = .cConnection
   ) throws -> Self {
     try XPCRootConnection<Self>.connect(toService: serviceName, transport: transport).root
+  }
+
+  /// Connects to a name advertised in a launchd job's `MachServices` dictionary.
+  /// Use `XPCRootConnection` for lifecycle observation, explicit close, or retries.
+  public static func connect(
+    machService serviceName: String, transport: XPCChannelTransport = .cConnection
+  ) throws -> Self {
+    try XPCRootConnection<Self>.connect(machService: serviceName, transport: transport).root
   }
 
   public static func connect(using channel: XPCChannel) throws -> Self {

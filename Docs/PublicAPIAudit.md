@@ -42,7 +42,7 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `XPCChannel.connection` | 显式访问 C wrapper 上的 native 专属能力，支持调用方已有 C 代码 | 保留唯一的可选后端入口；删除 channel 上复制的 `pid/euid/egid/asid`、requirement 安装及 public interruption 注册，不再复制一组带 nil/no-op 的 C API |
 | `canReconnect` | 原先只是 `transport == .cConnection` 的计算别名；也不保证 endpoint listener 仍存活 | 删除。root retry 内部使用 backend 与实际 `.interrupted` outcome 决定，不把它公开为连接能力承诺 |
 | `XPCIncomingMessage.payload/reply` | 异步、跨 handler 返回后的 reply capability；C 与 Session reply 机制不同 | 保留为一个值，reply 状态由所有副本共享。直接暴露两个 native reply 方式会让每个服务重复分支 |
-| `XPCChannelTransport.channel(dialing:/machService:)` | endpoint 与 named service 两种 native 地址；客户端及 actor import 的运行时后端选择 | 保留两种地址入口，统一验证 endpoint 类型。不要把 Delegate 的静态后端约束推广为整个 actor runtime 的泛型层级 |
+| `XPCChannelTransport.channel(dialing:/xpcService:/machService:)` | endpoint、XPC service 与 Mach service 三种 native 地址；客户端及 actor import 的运行时后端选择 | 各签名明确 native 地址类别：XPC service 用 bundle identifier，Mach service 用 launchd `MachServices` 名。后端选择不改变寻址空间；统一验证 endpoint 类型 |
 | acceptor 的 `wireEndpoint`、`activate/cancel` | 导出可交换 token、开始监听、停止监听；与既有 peer 通道生命周期不同 | 保留。public handler 在构造时固定；并发激活未完成时抛 `ActivationError.inProgress`，完成后的重入幂等。取消阻止新的 callback claim，已 claim 的回调允许结束；host 关闭拒绝迟到绑定。仅 package 内为 export session 的分阶段初始化保留安装步骤 |
 | `XPCConnection` 的 native 构造、event handler、target queue、activate/cancel | 未采用 owned channel 时的 C 使用模式；native 事件、队列与 listener 选项不能由通用 channel 代替 | 保留为一个低层 surface。不是另一个所有权 facade，不在通用 channel 复制这些成员 |
 | native async / sync / forget send | await reply、阻塞 reply、无 reply；sync API 有独立使用场景 | 保留；删除 sync send 的 `replyQueue`，原生 sync API 无队列参数且此前传入值从未被使用 |
@@ -71,7 +71,7 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `XPCServiceHost` 的 routing / completion 构造参数 | raw service 自定义路由、embedding 的关闭完成动作 | 收拢到一次构造。删除 `setPeerHandler/setShutdownCompletion`；actor service 的 cleanup 不会被外部 replacement setter 覆盖 |
 | `XPCRootActor` / `XPCExportableActor` | root 有初始化约束；exportable child actor 只需可编码引用 | 保留两种协议，不能将所有 child 都要求为 root。macro 自动实现 export conformance |
 | `XPCExportableActor.unmarshal(from:transport:)` | runtime 之外单独导入时指定后端；常规 unmarshal 从 runtime 解码上下文继承 | 保留显式入口；没有重新引入进程全局 default / policy builder |
-| `XPCRootActor.connect` 与 `XPCRootConnection.connect` | 只要 actor 的简洁用法，与需要 events/retry/close 的资源 handle 用法 | 保留这两种调用模式；不是两套连接实现。native C authentication 仅在 `using: XPCConnection` overload，通用 channel / transport connect 不再接收 C-only requirement 字符串 |
+| `XPCRootActor.connect` 与 `XPCRootConnection.connect` | 只要 actor 的简洁用法，与需要 events/retry/close 的资源 handle 用法 | 保留这两种调用模式；不是两套连接实现。`toService:` 保持 XPC service 寻址，`machService:` 显式选择 Mach service；transport 只选择后端。native C authentication 仅在 `using: XPCConnection` overload，通用 channel / transport connect 不再接收 C-only requirement 字符串 |
 | `XPCRootConnection.root/connection/events/close` | actor 调用、通道控制、观察断连、结束 stream 与连接 | 保留一个客户端 owner。`.ready` 只说明本地 proxy 已创建，不代表握手或 native connection 已建立；`.disconnected` 通知可用于重建 child 状态 |
 | `XPCRetryPolicy` 与 `retrying` | 调用方控制次数/backoff，处理可恢复 C interruption | 保留一个值与一种操作。`once/resilient` 是常用策略，不额外新增 retry controller 或 Session 重连模式 |
 | `XPCDistributedActorSystem` 的构造、transport、可选 connection | 本地 registry 与 remote proxy 两种 compiler runtime 用途；immutable import/export 后端策略 | 保留同一个编译器要求的 actor system。拆成两个 system 类型会扩散到 actor 的关联类型与跨服务 forwarding；只有 proxy 有 outbound connection，nil 在这里是实际状态，不是假身份能力 |

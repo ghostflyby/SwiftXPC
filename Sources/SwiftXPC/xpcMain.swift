@@ -6,11 +6,17 @@ import XPC
 private let mainHandler = Mutex<@Sendable (XPCConnection) -> Void>({ _ in })
 
 private func handleIncomingConnection(_ connection: xpc_connection_t) {
-  mainHandler.withLock { $0 }(XPCConnection(xpc_object: connection))
+  let wrapped = XPCConnection(xpc_object: connection)
+  // xpc_main forwards listener-level error objects too; only real peer
+  // connections carry accept semantics.
+  guard wrapped.isConnectionObject else { return }
+  let handler = mainHandler.withLock { $0 }
+  handler(wrapped)
 }
 
 /// Runs the XPC service event loop, invoking `handler` for every accepted
-/// peer connection. Never returns. Must run on the main thread.
+/// peer connection. Never returns. Must run on the main thread in a
+/// launchd-managed XPC service; invoking it in an ordinary process aborts.
 ///
 /// For distributed actor services prefer the `xpcMain` overloads in
 /// `DistributedXPC`, which layer root-actor bootstrapping on top of this

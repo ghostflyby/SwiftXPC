@@ -11,9 +11,9 @@ import XPC
 /// `XPCExportableActor` instead.
 public protocol XPCMarshal {
   /// Marshals the value into an XPC object.
-  func marshal() throws(XPCMarshalError) -> XPCObject
+  func marshal() throws(XPCMarshalError) -> xpc_object_t
   /// Unmarshals a value from an XPC object.
-  static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self
+  static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self
 }
 
 @attached(
@@ -106,21 +106,21 @@ public struct XPCMarshalError: Error, CustomStringConvertible, Sendable, Equatab
 }
 
 extension FileHandle: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     guard let object = xpc_fd_create(self.fileDescriptor) else {
       // xpc_fd_create returns NULL for an invalid descriptor (e.g. closed).
       throw .typeMismatch(
         expected: "valid file descriptor", actual: "invalid fd \(self.fileDescriptor)")
     }
-    return XPCObject(xpc_object: object)
+    return object
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
-    let actual = xpc_get_type(object.xpc_object)
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
+    let actual = xpc_get_type(object)
     guard actual == XPC_TYPE_FD else {
       throw typeMismatch(expected: XPC_TYPE_FD, actual: actual)
     }
-    return .init(fileDescriptor: xpc_fd_dup(object.xpc_object), closeOnDealloc: true)
+    return .init(fileDescriptor: xpc_fd_dup(object), closeOnDealloc: true)
   }
 }
 
@@ -133,78 +133,78 @@ func typeMismatch(
 }
 
 func ensureType(
-  _ object: XPCObject, is expected: xpc_type_t
+  _ object: xpc_object_t, is expected: xpc_type_t
 ) throws(XPCMarshalError) {
-  let actual = xpc_get_type(object.xpc_object)
+  let actual = xpc_get_type(object)
   if actual != expected {
     throw typeMismatch(expected: expected, actual: actual)
   }
 }
 
 extension Bool: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: self ? XPC_BOOL_TRUE : XPC_BOOL_FALSE)
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    self ? XPC_BOOL_TRUE : XPC_BOOL_FALSE
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_BOOL)
-    return xpc_bool_get_value(object.xpc_object)
+    return xpc_bool_get_value(object)
   }
 }
 
 extension String: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: xpc_string_create(self))
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpc_string_create(self)
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_STRING)
-    let cString = xpc_string_get_string_ptr(object.xpc_object)!
+    let cString = xpc_string_get_string_ptr(object)!
     return String(cString: cString)
   }
 }
 
 extension Double: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: xpc_double_create(self))
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpc_double_create(self)
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DOUBLE)
-    return xpc_double_get_value(object.xpc_object)
+    return xpc_double_get_value(object)
   }
 }
 
 extension Float: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: xpc_double_create(Double(self)))
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpc_double_create(Double(self))
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DOUBLE)
-    return Float(xpc_double_get_value(object.xpc_object))
+    return Float(xpc_double_get_value(object))
   }
 }
 
 extension Int64: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: xpc_int64_create(self))
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpc_int64_create(self)
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_INT64)
-    return xpc_int64_get_value(object.xpc_object)
+    return xpc_int64_get_value(object)
   }
 }
 
 extension UInt64: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    XPCObject(xpc_object: xpc_uint64_create(self))
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    xpc_uint64_create(self)
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_UINT64)
-    return xpc_uint64_get_value(object.xpc_object)
+    return xpc_uint64_get_value(object)
   }
 }
 
 extension Int: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try Int64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try Int64.unmarshal(from: object)
     guard let converted = Int(exactly: v) else {
       throw .integerOutOfRange(type: "Int", value: String(v))
@@ -214,8 +214,8 @@ extension Int: XPCMarshal {
 }
 
 extension UInt: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try UInt64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try UInt64.unmarshal(from: object)
     guard let converted = UInt(exactly: v) else {
       throw .integerOutOfRange(type: "UInt", value: String(v))
@@ -225,8 +225,8 @@ extension UInt: XPCMarshal {
 }
 
 extension Int8: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try Int64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try Int64.unmarshal(from: object)
     guard let converted = Int8(exactly: v) else {
       throw .integerOutOfRange(type: "Int8", value: String(v))
@@ -236,8 +236,8 @@ extension Int8: XPCMarshal {
 }
 
 extension Int16: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try Int64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try Int64.unmarshal(from: object)
     guard let converted = Int16(exactly: v) else {
       throw .integerOutOfRange(type: "Int16", value: String(v))
@@ -247,8 +247,8 @@ extension Int16: XPCMarshal {
 }
 
 extension Int32: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try Int64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try Int64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try Int64.unmarshal(from: object)
     guard let converted = Int32(exactly: v) else {
       throw .integerOutOfRange(type: "Int32", value: String(v))
@@ -258,8 +258,8 @@ extension Int32: XPCMarshal {
 }
 
 extension UInt8: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try UInt64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try UInt64.unmarshal(from: object)
     guard let converted = UInt8(exactly: v) else {
       throw .integerOutOfRange(type: "UInt8", value: String(v))
@@ -269,8 +269,8 @@ extension UInt8: XPCMarshal {
 }
 
 extension UInt16: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try UInt64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try UInt64.unmarshal(from: object)
     guard let converted = UInt16(exactly: v) else {
       throw .integerOutOfRange(type: "UInt16", value: String(v))
@@ -280,8 +280,8 @@ extension UInt16: XPCMarshal {
 }
 
 extension UInt32: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject { try UInt64(self).marshal() }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t { try UInt64(self).marshal() }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     let v = try UInt64.unmarshal(from: object)
     guard let converted = UInt32(exactly: v) else {
       throw .integerOutOfRange(type: "UInt32", value: String(v))
@@ -291,20 +291,19 @@ extension UInt32: XPCMarshal {
 }
 
 extension Data: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
-    return XPCObject(
-      xpc_object: self.withUnsafeBytes { buffer in
-        xpc_data_create(buffer.baseAddress, buffer.count)
-      })
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
+    return self.withUnsafeBytes { buffer in
+      xpc_data_create(buffer.baseAddress, buffer.count)
+    }
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DATA)
-    let length = xpc_data_get_length(object.xpc_object)
+    let length = xpc_data_get_length(object)
     // xpc_data_get_bytes_ptr returns NULL for zero-length data; the empty
     // Data case must not dereference it.
     if length == 0 { return Data() }
-    guard let pointer = xpc_data_get_bytes_ptr(object.xpc_object) else {
+    guard let pointer = xpc_data_get_bytes_ptr(object) else {
       throw .typeMismatch(expected: "data bytes", actual: "null pointer")
     }
     return Data(bytes: pointer, count: length)
@@ -312,23 +311,23 @@ extension Data: XPCMarshal {
 }
 
 extension Date: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     return try self.timeIntervalSince1970.marshal()
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     return try Date(timeIntervalSince1970: Double.unmarshal(from: object))
   }
 }
 
 extension UUID: XPCMarshal {
 
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     var uuid = uuid
-    return XPCObject(xpc_object: xpc_uuid_create(&uuid))
+    return xpc_uuid_create(&uuid)
   }
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_UUID)
-    let bytes = xpc_uuid_get_bytes(object.xpc_object)
+    let bytes = xpc_uuid_get_bytes(object)
     return
       (bytes?.withMemoryRebound(to: uuid_t.self, capacity: 1) { ptr in
         UUID(uuid: ptr.pointee)
@@ -337,33 +336,33 @@ extension UUID: XPCMarshal {
 }
 
 extension Optional: XPCMarshal where Wrapped: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     switch self {
     case .some(let wrapped):
       return try wrapped.marshal()
     case .none:
-      return XPCObject(xpc_object: xpc_null_create())
+      return xpc_null_create()
     }
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Wrapped? {
-    if xpc_get_type(object.xpc_object) == XPC_TYPE_NULL { return nil }
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Wrapped? {
+    if xpc_get_type(object) == XPC_TYPE_NULL { return nil }
     return try Wrapped.unmarshal(from: object)
   }
 }
 
 extension Array: XPCMarshal where Element: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     var array = XPCArray()
     for item in self {
       array.append(try item.marshal())
     }
-    return XPCObject(xpc_object: array.xpc_object)
+    return array.xpcObject
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_ARRAY)
-    let raw = XPCArray(xpc_object: object.xpc_object)
+    let raw = XPCArray(object)
     var array = [Element]()
     let count = raw.count
     array.reserveCapacity(count)
@@ -376,22 +375,22 @@ extension Array: XPCMarshal where Element: XPCMarshal {
 }
 
 extension Dictionary: XPCMarshal where Key == String, Value: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     var dict = XPCDictionary()
     for (k, v) in self {
       dict[k] = try v.marshal()
     }
-    return XPCObject(xpc_object: dict.xpc_object)
+    return dict.xpcObject
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> Self {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError) -> Self {
     try ensureType(object, is: XPC_TYPE_DICTIONARY)
-    let xpcDict = XPCDictionary(xpc_object: object.xpc_object)
+    let xpcDict = XPCDictionary(object)
     var result: [String: Value] = [:]
     let count = xpcDict.keys.count
     result.reserveCapacity(count)
     for key in xpcDict.keys {
-      if let valueObject = xpcDict[key] {
+      if let valueObject = xpcDict[key, as: xpc_object_t.self] {
         let value = try Value.unmarshal(from: valueObject)
         result[key] = value
       }

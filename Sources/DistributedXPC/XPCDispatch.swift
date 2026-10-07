@@ -6,7 +6,8 @@ import SwiftXPC
 /// Errors produced while dispatching an inbound invocation on the service
 /// side. Surfaces to the caller inside a `.throwError` reply envelope;
 /// `targetExecutionFailed` additionally covers errors thrown by the target
-/// method itself when its typed error is not marshalable.
+/// method itself when its typed error is not marshalable. CancellationError
+/// uses a separate `.cancelled` reply and is restored directly on the caller.
 @XPCMarshal
 public enum XPCDispatchError: Error, Sendable, Equatable {
   case unknownActor(XPCActorID)
@@ -30,14 +31,21 @@ public struct XPCDistributedTargetMetadata {
   }
 }
 
-func parseTargetIdentifier(_ identifier: String) -> String? {
+func parseTargetIdentifier(
+  _ identifier: String,
+  matching metadata: [String: XPCDistributedTargetMetadata]? = nil
+) -> String? {
   // The class-name terminator `C` must be found left-to-right: return-type
   // components later in the mangled name (e.g. `AA0C4Note`) may also contain
   // a `C` followed by a digit, and a rightmost scan would mis-parse there.
   var searchStart = identifier.startIndex
   while let cIndex = identifier[searchStart...].firstIndex(of: "C") {
     if let parsed = parseMethodSuffix(identifier, from: identifier.index(after: cIndex)) {
-      return parsed
+      // Private contexts contain a hexadecimal discriminator that can look
+      // like a class terminator. Prefer candidates known by the actor table.
+      if metadata == nil || lookupMetadata(forMethod: parsed, in: metadata!) != nil {
+        return parsed
+      }
     }
     searchStart = identifier.index(after: cIndex)
   }

@@ -5,35 +5,24 @@ import Foundation
 import SwiftXPC
 import Synchronization
 
-/// The test coordinator for root-actor services: it owns a **simulated
-/// service process** — a long-lived actor system private to the
-/// coordinator (the `serviceHost` recipe: idle activated channel, child
-/// reclamation, `.root` reserved at creation), a **fresh** root instance
-/// constructed on it (never the process-global `XPCRootActor.shared`), and
-/// an anonymous listener — and coordinates the test's connection model:
-/// handing out the production client channel, dialing additional clients,
-/// and simulating service-side drops.
+/// Owns a production `XPCActorService`, an anonymous listener, and a client
+/// connection. Each coordinator has an independent root and actor registry.
+/// Additional clients share that coordinator's root.
 ///
-///     let service = try xpcTest(ServiceRoot.self, XPCServiceConfiguration(
+///     let service = try xpcTest(ServiceRoot.self, XPCConnectionServiceConfiguration(
 ///       onPeerAccept: { connection in /* audit hook fires here too */ }))
 ///     defer { service.close() }
 ///     let root = try await service.client.retrying { _ in
 ///       try await service.client.root.ping()
 ///     }
 ///
-/// Coordinators are fully isolated from one another — parallel-safe, no
-/// shared `.root` identity, no shared shutdown bridge — and each serves a
-/// fresh root. The process-global `XPCRootActor.shared` singleton
-/// (production semantics) is exercised by hosting
-/// `XPCServiceHost(rootType, delegate)` directly instead.
-///
 /// The client side is a full production `XPCRootConnection` — `root`,
 /// `events`, and `retrying` behave exactly as against a launchd service,
 /// with one documented difference: the channel dials the coordinator's own
-/// listener endpoint, so it survives peer drops (transparent re-dial) but
-/// dies permanently when the coordinator closes. Only a named-service
-/// connection also survives a full service restart. `dropServerPeer()`
-/// surfaces as `.disconnected` on `client.events`.
+/// listener endpoint. C channels survive peer drops through transparent re-dial;
+/// Session channels are terminal after a drop. Both end when the coordinator
+/// closes. Only a named C service connection survives a full service restart.
+/// `dropServerPeer()` surfaces as `.disconnected` on `client.events`.
 ///
 /// The test-only operations live here, not on the channel: `host` exposes
 /// the service host (cooperative `requestShutdown()` plus the shutdown
@@ -48,10 +37,11 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// The service host driving the coordinator's peers and shutdown
   /// pipeline.
   public let host: XPCServiceHost
+  /// The backend the coordinator serves and dials with.
+  private let service: XPCActorService<Root>
+  public let transport: XPCChannelTransport
 
-  private let listener: XPCConnection
-  private let system: XPCDistributedActorSystem
-  private let eventLog: XPCServiceEventLog?
+  private let acceptor: XPCChannelAcceptor
   private let closed = Mutex(false)
   private struct CloseWaiterState: Sendable {
     var notified = false
@@ -63,56 +53,26 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// Retains the latest server-side peer so tests can simulate the service
   /// dropping a client.
   private final class ServerPeerBox: Sendable {
-    let peer = Mutex<XPCConnection?>(nil)
+    let peer = Mutex<(XPCChannel)?>(nil)
   }
   private let serverPeer: ServerPeerBox
 
-  /// - Parameters:
-  ///   - rootType: the concrete root actor type served on the channel.
-  ///   - delegate: the connection-lifecycle customization.
-  ///   - eventLog: when non-nil, every delegate-hook invocation is recorded
-  ///     into it for hook-order and count assertions.
-  ///   - watchdog: when non-nil, the coordinator force-closes itself after
-  ///     this duration so a hung test fails fast (pending calls observe the
-  ///     channel going down) instead of blocking the suite. The watchdog
-  ///     fires from a global queue; `close()` cancels it.
-  init(
-    _ rootType: Root.Type,
-    _ delegate: some XPCServiceDelegate,
-    eventLog: XPCServiceEventLog?,
-    watchdog: Duration?
-  ) throws {
-    let processConnection = XPCConnection(name: nil)
-    processConnection.setEventHandler { _ in }
-    processConnection.activate()
-    let system = XPCDistributedActorSystem(
-      connection: processConnection,
-      ownsConnection: true,
-      allowsChildReclamation: true)
-    system.reserveRootID()
-    let root = Root(actorSystem: system)
-
-    let host = XPCServiceHost(delegate, eventLog: eventLog)
-    host.setPeerHandler { [weak host] connection in
-      system.setServiceShutdownHandler { [weak host] in host?.requestShutdown() }
-      system.bind(connection, to: root)
-    }
-
-    let listener = XPCConnection(name: nil)
+  init(service: XPCActorService<Root>, watchdog: Duration?) throws {
+    let transport = service.root.actorSystem.transport
+    self.transport = transport
+    self.service = service
+    let host = service.host
+    let acceptor = try service.makeAcceptor()
     let serverPeer = ServerPeerBox()
-    listener.setEventHandler { object in
-      guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-      let peer = XPCConnection(xpc_object: object.xpc_object)
-      serverPeer.peer.withLock { $0 = peer }
-      host.accept(peer)
+    acceptor.setAcceptHandler { channel in
+      serverPeer.peer.withLock { $0 = channel }
+      host.bind(channel)
     }
-    listener.activate()
+    try acceptor.activate()
 
-    let endpoint = try XPCConnection.unmarshal(from: listener.marshal())
-    let client = try XPCRootConnection<Root>.connect(using: endpoint)
-    self.listener = listener
-    self.system = system
-    self.eventLog = eventLog
+    let clientChannel = try transport.channel(dialing: acceptor.wireEndpoint)
+    let client = try XPCRootConnection<Root>.connect(using: clientChannel)
+    self.acceptor = acceptor
     self.host = host
     self.client = client
     self.serverPeer = serverPeer
@@ -129,49 +89,23 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
   }
 
-  /// Deterministically waits until the delegate hook for `kind` has been
-  /// invoked `occurrence` times and returns that occurrence's event
-  /// (`occurrence: 2` waits for the second). Returns immediately when
-  /// already recorded; returns `nil` when `timeout` elapses first or when
-  /// the coordinator was spawned without an `eventLog`. Never polls.
-  public func expectEvent(
-    _ kind: XPCServiceEvent.Kind,
-    occurrence: Int = 1,
-    timeout: Duration? = nil
-  ) async -> XPCServiceEvent? {
-    precondition(occurrence >= 1, "occurrence is 1-based")
-    guard let eventLog else { return nil }
-    guard
-      await eventLog.expectCount(
-        kind, atLeast: occurrence, timeout: timeout
-      )
-    else { return nil }
-    return eventLog.events.filter { $0.kind == kind }[occurrence - 1]
-  }
-
-  /// Deterministically waits until a cooperative shutdown has run
-  /// (`requestShutdown()`, or `XPCDistributedActorSystem
-  /// .requestServiceShutdown()` from actor code), returning `true`;
-  /// `false` when `timeout` elapses first. Never polls.
-  public func waitForShutdown(timeout: Duration? = nil) async -> Bool {
-    await host.expectShutdown(timeout: timeout)
-  }
-
-  /// Dials a fresh, inactive client connection to the same listener, for
+  /// Dials a fresh, inactive client channel to the same acceptor, for
   /// tests that exercise multiple sequential or concurrent clients against
-  /// one service. Endpoint-based like every connection here: activate it
-  /// via `Root.connect(using:)` or manually; it dies permanently with its
-  /// server-side peer.
-  public func makeClient() throws -> XPCConnection {
-    try XPCConnection.unmarshal(from: listener.marshal())
+  /// one service. Endpoint-based like every channel here: activate it
+  /// via `Root.connect(using:)` or manually. C channels can re-dial after a
+  /// peer drop; Session channels end permanently.
+  public func makeClient() throws -> XPCChannel {
+    try transport.channel(dialing: acceptor.wireEndpoint)
   }
 
   /// Cancels the latest accepted server-side peer, as if the service had
   /// dropped that client. The client channel observes `.disconnected` on
-  /// `events`; because it dials the coordinator's *listener* endpoint,
-  /// libxpc transparently re-dials while the coordinator lives and the
-  /// host accepts a fresh session. Permanent channel death requires
-  /// `close()`. A no-op while no peer has been accepted.
+  /// `events`. On the C backend, libxpc transparently re-dials the
+  /// coordinator's listener endpoint while the coordinator lives and the
+  /// host accepts a fresh session; the session backend never re-dials
+  /// (probed: the dropped session channel is terminal), so the client dies
+  /// permanently with the drop — use `.cConnection` for reconnection
+  /// tests. A no-op while no peer has been accepted.
   public func dropServerPeer() {
     serverPeer.peer.withLock { $0 }?.cancel()
   }
@@ -188,9 +122,8 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     guard first else { return }
     watchdog?.cancel()
     client.close()
-    listener.cancel()
-    host.cancel()
-    system.invalidate()
+    acceptor.cancel()
+    service.cancel()
     notifyClosed()
   }
 
@@ -226,32 +159,45 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   deinit { close() }
 }
 
-/// Spawns a coordinated in-process test service serving a **fresh
-/// instance** of `rootType` over an anonymous listener and returns the
-/// coordinator pairing it with a production client channel. Never exits
-/// the process; see `XPCRootTestCoordinator` for lifetime, isolation, and
-/// connection-model details.
-///
-/// The delegate semantics are identical to the hosted `xpcMain` entry point
-/// — hooks and code signing requirements behave the same — with two
-/// deliberate differences: nothing exits the process, and the served root
-/// is coordinator-local, not the process-global `XPCRootActor.shared`.
-///
-/// - Parameters:
-///   - rootType: the concrete root actor type served on the channel.
-///   - delegate: the service customization; typically an
-///     `XPCServiceConfiguration` whose closures record side effects for
-///     assertions.
-///   - eventLog: when non-nil, every delegate-hook invocation is recorded
-///     into it for hook-order and count assertions.
-///   - watchdog: when non-nil, the coordinator force-closes itself after
-///     this duration so a hung test fails fast (pending calls observe the
-///     channel going down) instead of blocking the suite.
+/// Owns an in-process service, anonymous listener, and production root client.
+/// Use a backend-specific delegate for native admission. Event waiting belongs
+/// to `XPCServiceEventLog.wait`; shutdown waiting belongs to `service.host`.
 public func xpcTest<Root: XPCRootActor>(
   _ rootType: Root.Type,
-  _ delegate: some XPCServiceDelegate = XPCServiceConfiguration(),
+  _ delegate: some XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
   eventLog: XPCServiceEventLog? = nil,
-  watchdog: Duration? = nil
+  watchdog: Duration? = nil,
+  onShutdown: @escaping @Sendable () -> Void = {}
 ) throws -> XPCRootTestCoordinator<Root> {
-  try XPCRootTestCoordinator(rootType, delegate, eventLog: eventLog, watchdog: watchdog)
+  try XPCRootTestCoordinator(
+    service: XPCActorService(rootType, delegate, eventLog: eventLog, onShutdown: onShutdown),
+    watchdog: watchdog)
+}
+
+public func xpcTest<Root: XPCRootActor>(
+  _ rootType: Root.Type,
+  sessionDelegate: some XPCSessionServiceDelegate,
+  eventLog: XPCServiceEventLog? = nil,
+  watchdog: Duration? = nil,
+  onShutdown: @escaping @Sendable () -> Void = {}
+) throws -> XPCRootTestCoordinator<Root> {
+  try XPCRootTestCoordinator(
+    service: XPCActorService(
+      rootType, sessionDelegate: sessionDelegate, eventLog: eventLog, onShutdown: onShutdown),
+    watchdog: watchdog)
+}
+
+/// Runtime backend selection with default admission, useful for transport matrices.
+public func xpcTest<Root: XPCRootActor>(
+  _ rootType: Root.Type,
+  transport: XPCChannelTransport,
+  eventLog: XPCServiceEventLog? = nil,
+  watchdog: Duration? = nil,
+  onShutdown: @escaping @Sendable () -> Void = {}
+) throws -> XPCRootTestCoordinator<Root> {
+  try XPCRootTestCoordinator(
+    service: XPCActorService(
+      rootType, transport: transport, eventLog: eventLog, onShutdown: onShutdown),
+    watchdog: watchdog
+  )
 }

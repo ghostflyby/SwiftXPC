@@ -10,6 +10,12 @@ public struct XPCInvocationDecoder: DistributedTargetInvocationDecoder {
   public typealias SerializationRequirement = XPCMarshal
 
   let array: XPCArray
+  private let transport: XPCChannelTransport
+
+  init(array: XPCArray, transport: XPCChannelTransport) {
+    self.array = array
+    self.transport = transport
+  }
   var currentIndex: Int = 0
 
   public func decodeGenericSubstitutions() throws -> [Any.Type] {
@@ -17,11 +23,16 @@ public struct XPCInvocationDecoder: DistributedTargetInvocationDecoder {
   }
 
   public mutating func decodeNextArgument<Argument: SerializationRequirement>() throws -> Argument {
-    guard currentIndex < array.endIndex else {
+    guard currentIndex < array.count else {
       throw XPCMarshalError.outOfBounds(index: currentIndex, count: array.count)
     }
     defer { currentIndex += 1 }
-    return try Argument.unmarshal(from: array[currentIndex])
+    guard let raw = array[currentIndex, as: xpc_object_t.self] else {
+      throw XPCMarshalError.outOfBounds(index: currentIndex, count: array.count)
+    }
+    return try XPCActorDecodingContext.$transport.withValue(transport) {
+      try Argument.unmarshal(from: raw)
+    }
   }
 
   public func decodeErrorType() throws -> Any.Type? {

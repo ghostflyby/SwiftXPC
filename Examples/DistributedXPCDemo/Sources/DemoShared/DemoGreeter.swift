@@ -40,11 +40,13 @@ public enum DemoGreeterError: Error, Equatable, CustomStringConvertible {
 }
 
 extension DemoGreeterError: XPCMarshal {
-  public func marshal() throws(XPCMarshalError) -> XPCObject {
+  public func marshal() throws(XPCMarshalError) -> xpc_object_t {
     try "rejected".marshal()
   }
 
-  public static func unmarshal(from object: XPCObject) throws(XPCMarshalError) -> DemoGreeterError {
+  public static func unmarshal(from object: xpc_object_t) throws(XPCMarshalError)
+    -> DemoGreeterError
+  {
     switch try String.unmarshal(from: object) {
     case "rejected":
       .rejected

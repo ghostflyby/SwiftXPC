@@ -64,7 +64,7 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func DirectLocalActorReferenceRoundTrip() async throws {
-  let system = XPCDistributedActorSystem(connection: makeIdleConnection())
+  let system = XPCDistributedActorSystem()
   let worker = ChannelWorker(actorSystem: system)
 
   let object = try worker.marshal()
@@ -96,7 +96,7 @@ distributed actor ChannelRoot: XPCRootActor {
   let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
   let messages = MessageStore()
-  let callbackSystem = XPCDistributedActorSystem(connection: makeIdleConnection())
+  let callbackSystem = XPCDistributedActorSystem()
   let callback = ChannelCallback(messages: messages, actorSystem: callbackSystem)
 
   try await worker.notify(callback)
@@ -125,9 +125,9 @@ distributed actor ChannelRoot: XPCRootActor {
   let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
 
-  worker.actorSystem.connection.cancel()
+  worker.actorSystem.connection?.cancel()
 
-  await #expect(throws: XPCConnection.ConnectionError.invalid) {
+  await #expect(throws: XPCChannelError.invalid) {
     _ = try await worker.greet("closed")
   }
   #expect(try await root.ping() == "root")
@@ -142,7 +142,7 @@ distributed actor ChannelRoot: XPCRootActor {
   let wire = XPCActorReferenceWire(
     version: XPCWireProtocol.currentVersion + 1,
     actorID: .root,
-    endpoint: try listener.marshal()
+    endpoint: SendableXPCObject(try listener.marshal())
   )
 
   do {
@@ -173,7 +173,7 @@ private struct ExportPair {
 
   func close() {
     client.cancel()
-    serverSystem.connection.cancel()
+    serverSystem.connection?.cancel()
     listener.cancel()
   }
 }
@@ -184,12 +184,13 @@ private func makeExportPair() throws -> ExportPair {
   let accepted = DispatchSemaphore(value: 0)
 
   listener.setEventHandler { object in
-    guard xpc_get_type(object.xpc_object) == XPC_TYPE_CONNECTION else { return }
-    let server = XPCConnection(xpc_object: object.xpc_object)
-    let serverSystem = XPCDistributedActorSystem(connection: server)
+    guard xpc_get_type(object) == XPC_TYPE_CONNECTION else { return }
+    let server = XPCConnection(xpc_object: object)
+    let serverChannel = XPCChannel(server)
+    let serverSystem = XPCDistributedActorSystem(connection: serverChannel)
     serverSystem.reserveRootID()
     let root = ChannelRoot(actorSystem: serverSystem)
-    serverSystem.bind(server, to: root)
+    serverSystem.bind(serverChannel, to: root)
     captured.withLock { $0 = (serverSystem, root) }
     server.activate()
     accepted.signal()
@@ -197,7 +198,7 @@ private func makeExportPair() throws -> ExportPair {
   listener.activate()
 
   let client = try XPCConnection.unmarshal(from: listener.marshal())
-  let clientSystem = XPCDistributedActorSystem(connection: client)
+  let clientSystem = XPCDistributedActorSystem(connection: XPCChannel(client))
   client.activate()
   client.sendAndForget(message: XPCDictionary())
 
@@ -259,7 +260,7 @@ private func totalExportPeerCount(of system: XPCDistributedActorSystem) -> Int {
   }
   #expect(totalExportPeerCount(of: pair.serverSystem) == 1)
 
-  worker.actorSystem.connection.cancel()
+  worker.actorSystem.connection?.cancel()
 
   deadline = ContinuousClock.now + .seconds(2)
   while ContinuousClock.now < deadline, totalExportPeerCount(of: pair.serverSystem) != 0 {
@@ -276,7 +277,7 @@ private func totalExportPeerCount(of system: XPCDistributedActorSystem) -> Int {
   connection.setEventHandler { _ in }
   connection.activate()
 
-  var box: PeerBox? = PeerBox(connection)
+  var box: PeerBox? = PeerBox(XPCChannel(connection))
   box = nil
   _ = box  // Explicit discard triggers deinit → connection.cancel()
 

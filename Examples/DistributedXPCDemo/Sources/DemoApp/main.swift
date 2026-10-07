@@ -9,11 +9,18 @@ import SwiftXPC
 @main
 struct DemoApp {
   static func main() async {
+    let watchdog = DispatchWorkItem { Foundation.exit(2) }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: watchdog)
+    defer { watchdog.cancel() }
     do {
-      // XPCRootConnection survives engine restarts: `handle.root` rides a
-      // named mach connection that launchd transparently re-establishes, so
-      // root calls can be wrapped in `retrying` to ride out a restart.
-      let handle = try XPCRootConnection<DemoRoot>.connect(toService: demoServiceIdentifier)
+      // toService looks up the embedded .xpc bundle on either backend.
+      let handle: XPCRootConnection<DemoRoot>
+      if CommandLine.arguments.contains("--session") {
+        handle = try XPCRootConnection<DemoRoot>.connect(
+          toService: demoServiceIdentifier, transport: .session)
+      } else {
+        handle = try XPCRootConnection<DemoRoot>.connect(toService: demoServiceIdentifier)
+      }
       defer { handle.close() }
       for await event in handle.events {
         print("connection event: \(event)")

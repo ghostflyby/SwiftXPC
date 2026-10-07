@@ -148,6 +148,8 @@ extension XPCConnection {
 }
 
 extension XPCConnection {
+  /// Connects to an XPC service by bundle identifier; nil creates an anonymous listener.
+  /// Use `init(machServiceName:options:dispatchQueue:)` for a launchd `MachServices` name.
   public init(name: String?, dispatchQueue: DispatchQueue? = nil) {
     xpc_object = xpc_connection_create(name, dispatchQueue)
   }
@@ -164,6 +166,7 @@ extension XPCConnection {
     public static let privileged = MachServiceOptions(rawValue: 1 << 1)
   }
 
+  /// Connects to a name advertised in a launchd job's `MachServices` dictionary.
   public init(
     machServiceName: String, options: MachServiceOptions = [], dispatchQueue: DispatchQueue? = nil
   ) {

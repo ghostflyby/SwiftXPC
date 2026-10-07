@@ -55,19 +55,17 @@ public enum XPCRootConnectionEvent: Sendable {
   case ready
   /// The underlying connection was invalidated or interrupted (service
   /// exited, crashed, or was cancelled). May be delivered multiple times for
-  /// repeated service deaths. Named-service connections re-establish
-  /// transparently on the next call, but child actor proxies obtained before
-  /// this event are permanently stale and must be re-acquired through `root`.
+  /// repeated service deaths. C-backed named-service connections may re-establish
+  /// transparently on the next call; Session channels are terminal. Child actor
+  /// proxies obtained before this event are stale and must be re-acquired through `root`.
   case disconnected
 }
 
-/// A resilient handle to a service's root actor.
+/// A handle to a service's root actor with lifecycle events and retries.
 ///
-/// Unlike child actor references, the root proxy rides a *named* mach service
-/// connection: when the service process dies, launchd relaunches it and the
-/// same proxy transparently works again on its next call. This handle adds
-/// lifecycle events and a retry policy for infrastructure failures. Callers
-/// observe `events` to rebuild dependent child-actor state after
+/// Named C connections to XPC or Mach services can re-establish after the service
+/// process dies; Session channels require a new handle. Retries cover recoverable
+/// C interruptions. Observe `events` to rebuild dependent child-actor state after
 /// `.disconnected`.
 public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
   /// The root proxy. C named-service channels can recover across restarts;
@@ -108,10 +106,20 @@ public final class XPCRootConnection<Root: XPCRootActor>: Sendable {
     }
   }
 
-  /// Dials a named service with the selected backend. C channels can recover
-  /// after interruptions; Session channels require a fresh connection.
+  /// Connects to an XPC service by bundle identifier, such as an embedded `.xpc` bundle.
+  /// The backend defaults to C; selecting Session preserves the XPC service namespace.
+  /// Use `connect(machService:transport:)` for a launchd `MachServices` name.
   public static func connect(
     toService serviceName: String,
+    transport: XPCChannelTransport = .cConnection
+  ) throws -> Self {
+    try connect(using: transport.channel(xpcService: serviceName))
+  }
+
+  /// Connects to a name advertised in a launchd job's `MachServices` dictionary.
+  /// C channels can recover after interruptions; Session channels require a fresh connection.
+  public static func connect(
+    machService serviceName: String,
     transport: XPCChannelTransport = .cConnection
   ) throws -> Self {
     try connect(using: transport.channel(machService: serviceName))

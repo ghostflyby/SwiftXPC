@@ -25,6 +25,18 @@ struct S: XPCSessionServiceDelegate {
 '''
 positive=common+'''
 func publicAPI<Root: XPCRootActor>(_ root: Root.Type) throws {
+  _ = try Root.connect(toService: "example.bundle.service")
+  _ = try Root.connect(machService: "example.mach.service")
+  _ = try XPCRootConnection<Root>.connect(toService: "example.bundle.service")
+  _ = try XPCRootConnection<Root>.connect(machService: "example.mach.service")
+  for transport in XPCChannelTransport.allCases {
+    _ = transport.channel(xpcService: "example.bundle.service")
+    _ = transport.channel(machService: "example.mach.service")
+    _ = try Root.connect(toService: "example.bundle.service", transport: transport)
+    _ = try Root.connect(machService: "example.mach.service", transport: transport)
+    _ = try XPCRootConnection<Root>.connect(toService: "example.bundle.service", transport: transport)
+    _ = try XPCRootConnection<Root>.connect(machService: "example.mach.service", transport: transport)
+  }
   let c = XPCActorService(root, C())
   try c.listen()
   let s = XPCActorService(root, sessionDelegate: S(), onShutdown: {},

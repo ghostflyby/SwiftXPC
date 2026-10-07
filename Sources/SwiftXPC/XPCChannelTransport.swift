@@ -21,6 +21,15 @@ public enum XPCChannelTransport: CaseIterable, Sendable {
     }
   }
 
+  /// Dials an XPC service by bundle identifier, such as an embedded `.xpc` bundle.
+  /// This uses the XPC service namespace, independently of the selected backend.
+  public func channel(xpcService service: String) -> XPCChannel {
+    switch self {
+    case .cConnection: return XPCChannel(XPCConnection(name: service))
+    case .session: return XPCChannel(session: XPCSessionChannel(xpcServiceName: service))
+    }
+  }
+
   /// Dials the launchd-advertised mach service `service` over this
   /// transport (a named re-dialable connection on the C backend; a mach
   /// session on the session backend).

@@ -209,4 +209,4 @@ named listener 的 typed peer requirement 策略。macOS 26 constructor 除包�
 | sleep 与超时误报 | accept delivery、drain waiter 注册、延迟 reply 取消和 client 断连改用信号。并发 listener 测试的超时取消允许 CancellationError；其余短暂 sleep 仅扩大 pre-activation 窗口，不作为通过条件 |
 | 外来 root factory | 进程外 exit test 验证 foreign system 触发指定 precondition，检查 stderr 原因 |
 | 服务端 Task 取消 | onThrow、派发 catch 与错误回复均保留 CancellationError；无载荷 cancelled 回复在返回值/void 客户端路径都还原 CancellationError。C/Session 真实 Task 取消与随后调用成功均有覆盖 |
-| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、20 个负例（编译失败且 error: 后的诊断正文包含核心符号整词，排除文件名、源码回显和 note）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 9 个 required / 4 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |
+| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、20 个负例（编译失败且 error: 诊断正文包含核心符号整词，排除文件名和源码回显）和 symbol graph。缺失 init/serviceName 两例额外要求 error/note 诊断正文包含具体 requirement，不能只靠协议名通过。输出 `.build/public-api-verification`，CI 同步运行并上传证据。symbol graph 仅校验 9 个 required / 4 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |

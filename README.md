@@ -121,6 +121,7 @@ service cleanup hooks, and registry invalidation. Neither path drains executing 
 Hosted entry points exit after awaited cleanup (status 0 on completed cooperative
 shutdown, 1 on startup/cleanup failure or bare cancellation). The C entry keeps
 a process-lifetime transaction so idle termination cannot interrupt these hooks.
+Automatic idle exit stays disabled; disconnecting all peers does not stop the service.
 Embedders never exit their process. Source documentation defines hook ordering and
 startup/binding barriers.
 
@@ -142,6 +143,9 @@ startup/binding barriers.
 - Actor service construction, `listen`, and `xpcTest` are now `async throws`.
   Choose C/Session delegate overloads explicitly; runtime transport service overloads
   and separate `makeRoot` / `onStart` / `onShutdown` closures are removed.
+- Cancelling a task while it awaits `listen()` cancels the entire service,
+  including existing listeners and peers. This also applies to subsequent calls
+  that add listeners.
 - Access a test coordinator's owner through `coordinator.service`, including
   `coordinator.service.root` and `coordinator.service.host`.
 - Bare host cancellation is terminal; a later shutdown request does not run hooks.

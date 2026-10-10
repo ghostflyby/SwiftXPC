@@ -154,9 +154,6 @@ C 的字符串 requirement 留在 native connection 专用 API。Session 的 nat
 
 - `SWIFTXPC_WARNINGS_AS_ERRORS=1 swift test`：主套件 170 tests；transport 套件 21 tests，
   新增准入与 binding 顺序 / 拒绝阶段测试运行四种 backend 组合；Session false/throw 原生拒绝覆盖两种 client backend。
-- `python3 Scripts/check-public-api.py` 运行包外正例、12 个反例及 public symbol graph；
-  负例检查编译失败与诊断中的核心符号，不依赖具体措辞。symbol graph 仅检查 6 个 required / 3 个 removed 名称，
-  没有基线 diff，不自动阻止任意新增 public 符号；`.build/public-api-verification` 保留 probe、诊断与 owned API 清单，CI 上传供人工审查。
 - `swift format lint --strict --recursive Sources Tests`、`git diff --check` 无问题。
 - `Examples/DistributedXPCDemo` 的 warnings-as-errors 独立 package 构建通过。
 

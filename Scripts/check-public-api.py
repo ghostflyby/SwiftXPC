@@ -127,8 +127,11 @@ checks={
  'mutable_listener_routing':common+'func invalid(_ listener: XPCChannelAcceptor) { listener.setAcceptHandler { _ in } }',
 }
 expected_symbols = {
- 'entry_without_initializer': ('init',),
- 'session_entry_without_service_name': ('serviceName',),
+ # Missing requirements are spelled out in notes, while the error itself
+ # identifies the failed conformance. The paired positive entry verifies all
+ # other requirements; each negative removes exactly one requirement.
+ 'entry_without_initializer': ('XPCConnectionActorServiceDelegate',),
+ 'session_entry_without_service_name': ('XPCSessionActorServiceDelegate',),
  'dual_entry_without_main_choice': ('main',),
  'raw_delegate_with_actor_service': ('XPCConnectionActorServiceDelegate',),
  'session_entry_with_c_delegate': ('XPCSessionActorServiceDelegate',),
@@ -156,16 +159,27 @@ cmd = [
 for module_path in (bin_path, bin_path / "Modules"):
     if module_path.is_dir():
         cmd.extend(["-I", str(module_path)])
+def error_mentions(stderr, symbols):
+    errors = '\n'.join(line.split('error:', 1)[1]
+                       for line in stderr.splitlines() if 'error:' in line)
+    return bool(errors) and all(re.search(r"\b" + re.escape(symbol) + r"\b", errors)
+                                for symbol in symbols)
+
+# Regression: neither a path nor Swift's echoed source can satisfy a check.
+if error_mentions('/tmp/init.swift:1:1: error: unrelated failure\n1 | init()', ('init',)):
+    raise SystemExit("Probe paths or echoed source leaked into diagnostic matching")
+
 failures = []
 for name, source in checks.items():
     probe = out / (name + ".swift")
     probe.write_text(source)
     result = subprocess.run(cmd + [str(probe)], capture_output=True, text=True)
     (out / (name + ".log")).write_text(result.stdout + result.stderr)
+    # Exclude probe paths and echoed source: their names can contain exactly
+    # the symbols under test. Do not depend on the rest of Swift's wording.
     valid = result.returncode == 0 if name.startswith("positive") else (
         result.returncode > 0
-        and 'error:' in result.stderr
-        and all(symbol in result.stderr for symbol in expected_symbols[name])
+        and error_mentions(result.stderr, expected_symbols[name])
     )
     print(name + ": " + ("PASS" if valid else "FAIL"))
     if not valid:

@@ -317,7 +317,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     connection.setIncomingHandler { [weak self, weak actor] message in
       tail.withLock { previous in
         let predecessor = previous
-        previous = Task { [weak self, weak actor] in
+        previous = Task { @Sendable [weak self, weak actor] in
           defer { onFinished() }
           await predecessor?.value
           do { try await readiness?.wait() } catch { return }

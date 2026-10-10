@@ -190,7 +190,7 @@ private func makeTestCoordinator<Root: XPCRootActor>(
   let result = XPCServiceResult<XPCRootTestCoordinator<Root>>()
   let owner = Mutex(WeakTestService<Root>())
   let deadline = watchdog.map { ContinuousClock.now + $0 }
-  let task = Task {
+  let task = Task { @Sendable in
     do {
       let service = try await factory()
       owner.withLock { $0.service = service }

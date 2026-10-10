@@ -8,6 +8,8 @@ import Synchronization
 /// (cancellation can fire before the suspension starts). A reply arriving
 /// after delivery (task cancelled, late reply) is dropped — cancelling the
 /// awaiting task does not retract the request.
+/// Continuations resume outside the state lock: resumption takes Swift task
+/// locks, while Task.cancel holds those locks before entering this sink.
 ///
 /// The reply payload crosses isolation boundaries in the package-private
 /// unchecked-`Sendable` box (see README "Raw handles and Sendability"); the
@@ -25,37 +27,55 @@ final class XPCSendSink: Sendable {
   }
 
   private let state = Mutex(State())
+  // Runs outside the lock before each continuation resumes, including rejected
+  // late installs. No resumption means zero calls; a normal send calls once.
+  // Each late install adds another call, which can overlap an earlier one.
+  private let beforeResume: @Sendable () -> Void
+
+  init(beforeResume: @escaping @Sendable () -> Void = {}) {
+    self.beforeResume = beforeResume
+  }
 
   /// Installs the continuation; resumes immediately when an outcome (for
   /// example a cancellation) already arrived.
   func install(_ continuation: CheckedContinuation<SendableXPCObject, any Error>) {
-    state.withLock { st in
+    let outcome = state.withLock { st -> Outcome? in
       guard !st.delivered else {
-        continuation.resume(throwing: XPCChannelError.invalid)
-        return
+        return .failure(XPCChannelError.invalid)
       }
       st.continuation = continuation
       if let outcome = st.outcome {
         st.continuation = nil
         st.outcome = nil
         st.delivered = true
-        continuation.resume(with: outcome)
+        return outcome
       }
+      return nil
+    }
+    if let outcome {
+      beforeResume()
+      continuation.resume(with: outcome)
     }
   }
 
   /// Delivers `outcome` exactly once: to the installed continuation, or
   /// buffered for a not-yet-installed one. Later calls are dropped.
   func finish(_ outcome: Outcome) {
-    state.withLock { st in
-      guard !st.delivered, st.outcome == nil else { return }
+    let continuation = state.withLock {
+      st -> CheckedContinuation<SendableXPCObject, any Error>? in
+      guard !st.delivered, st.outcome == nil else { return nil }
       if let continuation = st.continuation {
         st.continuation = nil
         st.delivered = true
-        continuation.resume(with: outcome)
+        return continuation
       } else {
         st.outcome = outcome
+        return nil
       }
+    }
+    if let continuation {
+      beforeResume()
+      continuation.resume(with: outcome)
     }
   }
 

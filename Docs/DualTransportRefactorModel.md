@@ -54,7 +54,7 @@ requirement 接口；accepted 身份快照保留在 native connection。C 与 Se
 共同服务通知，通过专用构造入口在编译期选择后端，没有 runtime downcast。
 
 服务 delegate 不要求 `init()`；actor 服务使用带 Root 关联类型的生命周期协议及两个 native 专用子协议。
-`XPCApp` 已删除，具体 delegate 自行实现 static main 并标注 `@main`。阶段顺序以 source DocC 为准。
+`XPCApp` 已删除，两个专用 delegate 提供默认 static main，具体类型直接标注 `@main`；入口使用 init() 构造 delegate，Session 声明 static serviceName。阶段顺序以 source DocC 为准。
 完整公开 API 的逐面审计、替代方案、收拢决定与迁移见 [PublicAPIAudit.md](PublicAPIAudit.md)。
 
 ## 生命周期契约
@@ -124,7 +124,7 @@ actor system 保留所用的 channel，省去 `ownsConnection` / `allowsChildRec
 | `system.connection` 永远非空 | 代理 system 非空；本地 registry 为 nil |
 | channel `send(payload, replyQueue:)` | `send(payload)`；native C API 仍支持 reply queue |
 | `XPCRootConnectionEvent.connected` | `.ready`：本地代理就绪，首次调用才建立通信 |
-| `XPCServiceDelegate.main()` / `XPCApp` | 具体 typed delegate 的显式 static main，调用 `xpcMain(delegate:)` |
+| `XPCServiceDelegate.main()` / `XPCApp` | 两个专用 typed delegate 的默认 static main；直接标注 @main |
 | 对 invalid / session 错误重试 | 仅 C `.interrupted` 重试 |
 
 C 的字符串 requirement 留在 native connection 专用 API。Session 的 native request 在 accept

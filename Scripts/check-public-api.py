@@ -16,6 +16,7 @@ bin_path = Path(subprocess.check_output(
     ["swift", "build", "--show-bin-path"], cwd=workspace, text=True,
 ).strip())
 common='''import DistributedXPC
+enum ProbeFailure: Error { case unconfigured }
 struct C: XPCConnectionServiceDelegate {
   func shouldAcceptConnection(_ connection: XPCConnection) throws -> Bool { connection.euid == geteuid() }
 }
@@ -26,9 +27,16 @@ struct AC<R: XPCRootActor>: XPCConnectionActorServiceDelegate {
   let factory: @Sendable (XPCDistributedActorSystem) async throws -> R
   func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> R { try await factory(actorSystem) }
 }
+extension AC {
+  init() { self.init(factory: { _ in throw ProbeFailure.unconfigured }) }
+}
 struct AS<R: XPCRootActor>: XPCSessionActorServiceDelegate {
+  static var serviceName: String { "example.service" }
   let factory: @Sendable (XPCDistributedActorSystem) async throws -> R
   func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> R { try await factory(actorSystem) }
+}
+extension AS {
+  init() { self.init(factory: { _ in throw ProbeFailure.unconfigured }) }
 }
 '''
 positive=common+'''
@@ -70,8 +78,36 @@ func secureSession() throws -> XPCChannelAcceptor {
     requirement: .isPlatformCode(), handler: { $0.activate() })
 }
 '''
+entry_root='''import Distributed
+import DistributedXPC
+distributed actor EntryRoot: XPCRootActor {
+  typealias ActorSystem = XPCDistributedActorSystem
+  static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] { [:] }
+  let dependency: String
+  init(dependency: String, actorSystem: ActorSystem) {
+    self.dependency = dependency
+    self.actorSystem = actorSystem
+  }
+}
+'''
+entry_c=entry_root+'''
+@main struct Entry: XPCConnectionActorServiceDelegate {
+  let dependency: String
+  init() { self.init(dependency: "injected") }
+  init(dependency: String) { self.dependency = dependency }
+  func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> EntryRoot {
+    EntryRoot(dependency: dependency, actorSystem: actorSystem)
+  }
+}
+'''
+entry_s=entry_c.replace("XPCConnectionActorServiceDelegate {", "XPCSessionActorServiceDelegate {\n  static var serviceName: String { \"example.service\" }")
 checks={
  'positive':positive,
+ 'positive_c_default_main':entry_c,
+ 'positive_session_default_main':entry_s,
+ 'entry_without_initializer':entry_c.replace('  init() { self.init(dependency: "injected") }\n', ''),
+ 'session_entry_without_service_name':entry_s.replace('  static var serviceName: String { "example.service" }\n', ''),
+ 'dual_entry_without_main_choice':entry_s.replace('XPCSessionActorServiceDelegate {', 'XPCConnectionActorServiceDelegate, XPCSessionActorServiceDelegate {'),
  'session_with_c_delegate':common+'func invalid<R: XPCRootActor>(_ d: AC<R>) async throws { _ = try await XPCActorService(sessionDelegate: d) }',
  'c_with_session_delegate':common+'func invalid<R: XPCRootActor>(_ d: AS<R>) async throws { _ = try await XPCActorService(d) }',
  'delegate_with_runtime_transport':common+'func invalid<R: XPCRootActor>(_ d: AC<R>) async throws { _ = try await XPCActorService(d, transport: .session) }',
@@ -91,6 +127,9 @@ checks={
  'mutable_listener_routing':common+'func invalid(_ listener: XPCChannelAcceptor) { listener.setAcceptHandler { _ in } }',
 }
 expected_symbols = {
+ 'entry_without_initializer': ('init',),
+ 'session_entry_without_service_name': ('serviceName',),
+ 'dual_entry_without_main_choice': ('main',),
  'raw_delegate_with_actor_service': ('XPCConnectionActorServiceDelegate',),
  'session_entry_with_c_delegate': ('XPCSessionActorServiceDelegate',),
  'c_entry_with_session_delegate': ('XPCConnectionActorServiceDelegate',),
@@ -110,7 +149,7 @@ expected_symbols = {
  'mutable_listener_routing': ('setAcceptHandler',),
 }
 cmd = [
-    "swiftc", "-typecheck", "-swift-version", "6", "-warnings-as-errors",
+    "swiftc", "-typecheck", "-parse-as-library", "-swift-version", "6", "-warnings-as-errors",
     "-target", f"{platform.machine()}-apple-macos15.0",
 ]
 # SwiftBuild places modules beside products; native SwiftPM uses Modules/.
@@ -123,7 +162,7 @@ for name, source in checks.items():
     probe.write_text(source)
     result = subprocess.run(cmd + [str(probe)], capture_output=True, text=True)
     (out / (name + ".log")).write_text(result.stdout + result.stderr)
-    valid = result.returncode == 0 if name == "positive" else (
+    valid = result.returncode == 0 if name.startswith("positive") else (
         result.returncode > 0
         and 'error:' in result.stderr
         and all(symbol in result.stderr for symbol in expected_symbols[name])

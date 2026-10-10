@@ -54,7 +54,16 @@ extension XPCActorServiceDelegate {
 
 /// C-native admission, separate from asynchronous actor preparation.
 /// Connections are inactive during audit; native peer requirements belong here.
+/// A concrete conformer can carry `@main`: the default main constructs it with
+/// `init()` and hosts its bundled XPC service on the OS main thread. Inject
+/// production dependencies in that initializer; additional initializers may
+/// configure embedded instances. A type implementing both native protocols
+/// must implement main itself to select its process backend.
 public protocol XPCConnectionActorServiceDelegate<Root>: XPCActorServiceDelegate {
+  /// Constructs the production delegate used by the default process entry.
+  init()
+  /// Hosts a bundled service on the OS main thread. Provided by the protocol.
+  @MainActor static func main()
   /// Installed before audit. When non-nil, do not install a second requirement.
   var peerCodeSigningRequirement: String? { get }
   func shouldAcceptConnection(
@@ -65,6 +74,7 @@ public protocol XPCConnectionActorServiceDelegate<Root>: XPCActorServiceDelegate
 }
 
 extension XPCConnectionActorServiceDelegate {
+  @MainActor public static func main() { xpcMain(delegate: Self()) }
   public var peerCodeSigningRequirement: String? { nil }
   public func shouldAcceptConnection(
     _ connection: XPCConnection, in service: XPCActorService<Root>
@@ -77,7 +87,17 @@ extension XPCConnectionActorServiceDelegate {
 /// Session-native admission. The request is borrowed for this synchronous
 /// callback: do not retain it, cross an asynchronous boundary, or accept/reject
 /// it yourself. Asynchronous authorization belongs in `peerWillBind`.
+/// A concrete conformer can carry `@main`: the default main constructs it with
+/// `init()` and hosts `serviceName` on the OS main thread. The launchd job must
+/// advertise that exact name in MachServices; embedded listeners receive their
+/// names explicitly and do not consult this process-entry property.
 public protocol XPCSessionActorServiceDelegate<Root>: XPCActorServiceDelegate {
+  /// Constructs the production delegate used by the default process entry.
+  init()
+  /// The MachServices name advertised by this process's launchd job.
+  @MainActor static var serviceName: String { get }
+  /// Hosts that named service on the OS main thread. Provided by the protocol.
+  @MainActor static func main()
   func shouldAcceptSessionRequest(
     _ request: XPCListener.IncomingSessionRequest, in service: XPCActorService<Root>
   ) throws -> Bool
@@ -87,6 +107,9 @@ public protocol XPCSessionActorServiceDelegate<Root>: XPCActorServiceDelegate {
 }
 
 extension XPCSessionActorServiceDelegate {
+  @MainActor public static func main() {
+    xpcSessionMain(service: serviceName, delegate: Self())
+  }
   public func shouldAcceptSessionRequest(
     _ request: XPCListener.IncomingSessionRequest, in service: XPCActorService<Root>
   ) throws -> Bool { true }

@@ -76,6 +76,9 @@ distributed actor LifecycleChild {
 private final class LifecycleDelegate: @unchecked Sendable, XPCConnectionActorServiceDelegate,
   XPCSessionActorServiceDelegate
 {
+  init() {}
+  static var serviceName: String { "org.swiftxpc.lifecycle" }
+  @MainActor static func main() { xpcMain(delegate: Self()) }
   let events = Mutex<[String]>([])
   let calls = CallCounter()
   var factoryGate: HookGate?

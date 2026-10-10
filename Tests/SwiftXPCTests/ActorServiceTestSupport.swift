@@ -11,9 +11,11 @@ protocol TestRoot: XPCRootActor {
 
 /// Bridges existing raw-host fixtures into typed lifecycle tests. The public
 /// actor-service API itself accepts only backend-specific typed delegates.
-struct TestActorDelegate<Root: XPCRootActor>: XPCConnectionActorServiceDelegate,
+struct TestActorDelegate<Root: TestRoot>: XPCConnectionActorServiceDelegate,
   XPCSessionActorServiceDelegate
 {
+  static var serviceName: String { "org.swiftxpc.fixture" }
+  @MainActor static func main() { xpcMain(delegate: Self()) }
   let factory: @Sendable (XPCDistributedActorSystem) async throws -> Root
   var c: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration()
   var s: any XPCSessionServiceDelegate = XPCSessionServiceConfiguration()
@@ -55,7 +57,8 @@ struct TestActorDelegate<Root: XPCRootActor>: XPCConnectionActorServiceDelegate,
   }
 }
 
-extension TestActorDelegate where Root: TestRoot {
+extension TestActorDelegate {
+  init() { self.init(c: XPCConnectionServiceConfiguration()) }
   init(
     c: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
     s: any XPCSessionServiceDelegate = XPCSessionServiceConfiguration(),

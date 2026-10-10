@@ -13,7 +13,7 @@ import uuid
 
 workspace = Path(__file__).resolve().parents[1]
 bundle = workspace / "Examples/DistributedXPCDemo/.build/demo/DistributedXPCDemo.app/Contents"
-server = bundle / "XPCServices/DemoService.xpc/Contents/MacOS/DemoService"
+server = bundle / "MacOS/DemoSessionService"
 client = bundle / "MacOS/DemoApp"
 domain = f"gui/{os.getuid()}"
 

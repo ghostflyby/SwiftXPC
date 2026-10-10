@@ -81,9 +81,9 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `XPCInvocationEncoder/Decoder/ResultHandler` | compiler 关联类型及对应记录、解码、结果输出协议 | 保留 compiler 必需的 public type/method；routing closure、transport context、构造细节保持内部，不作为可独立装配的 public 层 |
 | `XPCDistributedTargetMetadata` / `…Providing` / `@XPCService` | 外部模块的宏必须生成可访问的 method whitelist 和 typed-throws metadata | 保留；内部解析与查表仍是内部函数。metadata、export、service 并非三套不同 dispatch registry |
 | `XPCReplyKind` / `XPCRemoteCallError` / `XPCDispatchError` | wire error 中可判别的 reply kind、客户端解码错误与服务端派发错误 | 保留分别可编码、可比较的错误域；取消独立为无载荷的 cancelled 回复，客户端抛 CancellationError，不使用业务错误类型解码；invocation/reply envelope 和 version negotiation 不公开成另一个 wire API 产品 |
-| low-level `SwiftXPC.xpcMain` / actor `xpcMain(delegate:)` | 原生进程入口与 actor 服务启动 | 保留两种实际用途；删除 `XPCApp`，具体 typed delegate 显式实现 static main。无参构造不是准入或生命周期能力 |
+| low-level `SwiftXPC.xpcMain` / actor `xpcMain(delegate:)` | 原生进程入口与 actor 服务启动 | 保留两种实际用途；删除 `XPCApp`，两个专用 actor delegate 都提供默认 static main，具体类型可直接标注 @main；入口使用 init() 构造 delegate |
 | `xpcSessionMain` | 必须有 mach service 名的 Session 进程入口 | 保留专用入口，不用 runtime flag 假装能替换 bundled C xpc_main。Session Delegate 不继承 C-hosted app 协议 |
-| `XPCActorServiceDelegate<Root>` 及 C/Session 子协议 | 实际 root 的创建与各阶段异步配置；后端专属同步原生准入 | 必需 factory，其他钩子默认空实现；每个钩子均有 typed service。删除独立 onStart/onShutdown/makeRoot 闭包，所有启动入口使用同一管线 |
+| `XPCActorServiceDelegate<Root>` 及 C/Session 子协议 | 实际 root 的创建与各阶段异步配置；后端专属同步原生准入 | 必需 root factory，其他钩子默认空实现；每个钩子均有 typed service。专用协议要求 init()，Session 要求 static serviceName，分别为默认进程入口提供实例和 launchd 名称。删除独立 onStart/onShutdown/makeRoot 闭包，所有启动入口使用同一管线 |
 | `xpcTest` / `XPCRootTestCoordinator` | 管理真实 in-process 服务、匿名 listener、production client、watchdog | 保留确定性 integration harness。C / Session 的自定义 Delegate 各有约束；取消 runtime actor-service overload；矩阵测试在内部显式分支选择专用入口，避免默默忽略专用方法 |
 | coordinator 的 client/service/transport/makeClient/dropServerPeer/close/waitUntilClosed | 多客户端、模拟失联、整个 fixture 收尾，与 production client 控制不同 | 保留这些 test-only 操作。公开 typed service 取代重复 host 属性；事件等待调用 log，关闭等待调用 service.host |
 | `XPCServiceEvent` / `XPCServiceEventLog` | 无 missed edge 的有序 hook 时间线和 occurrence 等待 | 保留 recorder、snapshot 和唯一 `wait(for:occurrence:timeout:)`。删除 `expectEvent/expectCount` 两种等待入口及 public append；Kind 与 hook 对齐：`didRejectConnection`、`didRejectSessionRequest`、`didRejectPeer` 分别表示两个 native admission 和 host binding 阶段；固定 Kind 不能表示任意用户 marker，公开写入会污染 production hook 时间线 |
@@ -111,6 +111,7 @@ Session 使用另一组明确的约束：
 
 ```swift
 struct SessionPolicy: XPCSessionActorServiceDelegate {
+  static var serviceName: String { "com.example.service" }
   func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> ServiceRoot {
     ServiceRoot(actorSystem: actorSystem)
   }
@@ -166,8 +167,8 @@ let listener = try XPCChannelAcceptor(
   重复 cancel 不释放其 waiters；actor proxy forwarding/re-export 与并发 peers 在 C/C、Session/Session 均覆盖。
 - Session incoming handler 的取消及替换均在锁外释放 captures；两个子进程测试验证 capture 析构重入
   cancel 不崩溃且 invalidation 只通知一次，原实现下两例均因递归锁崩溃而失败。
-- 从包外 typecheck 正确用法（含 macOS 26 typed Session requirement），并验证 17 种错误调用被拒绝：
-  Delegate / backend 错配、Delegate + runtime transport、缺失 delivery handler、缺失 named security service / nil service、C-only channel 身份 /
+- 从包外 typecheck 三组正确用法（通用 API、两个无需自行实现 main 的 @main delegate，含 macOS 26 typed Session requirement），并验证 20 种错误调用被拒绝：
+  缺失入口 init/serviceName、双后端入口未选择 main、Delegate / backend 错配、Delegate + runtime transport、缺失 delivery handler、缺失 named security service / nil service、C-only channel 身份 /
   requirement / interruption、公开替换 host / listener routing。
 - 独立 `Examples/DistributedXPCDemo` build、bundled C 入口的 C/Session 客户端与协作退出通过。
 - `Scripts/check-actor-service-lifecycle.py` 实测 launchd Session 入口、两种客户端、异步 factory 与
@@ -201,4 +202,4 @@ named listener 的 typed peer requirement 策略。macOS 26 constructor 除包�
 | sleep 与超时误报 | accept delivery、drain waiter 注册、延迟 reply 取消和 client 断连改用信号。并发 listener 测试的超时取消允许 CancellationError；其余短暂 sleep 仅扩大 pre-activation 窗口，不作为通过条件 |
 | 外来 root factory | 进程外 exit test 验证 foreign system 触发指定 precondition，检查 stderr 原因 |
 | 服务端 Task 取消 | onThrow、派发 catch 与错误回复均保留 CancellationError；无载荷 cancelled 回复在返回值/void 客户端路径都还原 CancellationError。C/Session 真实 Task 取消与随后调用成功均有覆盖 |
-| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、17 个负例（编译失败且诊断包含核心符号，不匹配编译器措辞）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 9 个 required / 4 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |
+| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、20 个负例（编译失败且诊断包含核心符号，不匹配编译器措辞）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 9 个 required / 4 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |

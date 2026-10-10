@@ -45,8 +45,8 @@ func reportActorServiceStartupFailure(_ error: any Error) -> Never {
 /// Asynchronous factory/startup hooks buffer native peers without blocking their
 /// queue. Cooperative shutdown awaits all lifecycle hooks before process exit
 /// (0 on success, 1 on startup/cleanup failure). In-process owners never exit.
-/// A concrete delegate can implement `static main()` and carry `@main` directly;
-/// neither a separate app protocol nor a no-argument initializer is required.
+/// The C actor delegate protocol provides main for a concrete `@main` type.
+/// Call this function directly when hosting an explicitly configured instance.
 @MainActor
 public func xpcMain<Root: XPCRootActor>(
   delegate: some XPCConnectionActorServiceDelegate<Root>

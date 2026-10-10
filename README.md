@@ -9,7 +9,7 @@ Two products ship from this package:
 | Product | Contents |
 |---|---|
 | `SwiftXPC` | Swift vocabulary over Apple's XPC: the `XPCDictionary`/`XPCArray` containers (re-exported from Apple's `XPC` module, extended with reply, endpoint, and element accessors), `xpc_object_t` as the marshal currency behind the `XPCMarshal` serialization protocol + macro, `XPCConnection`, the dual-backend transport layer (`XPCChannel`, `XPCChannelTransport`, `XPCChannelAcceptor`), and the actor-free service layer (`XPCServiceDelegate`, `XPCServiceHost`) |
-| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCActorService` with one `XPCRootActor` per service, typed lifecycle delegates with explicit `@main`, `xpcSessionMain` for session-backed services), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
+| `DistributedXPC` | A distributed actor runtime on top: `XPCDistributedActorSystem`, root-actor service bootstrap (`XPCActorService` with one `XPCRootActor` per service, typed lifecycle delegates with built-in `@main` entry points, `xpcSessionMain` for session-backed services), cross-process actor references (parameters, return values, forwarding), and a resilient `XPCRootConnection` handle |
 
 ## Raw handles and Sendability
 
@@ -93,7 +93,11 @@ XPC connection. Inject dependencies through a typed delegate factory:
 
 ```swift
 struct ServiceDelegate: XPCSessionActorServiceDelegate {
+  static var serviceName: String { "com.example.service" }
   let dependencies: Dependencies
+
+  init() { self.init(dependencies: .live) }
+  init(dependencies: Dependencies) { self.dependencies = dependencies }
 
   func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> ServiceRoot {
     ServiceRoot(dependencies: dependencies, actorSystem: actorSystem)
@@ -128,8 +132,10 @@ startup/binding barriers.
 - Channel sends use `send(payload)`; C native sends keep their queue options.
 - `.ready` replaces `.connected`: local proxy creation precedes connection
   establishment. Retry only recoverable C interruptions, not terminal errors.
-- Replace `XPCApp` with `XPCConnectionActorServiceDelegate` and an explicit static
-  `main()` calling `xpcMain(delegate:)`; delegate dependencies need no default initializer.
+- Replace `XPCApp` with the backend-specific actor delegate and mark it `@main`.
+  Both protocols provide default `main()` implementations using `init()`; build
+  production dependencies there and keep additional initializers for embedded use.
+  Session delegates declare `static serviceName` matching launchd MachServices.
 - Implement required `makeRoot(actorSystem:)`; `XPCRootActor` requires no initializer.
 - Actor service construction, `listen`, and `xpcTest` are now `async throws`.
   Choose C/Session delegate overloads explicitly; runtime transport service overloads
@@ -186,15 +192,16 @@ struct ServiceMain: XPCConnectionActorServiceDelegate {
     // Register client state on service.root before its first RPC.
   }
 
-  @MainActor static func main() {
-    xpcMain(delegate: Self())
-  }
 }
 ```
 
 Native identity and requirement audit belongs in the C-specific synchronous hooks.
-Session services implement `XPCSessionActorServiceDelegate` and use
-`xpcSessionMain(service:delegate:)`. Both inherit typed service/peer lifecycle hooks;
+Session services implement `XPCSessionActorServiceDelegate`, declare
+`static var serviceName: String`, and also use `@main` directly. Both protocols
+provide the process entry; a type conforming to both must implement `main()` to
+choose its backend. Explicitly configured instances can still be hosted with
+`xpcMain(delegate:)` or `xpcSessionMain(service:delegate:)`.
+Both inherit typed service/peer lifecycle hooks;
 `serviceWillStart`, `serviceDidStart`, `peerWillBind`, and `peerDidBind` gate dispatch.
 Every notification defaults to a no-op; only root construction is required.
 

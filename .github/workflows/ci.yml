@@ -29,7 +29,7 @@ jobs:
         run: python3 Scripts/check-public-api.py
       - name: Save API verification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: public-api-verification
           path: .build/public-api-verification

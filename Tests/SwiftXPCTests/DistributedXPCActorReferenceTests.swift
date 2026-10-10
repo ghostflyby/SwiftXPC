@@ -51,7 +51,7 @@ distributed actor ChannelWorker {
 }
 
 @XPCService
-distributed actor ChannelRoot: XPCRootActor {
+distributed actor ChannelRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
 
   distributed func ping() -> String {
@@ -74,7 +74,7 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func RootBootstrapReturnsRemoteRoot() async throws {
-  let channel = try RootChannel(ChannelRoot.self)
+  let channel = try await RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
 
@@ -82,7 +82,7 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func RootReturnsActorOnIndependentChannel() async throws {
-  let channel = try RootChannel(ChannelRoot.self)
+  let channel = try await RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
@@ -91,7 +91,7 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func ActorParameterProvidesReverseCallbackChannel() async throws {
-  let channel = try RootChannel(ChannelRoot.self)
+  let channel = try await RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()
@@ -105,7 +105,7 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func RootProxyExportIsRejected() async throws {
-  let channel = try RootChannel(ChannelRoot.self)
+  let channel = try await RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
 
@@ -120,7 +120,7 @@ distributed actor ChannelRoot: XPCRootActor {
 }
 
 @Test func InvalidatingChildChannelDoesNotInvalidateRoot() async throws {
-  let channel = try RootChannel(ChannelRoot.self)
+  let channel = try await RootChannel(ChannelRoot.self)
   defer { channel.close() }
   let root = try ChannelRoot.connect(using: channel.client)
   let worker = try await root.makeWorker()

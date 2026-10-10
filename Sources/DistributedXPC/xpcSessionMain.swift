@@ -4,29 +4,22 @@ import Dispatch
 import Foundation
 import SwiftXPC
 
-/// The session-backend process entry point: serves one root instance over an
-/// `XPCListener` bound to the launchd mach service name `service`, through
-/// shared service binding and cooperative shutdown, with Session-specific
-/// native admission. Never returns.
-/// Requires the job's launchd configuration to advertise the mach service;
-/// bundled-`.xpc` services are C-backend-only (`xpcMain`).
+/// Hosts a Session actor service for a name advertised by launchd MachServices.
+/// Call on the OS main thread. Asynchronous startup finishes before dispatch
+/// opens. Shutdown awaits all hooks before exit (0 on success, 1 on startup or
+/// cleanup failure). Bundled `.xpc` servers use the C-native `xpcMain` entry.
 @MainActor
 public func xpcSessionMain<Root: XPCRootActor>(
-  service: String,
-  _ rootType: Root.Type = Root.self,
-  delegate: some XPCSessionServiceDelegate = XPCSessionServiceConfiguration(),
-  onStart: @MainActor (XPCServiceHost) -> Void = { _ in }
+  service: String, delegate: some XPCSessionActorServiceDelegate<Root>
 ) -> Never {
-  let actorService = XPCActorService(rootType, sessionDelegate: delegate, onShutdown: { exit(0) })
-  onStart(actorService.host)
-  do {
-    try actorService.listen(service: service)
-  } catch {
-    FileHandle.standardError.write(
-      Data("xpcSessionMain: cannot start listener for \(service): \(error)\n".utf8))
-    exit(1)
+  precondition(Thread.isMainThread, "xpcSessionMain must run on the OS main thread")
+  Task.detached {
+    do {
+      let owner = try await XPCActorService(sessionDelegate: delegate)
+      try await owner.listen(service: service)
+      _ = await owner.host.waitForShutdown()
+      exit(owner.shutdownFailed ? 1 : 0)
+    } catch { reportActorServiceStartupFailure(error) }
   }
-  withExtendedLifetime(actorService) {
-    dispatchMain()
-  }
+  dispatchMain()
 }

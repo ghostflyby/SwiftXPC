@@ -22,6 +22,19 @@ public struct DemoPayload: Equatable, Sendable {
 @XPCService
 public distributed actor DemoRoot: XPCRootActor {
   public typealias ActorSystem = XPCDistributedActorSystem
+  private let dependency: String
+  private var ready = false
+
+  public init(dependency: String, actorSystem: ActorSystem) {
+    self.dependency = dependency
+    self.actorSystem = actorSystem
+  }
+
+  public func prepare() { ready = true }
+
+  public distributed func configuration() -> String { ready ? dependency : "unprepared" }
+
+  public distributed func retire() { actorSystem.requestServiceShutdown() }
 
   public distributed func makeGreeter() -> DemoGreeter {
     DemoGreeter(actorSystem: actorSystem)

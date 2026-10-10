@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 ghostflyby
 // SPDX-License-Identifier: Apache-2.0
+import Foundation
 import Synchronization
 import XPC
 
@@ -23,6 +24,18 @@ private func handleIncomingConnection(_ connection: xpc_connection_t) {
 /// entry point.
 @MainActor
 public func xpcMain(_ handler: @escaping @Sendable (_ connection: XPCConnection) -> Void) -> Never {
+  xpcMain(handler, onReady: {})
+}
+
+// Install the native reception bridge before launching asynchronous actor
+// preparation. The bootstrap callback runs outside the global handler lock.
+@MainActor
+package func xpcMain(
+  _ handler: @escaping @Sendable (XPCConnection) -> Void,
+  onReady: @Sendable () -> Void
+) -> Never {
+  precondition(Thread.isMainThread, "xpcMain must run on the OS main thread")
   mainHandler.withLock { $0 = handler }
+  onReady()
   xpc_main(handleIncomingConnection)
 }

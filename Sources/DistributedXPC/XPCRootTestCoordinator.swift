@@ -9,8 +9,7 @@ import Synchronization
 /// connection. Each coordinator has an independent root and actor registry.
 /// Additional clients share that coordinator's root.
 ///
-///     let service = try xpcTest(ServiceRoot.self, XPCConnectionServiceConfiguration(
-///       onPeerAccept: { connection in /* audit hook fires here too */ }))
+///     let service = try await xpcTest(ServiceDelegate(), watchdog: .seconds(10))
 ///     defer { service.close() }
 ///     let root = try await service.client.retrying { _ in
 ///       try await service.client.root.ping()
@@ -24,7 +23,7 @@ import Synchronization
 /// closes. Only a named C service connection survives a full service restart.
 /// `dropServerPeer()` surfaces as `.disconnected` on `client.events`.
 ///
-/// The test-only operations live here, not on the channel: `host` exposes
+/// The test-only operations live here, not on the channel: `service.host` exposes
 /// the service host (cooperative `requestShutdown()` plus the shutdown
 /// completion for exit-policy assertions), `makeClient()` dials additional
 /// clients, and `close()` tears everything down. Nothing ever exits the
@@ -34,11 +33,8 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   /// the coordinator's endpoint at spawn time — `root` for calls, `events`
   /// for disconnects, `retrying` for restarts.
   public let client: XPCRootConnection<Root>
-  /// The service host driving the coordinator's peers and shutdown
-  /// pipeline.
-  public let host: XPCServiceHost
-  /// The backend the coordinator serves and dials with.
-  private let service: XPCActorService<Root>
+  /// The typed service owner, including its local root and lifecycle host.
+  public let service: XPCActorService<Root>
   public let transport: XPCChannelTransport
 
   private let acceptor: XPCChannelAcceptor
@@ -57,23 +53,21 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   }
   private let serverPeer: ServerPeerBox
 
-  init(service: XPCActorService<Root>, watchdog: Duration?) throws {
+  init(service: XPCActorService<Root>, watchdog: Duration?) async throws {
     let transport = service.root.actorSystem.transport
     self.transport = transport
     self.service = service
     let host = service.host
-    let acceptor = try service.makeAcceptor()
+    let acceptor = try await service.listen()
     let serverPeer = ServerPeerBox()
     acceptor.setAcceptHandler { channel in
       serverPeer.peer.withLock { $0 = channel }
       host.bind(channel)
     }
-    try acceptor.activate()
 
     let clientChannel = try transport.channel(dialing: acceptor.wireEndpoint)
     let client = try XPCRootConnection<Root>.connect(using: clientChannel)
     self.acceptor = acceptor
-    self.host = host
     self.client = client
     self.serverPeer = serverPeer
 
@@ -159,45 +153,81 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   deinit { close() }
 }
 
-/// Owns an in-process service, anonymous listener, and production root client.
-/// Use a backend-specific delegate for native admission. Event waiting belongs
-/// to `XPCServiceEventLog.wait`; shutdown waiting belongs to `service.host`.
+/// Starts a production actor service in-process, with an anonymous listener and
+/// a root client. Startup hooks complete before return; peer hooks gate RPCs.
+/// Access the typed owner through `service`; nothing exits the test process.
+/// The watchdog covers factory/startup as well as the serving fixture. Expiry
+/// cancels preparation and throws `CancellationError` if startup has not returned.
+/// Hooks already executing must honor cooperative cancellation.
 public func xpcTest<Root: XPCRootActor>(
-  _ rootType: Root.Type,
-  _ delegate: some XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
+  _ delegate: some XPCConnectionActorServiceDelegate<Root>,
   eventLog: XPCServiceEventLog? = nil,
-  watchdog: Duration? = nil,
-  onShutdown: @escaping @Sendable () -> Void = {}
-) throws -> XPCRootTestCoordinator<Root> {
-  try XPCRootTestCoordinator(
-    service: XPCActorService(rootType, delegate, eventLog: eventLog, onShutdown: onShutdown),
-    watchdog: watchdog)
+  watchdog: Duration? = nil
+) async throws -> XPCRootTestCoordinator<Root> {
+  try await makeTestCoordinator(watchdog: watchdog) {
+    try await XPCActorService(delegate, eventLog: eventLog)
+  }
 }
 
 public func xpcTest<Root: XPCRootActor>(
-  _ rootType: Root.Type,
-  sessionDelegate: some XPCSessionServiceDelegate,
+  sessionDelegate: some XPCSessionActorServiceDelegate<Root>,
   eventLog: XPCServiceEventLog? = nil,
-  watchdog: Duration? = nil,
-  onShutdown: @escaping @Sendable () -> Void = {}
-) throws -> XPCRootTestCoordinator<Root> {
-  try XPCRootTestCoordinator(
-    service: XPCActorService(
-      rootType, sessionDelegate: sessionDelegate, eventLog: eventLog, onShutdown: onShutdown),
-    watchdog: watchdog)
+  watchdog: Duration? = nil
+) async throws -> XPCRootTestCoordinator<Root> {
+  try await makeTestCoordinator(watchdog: watchdog) {
+    try await XPCActorService(sessionDelegate: sessionDelegate, eventLog: eventLog)
+  }
 }
 
-/// Runtime backend selection with default admission, useful for transport matrices.
-public func xpcTest<Root: XPCRootActor>(
-  _ rootType: Root.Type,
-  transport: XPCChannelTransport,
-  eventLog: XPCServiceEventLog? = nil,
-  watchdog: Duration? = nil,
-  onShutdown: @escaping @Sendable () -> Void = {}
-) throws -> XPCRootTestCoordinator<Root> {
-  try XPCRootTestCoordinator(
-    service: XPCActorService(
-      rootType, transport: transport, eventLog: eventLog, onShutdown: onShutdown),
-    watchdog: watchdog
-  )
+private struct WeakTestService<Root: XPCRootActor> {
+  weak var service: XPCActorService<Root>?
+}
+
+private func makeTestCoordinator<Root: XPCRootActor>(
+  watchdog: Duration?,
+  factory: @escaping @Sendable () async throws -> XPCActorService<Root>
+) async throws -> XPCRootTestCoordinator<Root> {
+  let result = XPCServiceResult<XPCRootTestCoordinator<Root>>()
+  let owner = Mutex(WeakTestService<Root>())
+  let deadline = watchdog.map { ContinuousClock.now + $0 }
+  let task = Task {
+    do {
+      let service = try await factory()
+      owner.withLock { $0.service = service }
+      do {
+        try Task.checkCancellation()
+        let remaining = deadline.map { ContinuousClock.now.duration(to: $0) }
+        let coordinator = try await XPCRootTestCoordinator(service: service, watchdog: remaining)
+        if Task.isCancelled { coordinator.close(); throw CancellationError() }
+        result.finish(.success(coordinator))
+      } catch {
+        service.cancel()
+        throw error
+      }
+    } catch { result.finish(.failure(error)) }
+  }
+  let timeout: DispatchWorkItem?
+  if let watchdog {
+    let item = DispatchWorkItem { [weak result] in
+      task.cancel()
+      owner.withLock { $0.service }?.cancel()
+      result?.finish(.failure(CancellationError()))
+    }
+    timeout = item
+    let seconds =
+      Double(watchdog.components.seconds) + Double(watchdog.components.attoseconds) * 1e-18
+    DispatchQueue.global().asyncAfter(deadline: .now() + max(0, seconds), execute: item)
+  } else {
+    timeout = nil
+  }
+  defer { timeout?.cancel() }
+  let coordinator = try await withTaskCancellationHandler {
+    try await result.wait()
+  } onCancel: {
+    task.cancel()
+    owner.withLock { $0.service }?.cancel()
+    result.finish(.failure(CancellationError()))
+  }
+  if Task.isCancelled { coordinator.close(); throw CancellationError() }
+  return coordinator
 }

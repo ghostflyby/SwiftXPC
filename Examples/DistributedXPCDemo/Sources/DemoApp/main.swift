@@ -15,17 +15,26 @@ struct DemoApp {
     do {
       // toService looks up the embedded .xpc bundle on either backend.
       let handle: XPCRootConnection<DemoRoot>
-      if CommandLine.arguments.contains("--session") {
+      let transport: XPCChannelTransport =
+        CommandLine.arguments.contains("--session") ? .session : .cConnection
+      if let index = CommandLine.arguments.firstIndex(of: "--mach-service") {
         handle = try XPCRootConnection<DemoRoot>.connect(
-          toService: demoServiceIdentifier, transport: .session)
+          machService: CommandLine.arguments[index + 1], transport: transport)
       } else {
-        handle = try XPCRootConnection<DemoRoot>.connect(toService: demoServiceIdentifier)
+        handle = try XPCRootConnection<DemoRoot>.connect(
+          toService: demoServiceIdentifier, transport: transport)
       }
       defer { handle.close() }
       for await event in handle.events {
         print("connection event: \(event)")
         break
       }
+
+      let configuration = try await handle.retrying { _ in try await handle.root.configuration() }
+      guard configuration == "injected" else {
+        throw NSError(domain: "UnpreparedRoot", code: 1)
+      }
+      print("root injection and preparation ok")
 
       // Child actor references do NOT survive a service restart; re-acquire
       // them from the root inside `retrying` after (or during) a restart.
@@ -46,6 +55,12 @@ struct DemoApp {
       let payload = DemoPayload(title: "smoke", count: 42)
       let decoded = try DemoPayload.unmarshal(from: try payload.marshal())
       print("payload round trip ok: \(decoded)")
+      if CommandLine.arguments.contains("--retire") {
+        let reply = Task { try await handle.root.retire() }
+        await handle.connection.waitForDisconnection()
+        reply.cancel()
+        print("cooperative retirement observed")
+      }
 
     } catch {
       fputs("DistributedXPCDemo failed: \(error)\n", stderr)

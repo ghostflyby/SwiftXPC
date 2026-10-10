@@ -30,7 +30,7 @@ private final class InvocationGate: Sendable {
 }
 
 @XPCService
-private distributed actor SuspendedRoot: XPCRootActor {
+private distributed actor SuspendedRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
   let gate: InvocationGate
 
@@ -54,12 +54,10 @@ private distributed actor SuspendedRoot: XPCRootActor {
 func SuspendedInvocationDoesNotBlockPeerInvalidation(transport: XPCChannelTransport) async throws {
   let gate = InvocationGate()
   let log = XPCServiceEventLog()
-  let service = XPCActorService(
+  let service = try await makeTestService(
     SuspendedRoot.self, transport: transport, eventLog: log,
     makeRoot: { SuspendedRoot(gate: gate, actorSystem: $0) })
-  let acceptor = try transport.acceptor()
-  acceptor.setAcceptHandler { service.host.bind($0) }
-  try acceptor.activate()
+  let acceptor = try await service.listen()
   let client = try XPCRootConnection<SuspendedRoot>.connect(
     using: transport.channel(dialing: acceptor.wireEndpoint))
   defer { gate.release(); client.close(); acceptor.cancel(); service.cancel() }

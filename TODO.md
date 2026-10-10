@@ -294,7 +294,7 @@
 - 一条入站 XPC connection 只绑定一个 actor；请求中的 `actorID` 降级为身份校验与诊断字段，
   不再承担 channel 内多 actor 路由。
 - 初始 Mach service connection 固定绑定用户 root actor（`XPCRootActor` 协议 +
-  `xpcMain(Root.self)` / `XPCApp`），root 固定使用 `XPCActorID.root == 0`；
+  `xpcMain(delegate:)` / typed delegate 的显式 `@main`），root 固定使用 `XPCActorID.root == 0`；
   普通本地 actor ID 仍从 1 开始。
 - 客户端通过 `Root.connect(toService:)` / `connect(using:)` 以 `.root` 解析远端 root proxy；
   bootstrap 不引入额外的框架内置 actor 或握手 RPC。

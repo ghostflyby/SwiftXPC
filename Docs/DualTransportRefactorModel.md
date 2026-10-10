@@ -53,7 +53,8 @@ flowchart TD
 requirement 接口；accepted 身份快照保留在 native connection。C 与 Session 两个 Delegate 协议继承
 共同服务通知，通过专用构造入口在编译期选择后端，没有 runtime downcast。
 
-服务 delegate 不要求 `init()` 或 `@main`；只有 `XPCApp` 要求无参构造与 hosted start hook。
+服务 delegate 不要求 `init()`；actor 服务使用带 Root 关联类型的生命周期协议及两个 native 专用子协议。
+`XPCApp` 已删除，具体 delegate 自行实现 static main 并标注 `@main`。阶段顺序以 source DocC 为准。
 完整公开 API 的逐面审计、替代方案、收拢决定与迁移见 [PublicAPIAudit.md](PublicAPIAudit.md)。
 
 ## 生命周期契约
@@ -68,7 +69,7 @@ requirement 接口；accepted 身份快照保留在 native connection。C 与 Se
   唯一指定执行方。并发 cancel 立即终止库层通道、释放发送等待者，由激活方完成原生取消。
 - Session 替换或取消 incoming handler 时，锁内取走旧 closure，锁外释放，允许 captures 析构重入 cancel。
 - host 的取消/关闭状态与 shutdown waiters 由同一把锁维护；bare cancel 原子地取走自己的
-  waiters，不会清理后来 shutdown request 注册的 waiters。恢复 continuation 与取消 peer 均在锁外。
+  waiters；bare cancel 是终局，后来 shutdown request 不运行管线。恢复 continuation 与取消 peer 均在锁外。
 - listener 的 Session handler 配置仍在 accept callback 内完成；交付排到同一 target queue，确保
   native decision 已返回。[Apple 的 accept 文档](https://developer.apple.com/documentation/xpc/xpclistener/incomingsessionrequest/accept(incomingmessagehandler:cancellationhandler:)-48c3k)
   明确返回的 inactive session 是用于这个配置窗口。
@@ -89,7 +90,7 @@ requirement 接口；accepted 身份快照保留在 native connection。C 与 Se
 root 是 **每个服务实例一次构造**，所有接受的 root peers 绑定同一个 actor。不同服务实例可以在
 同一进程内各自拥有 `.root`，因为 identity 的命名空间是各自的 system。生产和测试使用同一组装路径。
 
-`XPCActorService(makeRoot:)` 在构造时保留 root identity，调用 factory 后校验 root 及所属 system。
+`XPCActorService(delegate)` 在构造时保留 root identity，调用 factory 后校验 root 及所属 system。
 `cancel()` 结束自己创建的 listeners、peers 和 export sessions，并释放 registry pins。peer 断开不会结束整个服务，也不会
 使别的客户端或已导出的子 actor 失效。
 
@@ -123,7 +124,7 @@ actor system 保留所用的 channel，省去 `ownsConnection` / `allowsChildRec
 | `system.connection` 永远非空 | 代理 system 非空；本地 registry 为 nil |
 | channel `send(payload, replyQueue:)` | `send(payload)`；native C API 仍支持 reply queue |
 | `XPCRootConnectionEvent.connected` | `.ready`：本地代理就绪，首次调用才建立通信 |
-| `XPCServiceDelegate.main()` | `XPCApp` 或显式 `xpcMain` |
+| `XPCServiceDelegate.main()` / `XPCApp` | 具体 typed delegate 的显式 static main，调用 `xpcMain(delegate:)` |
 | 对 invalid / session 错误重试 | 仅 C `.interrupted` 重试 |
 
 C 的字符串 requirement 留在 native connection 专用 API。Session 的 native request 在 accept

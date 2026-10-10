@@ -35,6 +35,49 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   let exportSessionsLock = Mutex<[UUID: XPCActorExportSession]>([:])
   let importedReferencesLock = Mutex<[XPCActorID: StoredActorReference]>([:])
   let invalidated = Mutex(false)
+  private struct DispatchState {
+    var gate: XPCServiceReadiness?
+    var stopped = false
+  }
+  private let dispatchState = Mutex(DispatchState())
+
+  func suspendServiceDispatch() {
+    dispatchState.withLock { $0.gate = XPCServiceReadiness() }
+  }
+
+  func resumeServiceDispatch() {
+    let gate = dispatchState.withLock { $0.stopped ? nil : $0.gate }
+    gate?.finish(.success(()))
+  }
+
+  func stopServiceDispatch() {
+    let gate = dispatchState.withLock { state in
+      state.stopped = true
+      return state.gate
+    }
+    gate?.finish(.failure(CancellationError()))
+    let sessions = exportSessionsLock.withLock { Array($0.values) }
+    for session in sessions { session.cancel() }
+  }
+
+  func registerExportSession(_ session: XPCActorExportSession) -> Bool {
+    dispatchState.withLock { state in
+      guard !state.stopped else { return false }
+      return invalidated.withLock { invalidated in
+        guard !invalidated else { return false }
+        exportSessionsLock.withLock { $0[session.id] = session }
+        return true
+      }
+    }
+  }
+
+  private func awaitDispatch() async -> Bool {
+    let (gate, stopped) = dispatchState.withLock { ($0.gate, $0.stopped) }
+    guard !stopped else { return false }
+    do { try await gate?.wait() } catch { return false }
+    return dispatchState.withLock { !$0.stopped }
+  }
+
   private let serviceShutdownHandler = Mutex<(@Sendable () -> Void)?>(nil)
   /// Immutable export and import policy for this actor system.
   public let transport: XPCChannelTransport
@@ -69,6 +112,7 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
   }
 
   func invalidate() {
+    stopServiceDispatch()
     let sessions = invalidated.withLock { invalidated in
       invalidated = true
       let sessions = exportSessionsLock.withLock {
@@ -258,19 +302,32 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     serviceShutdownHandler.withLock { $0 }?()
   }
 
-  /// Serializes invocations per channel without blocking the XPC event queue.
-  func bind<Act>(_ connection: XPCChannel, to actor: Act)
-  where Act: DistributedActor, Act.ID == ActorID {
+  /// Serializes invocations without blocking native queues. A binding barrier
+  /// protects even channels activated by user code inside a did-bind hook.
+  /// Queue observers are internal deterministic regression-test instrumentation.
+  func bind<Act>(
+    _ connection: XPCChannel, to actor: Act,
+    readiness: XPCServiceReadiness? = nil,
+    onEnqueued: @escaping @Sendable () -> Void = {},
+    onFinished: @escaping @Sendable () -> Void = {}
+  ) where Act: DistributedActor, Act.ID == ActorID {
     let tail = Mutex<Task<Void, Never>?>(nil)
+    let ended = Mutex(false)
+    connection.addInvalidationHandler { ended.withLock { $0 = true } }
     connection.setIncomingHandler { [weak self, weak actor] message in
       tail.withLock { previous in
         let predecessor = previous
         previous = Task { [weak self, weak actor] in
+          defer { onFinished() }
           await predecessor?.value
-          guard let self, let actor else { return }
+          do { try await readiness?.wait() } catch { return }
+          guard !ended.withLock({ $0 }), let self, let actor, await self.awaitDispatch() else {
+            return
+          }
           await self.handleIncomingMessage(message, on: actor)
         }
       }
+      onEnqueued()
     }
   }
 

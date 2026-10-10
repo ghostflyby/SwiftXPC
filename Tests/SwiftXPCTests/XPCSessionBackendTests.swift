@@ -22,7 +22,7 @@ import Testing
   }
 
   @XPCService
-  distributed actor SessionRoot: XPCRootActor {
+  distributed actor SessionRoot: TestRoot {
     typealias ActorSystem = XPCDistributedActorSystem
 
     distributed func makeWorker() -> SessionWorker {
@@ -31,7 +31,7 @@ import Testing
   }
 
   @Test func SessionBackendXpcTestServesRootCalls() async throws {
-    let service = try xpcTest(
+    let service = try await testService(
       SessionRoot.self, transport: .session, watchdog: .seconds(10))
     defer { service.close() }
 
@@ -40,7 +40,7 @@ import Testing
   }
 
   @Test func SessionBackendExportsChildActorsOverSessionListeners() async throws {
-    let service = try xpcTest(
+    let service = try await testService(
       SessionRoot.self, transport: .session, watchdog: .seconds(10))
     defer { service.close() }
 
@@ -52,7 +52,7 @@ import Testing
   }
 
   @Test func SessionBackendPeerDropIsTerminalForTheClientChannel() async throws {
-    let service = try xpcTest(
+    let service = try await testService(
       SessionRoot.self, transport: .session, watchdog: .seconds(10))
     defer { service.close() }
     _ = try await service.client.root.makeWorker()

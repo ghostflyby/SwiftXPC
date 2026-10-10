@@ -110,9 +110,13 @@ final class ActorServiceChannel<Root: TestRoot>: @unchecked Sendable {
 
 /// Waits on a dedicated queue so a stalled regression reports a bounded failure.
 func waitForTestSignal(_ signal: DispatchSemaphore, seconds: Double = 5) async -> Bool {
+  await waitForTestSignal(signal, until: .now() + seconds)
+}
+
+func waitForTestSignal(_ signal: DispatchSemaphore, until deadline: DispatchTime) async -> Bool {
   await withCheckedContinuation { continuation in
     DispatchQueue.global().async {
-      continuation.resume(returning: signal.wait(timeout: .now() + seconds) == .success)
+      continuation.resume(returning: signal.wait(timeout: deadline) == .success)
     }
   }
 }

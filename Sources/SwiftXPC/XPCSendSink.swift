@@ -27,7 +27,9 @@ final class XPCSendSink: Sendable {
   }
 
   private let state = Mutex(State())
-  // Internal delivery observer makes cancellation/resumption races deterministic.
+  // Runs outside the lock before each continuation resumes, including rejected
+  // late installs. No resumption means zero calls; a normal send calls once.
+  // Each late install adds another call, which can overlap an earlier one.
   private let beforeResume: @Sendable () -> Void
 
   init(beforeResume: @escaping @Sendable () -> Void = {}) {

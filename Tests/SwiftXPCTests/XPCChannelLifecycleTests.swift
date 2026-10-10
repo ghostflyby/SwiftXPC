@@ -19,12 +19,14 @@ import Testing
   // Concurrent Task.cancel must complete; it cannot wait on a lock retained by
   // resumption. A child watchdog bounds failures of the old locking strategy.
   await #expect(processExitsWith: .success) {
-    DispatchQueue.global().asyncAfter(deadline: .now() + 10) { exit(77) }
+    // All signal waits share one budget, leaving two seconds for the watchdog.
+    let deadline = DispatchTime.now() + 8
+    DispatchQueue.global().asyncAfter(deadline: deadline + 2) { exit(77) }
     let installed = DispatchSemaphore(value: 0), delivery = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0), cancelled = DispatchSemaphore(value: 0)
     let sink = XPCSendSink(beforeResume: {
       delivery.signal()
-      guard release.wait(timeout: .now() + 8) == .success else { exit(1) }
+      guard release.wait(timeout: deadline) == .success else { exit(1) }
     })
     let task = Task {
       try await withTaskCancellationHandler {
@@ -36,14 +38,14 @@ import Testing
         sink.finish(.failure(CancellationError()))
       }
     }
-    guard await waitForTestSignal(installed) else { exit(1) }
+    guard await waitForTestSignal(installed, until: deadline) else { exit(1) }
     DispatchQueue.global().async { sink.finish(.failure(XPCChannelError.invalid)) }
-    guard await waitForTestSignal(delivery) else { exit(1) }
+    guard await waitForTestSignal(delivery, until: deadline) else { exit(1) }
     DispatchQueue.global().async {
       task.cancel()
       cancelled.signal()
     }
-    guard await waitForTestSignal(cancelled) else { exit(1) }
+    guard await waitForTestSignal(cancelled, until: deadline) else { exit(1) }
     release.signal()
     do {
       _ = try await task.value

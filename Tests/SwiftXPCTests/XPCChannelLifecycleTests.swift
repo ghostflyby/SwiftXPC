@@ -14,6 +14,47 @@ import Testing
   }
 }
 
+@Test func SendCancellationCompletesWhileReplyResumptionIsSuspended() async {
+  // The callback claims its outcome, then pauses before resuming the task.
+  // Concurrent Task.cancel must complete; it cannot wait on a lock retained by
+  // resumption. A child watchdog bounds failures of the old locking strategy.
+  await #expect(processExitsWith: .success) {
+    DispatchQueue.global().asyncAfter(deadline: .now() + 10) { exit(77) }
+    let installed = DispatchSemaphore(value: 0), delivery = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0), cancelled = DispatchSemaphore(value: 0)
+    let sink = XPCSendSink(beforeResume: {
+      delivery.signal()
+      guard release.wait(timeout: .now() + 8) == .success else { exit(1) }
+    })
+    let task = Task {
+      try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation {
+          sink.install($0)
+          installed.signal()
+        }
+      } onCancel: {
+        sink.finish(.failure(CancellationError()))
+      }
+    }
+    guard await waitForTestSignal(installed) else { exit(1) }
+    DispatchQueue.global().async { sink.finish(.failure(XPCChannelError.invalid)) }
+    guard await waitForTestSignal(delivery) else { exit(1) }
+    DispatchQueue.global().async {
+      task.cancel()
+      cancelled.signal()
+    }
+    guard await waitForTestSignal(cancelled) else { exit(1) }
+    release.signal()
+    do {
+      _ = try await task.value
+      exit(1)
+    } catch let error as XPCChannelError where error == .invalid {
+      // The earlier callback won; cancellation does not replace its outcome.
+    } catch { exit(1) }
+    exit(0)
+  }
+}
+
 @Test func IncomingMessageCopiesShareOneReplyCapability() {
   let replies = Mutex(0)
   let payload = SendableXPCObject(xpc_dictionary_create(nil, nil, 0))

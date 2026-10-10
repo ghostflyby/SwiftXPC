@@ -160,13 +160,15 @@ let listener = try XPCChannelAcceptor(
 
 ## 验证与边界
 
-- warnings-as-errors 全量测试：主套件 200 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
+- warnings-as-errors 全量测试：主套件 201 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
 - 新增/调整测试覆盖 native audit → binding → notification → message 的顺序、Session false/throw
   原生拒绝、两个后端的绑定失败与 native rejection 区分、直接 Session conformer、service 持有及关闭 listeners。
 - Session 激活的同步取消/重入、激活过程中并发取消、创建失败后的发送结束，以及 shutdown 管线期间
   重复 cancel 不释放其 waiters；actor proxy forwarding/re-export 与并发 peers 在 C/C、Session/Session 均覆盖。
 - Session incoming handler 的取消及替换均在锁外释放 captures；两个子进程测试验证 capture 析构重入
   cancel 不崩溃且 invalidation 只通知一次，原实现下两例均因递归锁崩溃而失败。
+- Send sink 在锁内取出 continuation、锁外恢复，避免 native reply 与 Task.cancel 的任务状态锁反转。
+  进程外确定性测试暂停回复恢复，同时要求取消完成；旧锁策略失败，修复后通过。
 - 从包外 typecheck 三组正确用法（通用 API、两个无需自行实现 main 的 @main delegate，含 macOS 26 typed Session requirement），并验证 20 种错误调用被拒绝：
   缺失入口 init/serviceName、双后端入口未选择 main、Delegate / backend 错配、Delegate + runtime transport、缺失 delivery handler、缺失 named security service / nil service、C-only channel 身份 /
   requirement / interruption、公开替换 host / listener routing。

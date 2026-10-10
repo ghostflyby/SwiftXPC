@@ -9,7 +9,7 @@ import SwiftXPCMacros
 import Testing
 
 @XPCService
-distributed actor StatefulServiceRoot: XPCRootActor {
+distributed actor StatefulServiceRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
 
   private let bumps = Mutex(0)
@@ -62,8 +62,8 @@ distributed actor ExitWorker {
 @Suite(.serialized)
 struct XPCActorServiceTests {
   @Test func ServicesOwnIndependentRootsAndRegistries() async throws {
-    let first = try ActorServiceChannel(StatefulServiceRoot.self)
-    let second = try ActorServiceChannel(StatefulServiceRoot.self)
+    let first = try await ActorServiceChannel(StatefulServiceRoot.self)
+    let second = try await ActorServiceChannel(StatefulServiceRoot.self)
     defer { first.close(); second.close() }
     #expect(first.service.root !== second.service.root)
     #expect(first.service.root.id == .root)
@@ -81,7 +81,19 @@ struct XPCActorServiceTests {
       let foreign = XPCDistributedActorSystem()
       foreign.reserveRootID()
       let root = StatefulServiceRoot(actorSystem: foreign)
-      _ = XPCActorService(StatefulServiceRoot.self, makeRoot: { _ in root })
+      _ = try await XPCActorService(TestActorDelegate<StatefulServiceRoot>(factory: { _ in root }))
+    }
+    let output = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
+    #expect(
+      output.contains("The root factory must construct the first actor on the supplied system"))
+  }
+
+  @Test func RootFactoryRejectsUnregisteredProxy() async {
+    let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+      _ = try await XPCActorService(
+        TestActorDelegate<StatefulServiceRoot>(factory: { system in
+          try StatefulServiceRoot.resolve(id: .root, using: system)
+        }))
     }
     let output = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
     #expect(
@@ -120,7 +132,7 @@ struct XPCActorServiceTests {
   }
 
   @Test func ServiceRootServesAllPeersThroughOneInstance() async throws {
-    let channel = try ActorServiceChannel(StatefulServiceRoot.self)
+    let channel = try await ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
 
     let first = try StatefulServiceRoot.connect(using: channel.client)
@@ -136,7 +148,7 @@ struct XPCActorServiceTests {
   }
 
   @Test func ServiceChildActorsDoNotCollideWithRoot() async throws {
-    let channel = try ActorServiceChannel(StatefulServiceRoot.self)
+    let channel = try await ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
 
     let first = try StatefulServiceRoot.connect(using: channel.client)
@@ -158,7 +170,7 @@ struct XPCActorServiceTests {
     // Service ownership contract: the root (and children it minted on the service
     // host) outlive any one client connection — retirement is launchd's or
     // an explicit requestShutdown's, never a disconnect's.
-    let channel = try ActorServiceChannel(StatefulServiceRoot.self)
+    let channel = try await ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
     let root = try StatefulServiceRoot.connect(using: channel.client)
     let worker = try await root.makeWorker()
@@ -178,7 +190,7 @@ struct XPCActorServiceTests {
   }
 
   @Test func FullyDrainedChildIsUnpinned() async throws {
-    let channel = try ActorServiceChannel(StatefulServiceRoot.self)
+    let channel = try await ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
     let root = try StatefulServiceRoot.connect(using: channel.client)
     let host = channel.service.root.actorSystem
@@ -200,7 +212,7 @@ struct XPCActorServiceTests {
   }
 
   @Test func ReadoptedChildIsReexportable() async throws {
-    let channel = try ActorServiceChannel(StatefulServiceRoot.self)
+    let channel = try await ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
     let root = try StatefulServiceRoot.connect(using: channel.client)
     let host = channel.service.root.actorSystem
@@ -221,7 +233,7 @@ struct XPCActorServiceTests {
   }
 
   @Test func RootRegistryEntrySurvivesSelfHandout() async throws {
-    let channel = try ActorServiceChannel(StatefulServiceRoot.self)
+    let channel = try await ActorServiceChannel(StatefulServiceRoot.self)
     defer { channel.close() }
     let root = try StatefulServiceRoot.connect(using: channel.client)
     let host = channel.service.root.actorSystem

@@ -174,6 +174,7 @@ final class PeerBox: Sendable {
 extension XPCDistributedActorSystem {
   func export<Act>(_ actor: Act) throws(XPCMarshalError) -> xpc_object_t
   where Act: XPCExportableActor {
+    guard !invalidated.withLock({ $0 }) else { throw .actorResolutionFailed("Actor system ended") }
     let isLocal = activeActorsLock.withLock { actors in
       guard let registered = actors[actor.id] as? Act else { return false }
       return registered === actor
@@ -254,11 +255,7 @@ extension XPCDistributedActorSystem {
       throw XPCMarshalError.actorResolutionFailed(String(describing: error))
     }
 
-    let registered = invalidated.withLock { invalidated in
-      guard !invalidated else { return false }
-      exportSessionsLock.withLock { $0[sessionID] = session }
-      return true
-    }
+    let registered = registerExportSession(session)
     guard registered else {
       session.cancel()
       throw .invalidActorReference("Owning session is invalidated")

@@ -8,6 +8,7 @@ let package = Package(
     .library(name: "DemoShared", targets: ["DemoShared"]),
     .executable(name: "DemoApp", targets: ["DemoApp"]),
     .executable(name: "DemoService", targets: ["DemoService"]),
+    .executable(name: "DemoSessionService", targets: ["DemoSessionService"]),
   ],
   dependencies: [
     .package(path: "../..")
@@ -26,6 +27,13 @@ let package = Package(
         "DemoShared",
         .product(name: "DistributedXPC", package: "SwiftXPC"),
         .product(name: "SwiftXPC", package: "SwiftXPC"),
+      ]
+    ),
+    .executableTarget(
+      name: "DemoSessionService",
+      dependencies: [
+        "DemoShared",
+        .product(name: "DistributedXPC", package: "SwiftXPC"),
       ]
     ),
     .executableTarget(

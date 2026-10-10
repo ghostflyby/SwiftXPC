@@ -8,7 +8,7 @@ import SwiftXPCMacros
 import Testing
 
 @XPCService
-distributed actor ShutdownRoot: XPCRootActor {
+distributed actor ShutdownRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
 
   distributed func ping() -> String {
@@ -25,7 +25,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func ShutdownTearsDownExistingSession() async throws {
-  let channel = try RootChannel(ShutdownRoot.self)
+  let channel = try await RootChannel(ShutdownRoot.self)
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
   #expect(try await root.ping() == "root")
@@ -48,7 +48,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 
 @Test func ShutdownClosesListenerToNewPeers() async throws {
   let log = XPCServiceEventLog()
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     ShutdownRoot.self,
     XPCConnectionServiceConfiguration(),
     eventLog: log
@@ -69,7 +69,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 
 @Test func ShutdownRejectsBeforeAuditWindow() async throws {
   let log = XPCServiceEventLog()
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     ShutdownRoot.self,
     XPCConnectionServiceConfiguration(),
     eventLog: log
@@ -93,7 +93,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 
 @Test func ShutdownFiresOnShutdownExactlyOnce() async throws {
   let log = XPCServiceEventLog()
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     ShutdownRoot.self,
     XPCConnectionServiceConfiguration(),
     eventLog: log
@@ -113,7 +113,7 @@ distributed actor ShutdownRoot: XPCRootActor {
 }
 
 @Test func RequestServiceShutdownBridgesFromRootActor() async throws {
-  let channel = try RootChannel(ShutdownRoot.self, XPCConnectionServiceConfiguration())
+  let channel = try await RootChannel(ShutdownRoot.self, XPCConnectionServiceConfiguration())
   defer { channel.close() }
   let root = try ShutdownRoot.connect(using: channel.client)
 

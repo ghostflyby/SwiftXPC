@@ -10,7 +10,7 @@ import SwiftXPCMacros
 import Testing
 
 @XPCService
-distributed actor AuditRoot: XPCRootActor {
+distributed actor AuditRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
 
   distributed func ping() -> String {
@@ -42,7 +42,7 @@ private func ownSigningIdentifier() -> String? {
   let auditCalls = Mutex<Int>(0)
   let rejections = Mutex<[(any Error)?]>([])
   let log = XPCServiceEventLog()
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     AuditRoot.self,
     XPCConnectionServiceConfiguration(
       peerCodeSigningRequirement: "not a code signing requirement !!",
@@ -73,7 +73,7 @@ private func ownSigningIdentifier() -> String? {
   let rejections = Mutex<[(any Error)?]>([])
   let ends = Mutex<Int>(0)
   let log = XPCServiceEventLog()
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     AuditRoot.self,
     XPCConnectionServiceConfiguration(
       peerCodeSigningRequirement: "identifier \"com.example.definitely.not.us\"",
@@ -100,7 +100,7 @@ private func ownSigningIdentifier() -> String? {
     Issue.record("Could not determine the test binary's code signing identifier")
     return
   }
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     AuditRoot.self,
     XPCConnectionServiceConfiguration(
       peerCodeSigningRequirement: "identifier \"\(identifier)\""))
@@ -115,7 +115,7 @@ private func ownSigningIdentifier() -> String? {
   struct AuditHookFailure: Error {}
   let log = XPCServiceEventLog()
   let rejections = Mutex<[(any Error)?]>([])
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     AuditRoot.self,
     XPCConnectionServiceConfiguration(
       shouldAccept: { _ in throw AuditHookFailure() },
@@ -137,7 +137,7 @@ private func ownSigningIdentifier() -> String? {
 @Test func ShouldAcceptFalseReportsNilError() async throws {
   let log = XPCServiceEventLog()
   let rejections = Mutex<[(any Error)?]>([])
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     AuditRoot.self,
     XPCConnectionServiceConfiguration(
       shouldAccept: { _ in false },
@@ -166,7 +166,7 @@ private func ownSigningIdentifier() -> String? {
 /// `xpc_connection_send_message_with_reply_sync`; passing the message twice
 /// is a libxpc programming error that traps the process.
 @Test func SyncSendSurfacesInterruptionFromRejectedPeer() async throws {
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     AuditRoot.self, XPCConnectionServiceConfiguration(shouldAccept: { _ in false }))
   defer { channel.close() }
   let connection = try #require(channel.client.connection)
@@ -185,7 +185,7 @@ private func ownSigningIdentifier() -> String? {
     Issue.record("Could not determine the test binary's code signing identifier")
     return
   }
-  let channel = try RootChannel(AuditRoot.self)
+  let channel = try await RootChannel(AuditRoot.self)
   let root = try AuditRoot.connect(
     using: try #require(channel.client.connection),
     peerCodeSigningRequirement: "identifier \"\(identifier)\"")
@@ -194,7 +194,7 @@ private func ownSigningIdentifier() -> String? {
 }
 
 @Test func UnsatisfiableClientRequirementRejectsService() async throws {
-  let channel = try RootChannel(AuditRoot.self)
+  let channel = try await RootChannel(AuditRoot.self)
   let root = try AuditRoot.connect(
     using: try #require(channel.client.connection),
     peerCodeSigningRequirement: "identifier \"com.example.definitely.not.us\"")

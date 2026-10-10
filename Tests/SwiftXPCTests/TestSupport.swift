@@ -28,9 +28,9 @@ func roundTrip<T: XPCEquatable>(_ value: T) throws {
 /// The coordinator has already activated the client channel.
 /// `close()` cancels every connection; it also runs from `deinit` and the
 /// watchdog.
-final class RootChannel<Root: XPCRootActor>: Sendable {
+final class RootChannel<Root: TestRoot>: Sendable {
   let harness: XPCRootTestCoordinator<Root>
-  var host: XPCServiceHost { harness.host }
+  var host: XPCServiceHost { harness.service.host }
   /// The coordinator's client channel is C-backed, so the C-specific test
   /// surface (setEventHandler, the sync send) stays reachable.
   var client: XPCChannel { harness.client.connection }
@@ -39,8 +39,8 @@ final class RootChannel<Root: XPCRootActor>: Sendable {
     _ rootType: Root.Type,
     _ delegate: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
     eventLog: XPCServiceEventLog? = nil
-  ) throws {
-    harness = try xpcTest(
+  ) async throws {
+    harness = try await testService(
       rootType,
       delegate,
       eventLog: eventLog,
@@ -66,7 +66,7 @@ final class RootChannel<Root: XPCRootActor>: Sendable {
 }
 
 /// Directly drives the production actor-service assembly with multiple peers.
-final class ActorServiceChannel<Root: XPCRootActor>: @unchecked Sendable {
+final class ActorServiceChannel<Root: TestRoot>: @unchecked Sendable {
   let service: XPCActorService<Root>
   var server: XPCServiceHost { service.host }
   let client: XPCChannel
@@ -77,10 +77,10 @@ final class ActorServiceChannel<Root: XPCRootActor>: @unchecked Sendable {
     _ rootType: Root.Type,
     _ delegate: any XPCConnectionServiceDelegate = XPCConnectionServiceConfiguration(),
     eventLog: XPCServiceEventLog? = nil
-  ) throws {
-    let service = XPCActorService(rootType, delegate, eventLog: eventLog)
+  ) async throws {
+    let service = try await makeTestService(rootType, delegate, eventLog: eventLog)
     let server = service.host
-    let listener = try service.listen()
+    let listener = try await service.listen()
     let client = try XPCChannelTransport.cConnection.channel(dialing: listener.wireEndpoint)
     self.listener = listener
     self.service = service

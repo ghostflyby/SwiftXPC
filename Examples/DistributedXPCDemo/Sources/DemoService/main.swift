@@ -4,6 +4,7 @@ import DemoShared
 import DistributedXPC
 
 @main
-struct DemoServiceMain: XPCApp {
-  typealias Root = DemoRoot
+struct DemoServiceMain: DemoServiceLifecycle, XPCConnectionActorServiceDelegate {
+  let dependency: String
+  init() { dependency = "injected" }
 }

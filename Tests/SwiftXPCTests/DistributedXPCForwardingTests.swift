@@ -16,7 +16,7 @@ distributed actor ForwardWorker {
 }
 
 @XPCService
-distributed actor ForwardRoot: XPCRootActor {
+distributed actor ForwardRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
 
   distributed func makeWorker() -> ForwardWorker {
@@ -30,7 +30,8 @@ distributed actor ForwardRoot: XPCRootActor {
 
 @Test(arguments: [XPCChannelTransport.cConnection, .session])
 func ForwardedProxyRoundTripsThroughOwnerEndpoint(transport: XPCChannelTransport) async throws {
-  let service = try xpcTest(ForwardRoot.self, transport: transport, watchdog: .seconds(10))
+  let service = try await testService(
+    ForwardRoot.self, transport: transport, watchdog: .seconds(10))
   defer { service.close() }
   let root = service.client.root
   let worker = try await root.makeWorker()
@@ -46,7 +47,8 @@ func ForwardedProxyRoundTripsThroughOwnerEndpoint(transport: XPCChannelTransport
 
 @Test(arguments: [XPCChannelTransport.cConnection, .session])
 func SameProxyForwardedTwiceServesParallelPeers(transport: XPCChannelTransport) async throws {
-  let service = try xpcTest(ForwardRoot.self, transport: transport, watchdog: .seconds(10))
+  let service = try await testService(
+    ForwardRoot.self, transport: transport, watchdog: .seconds(10))
   defer { service.close() }
   let root = service.client.root
   let worker = try await root.makeWorker()
@@ -70,7 +72,7 @@ func SameProxyForwardedTwiceServesParallelPeers(transport: XPCChannelTransport) 
 }
 
 @Test func RootServerRejectsPeerBeforeActivation() async throws {
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     ForwardRoot.self, XPCConnectionServiceConfiguration(shouldAccept: { _ in false }))
   let connection = try #require(channel.client.connection)
   connection.setEventHandler { _ in }

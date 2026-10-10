@@ -40,7 +40,7 @@ public struct XPCServiceEvent: Equatable, Sendable {
 /// assert the delegate-hook sequence:
 ///
 ///     let log = XPCServiceEventLog()
-///     let service = try xpcTest(ServiceRoot.self, XPCConnectionServiceConfiguration(), eventLog: log)
+///     let service = try await xpcTest(ServiceDelegate(), eventLog: log)
 ///     _ = try await service.client.root.ping()
 ///     service.host.requestShutdown()
 ///     #expect(await log.wait(for: .serviceWillShutdown) != nil)
@@ -50,6 +50,8 @@ public struct XPCServiceEvent: Equatable, Sendable {
 /// `wait(for:occurrence:timeout:)` never polls: it returns immediately when the
 /// event is already recorded, otherwise it suspends and is resumed by the
 /// recording itself — a missed edge-triggered event is impossible.
+/// Records native admission and host events; typed actor preparation hooks
+/// are observed by the actor delegate itself.
 public final class XPCServiceEventLog: Sendable {
   private struct Waiter {
     let id = UUID()

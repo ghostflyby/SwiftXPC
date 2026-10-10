@@ -16,15 +16,32 @@ bin_path = Path(subprocess.check_output(
     ["swift", "build", "--show-bin-path"], cwd=workspace, text=True,
 ).strip())
 common='''import DistributedXPC
+enum ProbeFailure: Error { case unconfigured }
 struct C: XPCConnectionServiceDelegate {
   func shouldAcceptConnection(_ connection: XPCConnection) throws -> Bool { connection.euid == geteuid() }
 }
 struct S: XPCSessionServiceDelegate {
   func shouldAcceptSessionRequest(_ request: XPCListener.IncomingSessionRequest) throws -> Bool { true }
 }
+struct AC<R: XPCRootActor>: XPCConnectionActorServiceDelegate {
+  let factory: @Sendable (XPCDistributedActorSystem) async throws -> R
+  func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> R { try await factory(actorSystem) }
+}
+extension AC {
+  init() { self.init(factory: { _ in throw ProbeFailure.unconfigured }) }
+}
+struct AS<R: XPCRootActor>: XPCSessionActorServiceDelegate {
+  static var serviceName: String { "example.service" }
+  let factory: @Sendable (XPCDistributedActorSystem) async throws -> R
+  func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> R { try await factory(actorSystem) }
+}
+extension AS {
+  init() { self.init(factory: { _ in throw ProbeFailure.unconfigured }) }
+}
 '''
 positive=common+'''
-func publicAPI<Root: XPCRootActor>(_ root: Root.Type) throws {
+func publicAPI<Root: XPCRootActor>(_ root: Root.Type,
+  factory: @escaping @Sendable (XPCDistributedActorSystem) async throws -> Root) async throws {
   _ = try Root.connect(toService: "example.bundle.service")
   _ = try Root.connect(machService: "example.mach.service")
   _ = try XPCRootConnection<Root>.connect(toService: "example.bundle.service")
@@ -37,15 +54,14 @@ func publicAPI<Root: XPCRootActor>(_ root: Root.Type) throws {
     _ = try XPCRootConnection<Root>.connect(toService: "example.bundle.service", transport: transport)
     _ = try XPCRootConnection<Root>.connect(machService: "example.mach.service", transport: transport)
   }
-  let c = XPCActorService(root, C())
-  try c.listen()
-  let s = XPCActorService(root, sessionDelegate: S(), onShutdown: {},
-    makeRoot: { Root(actorSystem: $0) })
-  _ = XPCActorService(root, transport: .session, onShutdown: {},
-    makeRoot: { Root(actorSystem: $0) })
-  _ = try xpcTest(root, sessionDelegate: S(), watchdog: .seconds(10), onShutdown: {})
-  _ = try xpcTest(root, transport: .session, watchdog: .seconds(10), onShutdown: {})
-  try s.listen()
+  let c = try await XPCActorService(AC(factory: factory))
+  try await c.listen()
+  let s = try await XPCActorService(sessionDelegate: AS(factory: factory))
+  try await s.listen()
+  let test = try await xpcTest(AC(factory: factory), watchdog: .seconds(10))
+  _ = test.service.root
+  _ = test.service.host
+  _ = try await xpcTest(sessionDelegate: AS(factory: factory), watchdog: .seconds(10))
   let host = XPCServiceHost(peerHandler: { channel in
     channel.setIncomingHandler { $0.reply($0.payload) }
   })
@@ -54,17 +70,52 @@ func publicAPI<Root: XPCRootActor>(_ root: Root.Type) throws {
   let generic = try XPCChannelTransport.session.acceptor { host.bind($0) }
   try nativeC.activate(); try session.activate(); try generic.activate()
 }
+@MainActor func entryC<R: XPCRootActor>(_ delegate: AC<R>) -> Never { xpcMain(delegate: delegate) }
+@MainActor func entryS<R: XPCRootActor>(_ delegate: AS<R>) -> Never { xpcSessionMain(service: "example.service", delegate: delegate) }
 @available(macOS 26.0, *)
 func secureSession() throws -> XPCChannelAcceptor {
   try XPCChannelAcceptor(sessionDelegate: S(), service: "example.service",
     requirement: .isPlatformCode(), handler: { $0.activate() })
 }
 '''
+entry_root='''import Distributed
+import DistributedXPC
+distributed actor EntryRoot: XPCRootActor {
+  typealias ActorSystem = XPCDistributedActorSystem
+  static var xpcDistributedTargetMetadata: [String: XPCDistributedTargetMetadata] { [:] }
+  let dependency: String
+  init(dependency: String, actorSystem: ActorSystem) {
+    self.dependency = dependency
+    self.actorSystem = actorSystem
+  }
+}
+'''
+entry_c=entry_root+'''
+@main struct Entry: XPCConnectionActorServiceDelegate {
+  let dependency: String
+  init() { self.init(dependency: "injected") }
+  init(dependency: String) { self.dependency = dependency }
+  func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> EntryRoot {
+    EntryRoot(dependency: dependency, actorSystem: actorSystem)
+  }
+}
+'''
+entry_s=entry_c.replace("XPCConnectionActorServiceDelegate {", "XPCSessionActorServiceDelegate {\n  static var serviceName: String { \"example.service\" }")
 checks={
  'positive':positive,
- 'session_with_c_delegate':common+'func invalid<R: XPCRootActor>(_ r: R.Type) { _ = XPCActorService(r, sessionDelegate: C()) }',
- 'c_with_session_delegate':common+'func invalid<R: XPCRootActor>(_ r: R.Type) { _ = XPCActorService(r, S()) }',
- 'delegate_with_runtime_transport':common+'func invalid<R: XPCRootActor>(_ r: R.Type) { _ = XPCActorService(r, C(), transport: .session) }',
+ 'positive_c_default_main':entry_c,
+ 'positive_session_default_main':entry_s,
+ 'entry_without_initializer':entry_c.replace('  init() { self.init(dependency: "injected") }\n', ''),
+ 'session_entry_without_service_name':entry_s.replace('  static var serviceName: String { "example.service" }\n', ''),
+ 'dual_entry_without_main_choice':entry_s.replace('XPCSessionActorServiceDelegate {', 'XPCConnectionActorServiceDelegate, XPCSessionActorServiceDelegate {'),
+ 'session_with_c_delegate':common+'func invalid<R: XPCRootActor>(_ d: AC<R>) async throws { _ = try await XPCActorService(sessionDelegate: d) }',
+ 'c_with_session_delegate':common+'func invalid<R: XPCRootActor>(_ d: AS<R>) async throws { _ = try await XPCActorService(d) }',
+ 'delegate_with_runtime_transport':common+'func invalid<R: XPCRootActor>(_ d: AC<R>) async throws { _ = try await XPCActorService(d, transport: .session) }',
+ 'raw_delegate_with_actor_service':common+'func invalid() async throws { _ = try await XPCActorService(C()) }',
+ 'session_entry_with_c_delegate':common+'@MainActor func invalid<R: XPCRootActor>(_ d: AC<R>) -> Never { xpcSessionMain(service: "example.service", delegate: d) }',
+ 'c_entry_with_session_delegate':common+'@MainActor func invalid<R: XPCRootActor>(_ d: AS<R>) -> Never { xpcMain(delegate: d) }',
+ 'removed_app_protocol':common+'struct Removed: XPCApp {}',
+ 'removed_factory_parameter':common+'func invalid<R: XPCRootActor>(_ d: AC<R>, factory: @escaping @Sendable (XPCDistributedActorSystem) async throws -> R) async throws { _ = try await XPCActorService(d, makeRoot: factory) }',
  'session_listener_with_c_delegate':common+'func invalid() throws { _ = try XPCChannelAcceptor(sessionDelegate: C(), handler: { _ in }) }',
  'secure_listener_without_service':common+'@available(macOS 26.0, *) func invalid() throws { _ = try XPCChannelAcceptor(sessionDelegate: S(), requirement: .isPlatformCode(), handler: { _ in }) }',
  'secure_listener_with_nil_service':common+'@available(macOS 26.0, *) func invalid() throws { _ = try XPCChannelAcceptor(sessionDelegate: S(), service: nil, requirement: .isPlatformCode(), handler: { _ in }) }',
@@ -76,8 +127,19 @@ checks={
  'mutable_listener_routing':common+'func invalid(_ listener: XPCChannelAcceptor) { listener.setAcceptHandler { _ in } }',
 }
 expected_symbols = {
- 'session_with_c_delegate': ('XPCSessionServiceDelegate',),
- 'c_with_session_delegate': ('XPCConnectionServiceDelegate',),
+ # Missing requirements are spelled out in notes, while the error itself
+ # identifies the failed conformance. The paired positive entry verifies all
+ # other requirements; each negative removes exactly one requirement.
+ 'entry_without_initializer': ('XPCConnectionActorServiceDelegate',),
+ 'session_entry_without_service_name': ('XPCSessionActorServiceDelegate',),
+ 'dual_entry_without_main_choice': ('main',),
+ 'raw_delegate_with_actor_service': ('XPCConnectionActorServiceDelegate',),
+ 'session_entry_with_c_delegate': ('XPCSessionActorServiceDelegate',),
+ 'c_entry_with_session_delegate': ('XPCConnectionActorServiceDelegate',),
+ 'removed_app_protocol': ('XPCApp',),
+ 'removed_factory_parameter': ('makeRoot',),
+ 'session_with_c_delegate': ('XPCSessionActorServiceDelegate',),
+ 'c_with_session_delegate': ('XPCConnectionActorServiceDelegate',),
  'delegate_with_runtime_transport': ('transport',),
  'session_listener_with_c_delegate': ('XPCSessionServiceDelegate',),
  'secure_listener_without_service': ('service',),
@@ -90,23 +152,34 @@ expected_symbols = {
  'mutable_listener_routing': ('setAcceptHandler',),
 }
 cmd = [
-    "swiftc", "-typecheck", "-swift-version", "6", "-warnings-as-errors",
+    "swiftc", "-typecheck", "-parse-as-library", "-swift-version", "6", "-warnings-as-errors",
     "-target", f"{platform.machine()}-apple-macos15.0",
 ]
 # SwiftBuild places modules beside products; native SwiftPM uses Modules/.
 for module_path in (bin_path, bin_path / "Modules"):
     if module_path.is_dir():
         cmd.extend(["-I", str(module_path)])
+def error_mentions(stderr, symbols):
+    errors = '\n'.join(line.split('error:', 1)[1]
+                       for line in stderr.splitlines() if 'error:' in line)
+    return bool(errors) and all(re.search(r"\b" + re.escape(symbol) + r"\b", errors)
+                                for symbol in symbols)
+
+# Regression: neither a path nor Swift's echoed source can satisfy a check.
+if error_mentions('/tmp/init.swift:1:1: error: unrelated failure\n1 | init()', ('init',)):
+    raise SystemExit("Probe paths or echoed source leaked into diagnostic matching")
+
 failures = []
 for name, source in checks.items():
     probe = out / (name + ".swift")
     probe.write_text(source)
     result = subprocess.run(cmd + [str(probe)], capture_output=True, text=True)
     (out / (name + ".log")).write_text(result.stdout + result.stderr)
-    valid = result.returncode == 0 if name == "positive" else (
+    # Exclude probe paths and echoed source: their names can contain exactly
+    # the symbols under test. Do not depend on the rest of Swift's wording.
+    valid = result.returncode == 0 if name.startswith("positive") else (
         result.returncode > 0
-        and 'error:' in result.stderr
-        and all(symbol in result.stderr for symbol in expected_symbols[name])
+        and error_mentions(result.stderr, expected_symbols[name])
     )
     print(name + ": " + ("PASS" if valid else "FAIL"))
     if not valid:
@@ -153,8 +226,9 @@ top = {entry["path"][0] for entry in inventory}
 required = {
     "XPCChannel", "XPCServiceDelegate", "XPCConnectionServiceDelegate",
     "XPCSessionServiceDelegate", "XPCActorService", "XPCMarshalRuntime",
+    "XPCActorServiceDelegate", "XPCConnectionActorServiceDelegate", "XPCSessionActorServiceDelegate",
 }
-removed = {"XPCMessageChannel", "XPCPeerContext", "XPCServiceConfiguration"}
+removed = {"XPCMessageChannel", "XPCPeerContext", "XPCServiceConfiguration", "XPCApp"}
 if not required <= top or removed & top:
     raise SystemExit("Unexpected public API symbol inventory")
 revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()

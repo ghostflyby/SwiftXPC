@@ -22,6 +22,9 @@ public final class XPCServiceHost: Sendable {
   private let eventLog: XPCServiceEventLog?
   private let peerHandler: @Sendable (XPCChannel) throws -> Void
   private let shutdownCompletion: @Sendable () -> Void
+  private let managedBinding: (@Sendable (XPCChannel) -> Void)?
+  private let managedShutdown: (@Sendable () -> Void)?
+  private let managedCancel: (@Sendable () -> Void)?
   /// The host never exits the process. `onShutdown` runs after the delegate
   /// notification; hosted entry points use it to retire their process.
   public init(
@@ -34,9 +37,54 @@ public final class XPCServiceHost: Sendable {
     self.eventLog = eventLog
     self.peerHandler = peerHandler
     self.shutdownCompletion = onShutdown
+    managedBinding = nil
+    managedShutdown = nil
+    managedCancel = nil
   }
 
   private struct DefaultDelegate: XPCServiceDelegate {}
+
+  // A fixed owner pipeline; no externally replaceable routing or cleanup.
+  package init(
+    eventLog: XPCServiceEventLog?,
+    binding: @escaping @Sendable (XPCChannel) -> Void,
+    shutdown: @escaping @Sendable () -> Void,
+    cancellation: @escaping @Sendable () -> Void
+  ) {
+    delegate = DefaultDelegate()
+    self.eventLog = eventLog
+    peerHandler = { _ in }
+    shutdownCompletion = {}
+    managedBinding = binding
+    managedShutdown = shutdown
+    managedCancel = cancellation
+  }
+
+  /// Registers an owned peer without opening its message-dispatch gate.
+  package func register(_ channel: XPCChannel, onEnd: @escaping @Sendable () -> Void) -> Bool {
+    let key = UUID()
+    let accepted = state.withLock { state in
+      guard !state.cancelled, !state.shutdownRequested else { return false }
+      state.channels[key] = channel
+      return true
+    }
+    guard accepted else { return false }
+    record(.didAcceptPeer)
+    channel.addInvalidationHandler { [weak self] in
+      guard let self else { return }
+      let removed = self.state.withLock { $0.channels.removeValue(forKey: key) }
+      self.record(.peerDidEnd)
+      onEnd()
+      withExtendedLifetime(removed) {}
+    }
+    return true
+  }
+
+  package func recordBindingFailure(_ error: any Error) {
+    record(.didRejectPeer, error: error)
+  }
+
+  package func completeShutdown() { notifyShutdown() }
 
   public convenience init(
     eventLog: XPCServiceEventLog? = nil,
@@ -59,7 +107,10 @@ public final class XPCServiceHost: Sendable {
 
   /// Binds and activates a channel already admitted by its native backend.
   /// Binding failure or a closed host cancels it and calls `didRejectPeer`.
+  /// Actor-owned hosts first await their typed owner's preparation hooks;
+  /// this call queues that work and returns immediately.
   public func bind(_ channel: XPCChannel) {
+    if let managedBinding { return managedBinding(channel) }
     let peer = channel
 
     func reject(_ error: (any Error)?) {
@@ -102,14 +153,17 @@ public final class XPCServiceHost: Sendable {
   /// peers, then runs the cooperative shutdown pipeline:
   /// `serviceWillShutdown()` followed by the shutdown completion (when one
   /// is installed). In-flight invocations are not drained. Idempotent:
-  /// later calls return without re-running any of it.
+  /// later calls return without re-running any of it. An actor-owned host
+  /// delegates its asynchronous pipeline to its owner; use `waitForShutdown`
+  /// to wait for all typed hooks and registry cleanup.
   public func requestShutdown() {
     let first = state.withLock { state -> Bool in
-      if state.shutdownRequested { return false }
+      if state.shutdownRequested || state.cancelled { return false }
       state.shutdownRequested = true
       return true
     }
     guard first else { return }
+    if let managedShutdown { return managedShutdown() }
     cancel()
     record(.serviceWillShutdown)
     delegate.serviceWillShutdown()
@@ -121,7 +175,7 @@ public final class XPCServiceHost: Sendable {
   /// pipeline and returns `true`. Returns immediately when the host already
   /// shut down; returns `false` when `timeout` elapses first or when the
   /// host was cancelled before a shutdown request. A later explicit request
-  /// may still run the pipeline, but does not change completed waiter results. A waiter arriving while the pipeline is mid-flight
+  /// is a no-op after terminal cancellation. A waiter arriving while the pipeline is mid-flight
   /// — after cancellation, before the hook and completion have finished —
   /// resolves with `true` once the pipeline completes. Never polls.
   public func waitForShutdown(timeout: Duration? = nil) async -> Bool {
@@ -188,11 +242,12 @@ public final class XPCServiceHost: Sendable {
   /// Silently cancels every accepted peer and closes the host to new ones
   /// without running the shutdown pipeline. Also runs from `deinit`. Any
   /// pending `waitForShutdown` waiter is released with `false` unless shutdown
-  /// was already requested. A later explicit request may still run the pipeline.
+  /// was already requested. Cancellation is terminal; later requests are no-ops.
   /// Peers arriving after cancellation are
   /// rejected through the standard path (`didRejectPeer` with a nil error).
   public func cancel() {
-    let (channels, waiters) = state.withLock { state in
+    let (channels, waiters, cancelOwner) = state.withLock { state in
+      let cancelOwner = !state.cancelled && !state.shutdownRequested
       state.cancelled = true
       let channels = Array(state.channels.values)
       state.channels.removeAll()
@@ -200,8 +255,9 @@ public final class XPCServiceHost: Sendable {
       // shutdown request and its new waiters cannot be drained by this call.
       let waiters = state.shutdownRequested ? [] : state.shutdownWaiters
       if !state.shutdownRequested { state.shutdownWaiters.removeAll() }
-      return (channels, waiters)
+      return (channels, waiters, cancelOwner)
     }
+    if cancelOwner { managedCancel?() }
     for waiter in waiters {
       waiter.continuation.resume(returning: false)
     }

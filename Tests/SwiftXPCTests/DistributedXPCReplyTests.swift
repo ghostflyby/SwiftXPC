@@ -33,7 +33,7 @@ distributed actor SampleReplyActorWithoutMetadata {
 }
 
 @XPCService
-distributed actor CancellationReplyRoot: XPCRootActor {
+distributed actor CancellationReplyRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
 
   distributed func cancelValue() throws -> String {
@@ -54,7 +54,7 @@ distributed actor CancellationReplyRoot: XPCRootActor {
 func ServiceTaskCancellationReachesCaller(
   transport: XPCChannelTransport, returningVoid: Bool
 ) async throws {
-  let service = try xpcTest(
+  let service = try await testService(
     CancellationReplyRoot.self, transport: transport, watchdog: .seconds(10))
   defer { service.close() }
   await #expect(throws: CancellationError.self) {

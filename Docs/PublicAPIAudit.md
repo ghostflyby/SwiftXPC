@@ -65,9 +65,9 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | API 面 | 必要功能 / 替代方案 | 粒度与处理 |
 |---|---|---|
 | `XPCActorService.root/host` | root 访问与服务控制；维持 root/registry/peer 的具体生命周期 | 保留一个服务 owner；不再公开 `.system` 这一重复入口，必要时 root 已有 `.actorSystem` |
-| actor service 的两个 Delegate initializer 与 root factory | 静态绑定后端策略；为 root 注入业务依赖 | 保留。runtime transport initializer 只使用默认策略；自定义 Delegate 不能再配一个可能矛盾的 enum |
+| actor service 的两个 Delegate initializer 与 root factory | 静态绑定后端策略；为 root 注入业务依赖 | 两个 async throws initializer 仅接受对应 typed delegate；factory 属于协议必需方法，无 runtime transport 混搭入口 |
 | `XPCActorService.listen` | 自动使用同一个 Delegate 创建 listener、固定 host routing、激活并持有 listener | 新增以替代普通应用的多个装配步骤。service 关闭会关闭自己创建的 listeners；返回值用于 endpoint 访问和单独取消某个 listener，不要求调用方额外维持 listener 生命周期 |
-| `XPCActorService.cancel` 与 host `requestShutdown` | silent teardown 与有通知/完成动作的 cooperative shutdown | 保留语义差异。清理 registry 永远执行在用户 completion 前；三个 service initializer 与三个 xpcTest 变体都支持 `onShutdown`。多个 closure 参数使用显式 `makeRoot:` / `onShutdown:`；删除可替换 cleanup 的 public setter |
+| `XPCActorService.cancel` 与 host `requestShutdown` | silent teardown 与有通知/完成动作的 cooperative shutdown | 保留语义差异。关闭等待 peer 钩子后执行 willShutdown、registry 清理、didShutdown；cancel 不启动异步钩子且终局。actor service 不再有独立 completion 闭包 |
 | `XPCServiceHost` 的 routing / completion 构造参数 | raw service 自定义路由、embedding 的关闭完成动作 | 收拢到一次构造。删除 `setPeerHandler/setShutdownCompletion`；actor service 的 cleanup 不会被外部 replacement setter 覆盖 |
 | `XPCRootActor` / `XPCExportableActor` | root 有初始化约束；exportable child actor 只需可编码引用 | 保留两种协议，不能将所有 child 都要求为 root。macro 自动实现 export conformance |
 | `XPCExportableActor.unmarshal(from:transport:)` | runtime 之外单独导入时指定后端；常规 unmarshal 从 runtime 解码上下文继承 | 保留显式入口；没有重新引入进程全局 default / policy builder |
@@ -81,11 +81,11 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 | `XPCInvocationEncoder/Decoder/ResultHandler` | compiler 关联类型及对应记录、解码、结果输出协议 | 保留 compiler 必需的 public type/method；routing closure、transport context、构造细节保持内部，不作为可独立装配的 public 层 |
 | `XPCDistributedTargetMetadata` / `…Providing` / `@XPCService` | 外部模块的宏必须生成可访问的 method whitelist 和 typed-throws metadata | 保留；内部解析与查表仍是内部函数。metadata、export、service 并非三套不同 dispatch registry |
 | `XPCReplyKind` / `XPCRemoteCallError` / `XPCDispatchError` | wire error 中可判别的 reply kind、客户端解码错误与服务端派发错误 | 保留分别可编码、可比较的错误域；取消独立为无载荷的 cancelled 回复，客户端抛 CancellationError，不使用业务错误类型解码；invocation/reply envelope 和 version negotiation 不公开成另一个 wire API 产品 |
-| low-level `SwiftXPC.xpcMain` / actor `xpcMain` / `XPCApp` | C 进程入口、actor service 组装、`@main` 声明方式 | 保留不同使用级别；low-level entry 交付 native `XPCConnection`，actor entry 静态要求 C Delegate。默认 main 只在 `XPCApp`，不再要求所有 Delegate 可无参构造 |
+| low-level `SwiftXPC.xpcMain` / actor `xpcMain(delegate:)` | 原生进程入口与 actor 服务启动 | 保留两种实际用途；删除 `XPCApp`，两个专用 actor delegate 都提供默认 static main，具体类型可直接标注 @main；入口使用 init() 构造 delegate |
 | `xpcSessionMain` | 必须有 mach service 名的 Session 进程入口 | 保留专用入口，不用 runtime flag 假装能替换 bundled C xpc_main。Session Delegate 不继承 C-hosted app 协议 |
-| hosted `onStart` / `XPCApp.serviceWillStart` | 进程运行循环开始前拿到 host、安装业务控制 | 仅在真正 hosted 的 API 出现；没有在 standalone service / xpcTest 的公共 Delegate 留一个永远不触发的方法 |
-| `xpcTest` / `XPCRootTestCoordinator` | 管理真实 in-process 服务、匿名 listener、production client、watchdog | 保留确定性 integration harness。C / Session 的自定义 Delegate 各有约束；runtime backend matrix 只接受默认准入，避免默默忽略专用方法 |
-| coordinator 的 client/host/transport/makeClient/dropServerPeer/close/waitUntilClosed | 多客户端、模拟失联、整个 fixture 收尾，与 production client 控制不同 | 保留这些 test-only 操作。删除 coordinator 的事件和 shutdown 等待转发；调用 log / host 即可 |
+| `XPCActorServiceDelegate<Root>` 及 C/Session 子协议 | 实际 root 的创建与各阶段异步配置；后端专属同步原生准入 | 必需 root factory，其他钩子默认空实现；每个钩子均有 typed service。专用协议要求 init()，Session 要求 static serviceName，分别为默认进程入口提供实例和 launchd 名称。删除独立 onStart/onShutdown/makeRoot 闭包，所有启动入口使用同一管线 |
+| `xpcTest` / `XPCRootTestCoordinator` | 管理真实 in-process 服务、匿名 listener、production client、watchdog | 保留确定性 integration harness。C / Session 的自定义 Delegate 各有约束；取消 runtime actor-service overload；矩阵测试在内部显式分支选择专用入口，避免默默忽略专用方法 |
+| coordinator 的 client/service/transport/makeClient/dropServerPeer/close/waitUntilClosed | 多客户端、模拟失联、整个 fixture 收尾，与 production client 控制不同 | 保留这些 test-only 操作。公开 typed service 取代重复 host 属性；事件等待调用 log，关闭等待调用 service.host |
 | `XPCServiceEvent` / `XPCServiceEventLog` | 无 missed edge 的有序 hook 时间线和 occurrence 等待 | 保留 recorder、snapshot 和唯一 `wait(for:occurrence:timeout:)`。删除 `expectEvent/expectCount` 两种等待入口及 public append；Kind 与 hook 对齐：`didRejectConnection`、`didRejectSessionRequest`、`didRejectPeer` 分别表示两个 native admission 和 host binding 阶段；固定 Kind 不能表示任意用户 marker，公开写入会污染 production hook 时间线 |
 | `DistributedXPC` 再导出 SwiftXPC | public actor API 的实际参数均来自 SwiftXPC；省去反复 import | 保留模块依赖再导出，不增加 umbrella facade 或第二套对应类型 |
 
@@ -94,26 +94,33 @@ native accept 之后的 handler 配置仍在 callback 内完成，channel delive
 普通 actor 服务只保留一个 owner，不再手动构造和绑定多个 public 层：
 
 ```swift
-struct NativePolicy: XPCConnectionServiceDelegate {
-  func shouldAcceptConnection(_ peer: XPCConnection) throws -> Bool {
+struct NativePolicy: XPCConnectionActorServiceDelegate {
+  func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> ServiceRoot {
+    ServiceRoot(actorSystem: actorSystem)
+  }
+  func shouldAcceptConnection(_ peer: XPCConnection, in service: XPCActorService<ServiceRoot>) throws -> Bool {
     peer.euid == geteuid()
   }
 }
-let service = XPCActorService(ServiceRoot.self, NativePolicy())
-try service.listen()
+let service = try await XPCActorService(NativePolicy())
+try await service.listen()
 // Retain service while serving; it retains its listeners.
 ```
 
 Session 使用另一组明确的约束：
 
 ```swift
-struct SessionPolicy: XPCSessionServiceDelegate {
-  func shouldAcceptSessionRequest(_ request: XPCListener.IncomingSessionRequest) throws -> Bool {
+struct SessionPolicy: XPCSessionActorServiceDelegate {
+  static var serviceName: String { "com.example.service" }
+  func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> ServiceRoot {
+    ServiceRoot(actorSystem: actorSystem)
+  }
+  func shouldAcceptSessionRequest(_ request: XPCListener.IncomingSessionRequest, in service: XPCActorService<ServiceRoot>) throws -> Bool {
     true
   }
 }
-let service = XPCActorService(ServiceRoot.self, sessionDelegate: SessionPolicy())
-try service.listen()
+let service = try await XPCActorService(sessionDelegate: SessionPolicy())
+try await service.listen()
 ```
 
 低层 raw service 保留 native admission 与 service binding 的区分；handler 固定在构造时：
@@ -144,7 +151,7 @@ let listener = try XPCChannelAcceptor(
 | `XPCActorService(root, delegate, transport:)` | C 的 unlabeled Delegate initializer，或 Session 的 `sessionDelegate:` initializer |
 | `host.accept(channel)` | native admission 后 `host.bind(channel)`；一般直接用 actor service.listen |
 | `transport.acceptor(); setAcceptHandler` | `transport.acceptor(handler:)`；创建时固定 handler |
-| `setPeerHandler/setShutdownCompletion` | host initializer 的 `peerHandler/onShutdown`；actor service initializer 的 `onShutdown` 不替换 cleanup |
+| `setPeerHandler/setShutdownCompletion` | host initializer 的 `peerHandler/onShutdown`；actor service 使用 typed delegate 阶段，不提供独立 onShutdown 参数 |
 | `channel.pid/euid/...` | C Delegate 的 native connection；后端 interop 使用 `channel.connection` |
 | 通用 connect 的 `peerCodeSigningRequirement:` | 在 native C connection 上配置，或 `connect(using: nativeConnection, peerCodeSigningRequirement:)` |
 | `service.system` | `service.root.actorSystem` |
@@ -153,17 +160,28 @@ let listener = try XPCChannelAcceptor(
 
 ## 验证与边界
 
-- warnings-as-errors 全量测试：主套件 172 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
+- warnings-as-errors 全量测试：主套件 200 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
 - 新增/调整测试覆盖 native audit → binding → notification → message 的顺序、Session false/throw
   原生拒绝、两个后端的绑定失败与 native rejection 区分、直接 Session conformer、service 持有及关闭 listeners。
 - Session 激活的同步取消/重入、激活过程中并发取消、创建失败后的发送结束，以及 shutdown 管线期间
   重复 cancel 不释放其 waiters；actor proxy forwarding/re-export 与并发 peers 在 C/C、Session/Session 均覆盖。
 - Session incoming handler 的取消及替换均在锁外释放 captures；两个子进程测试验证 capture 析构重入
   cancel 不崩溃且 invalidation 只通知一次，原实现下两例均因递归锁崩溃而失败。
-- 从包外 typecheck 正确用法（含 macOS 26 typed Session requirement），并验证 12 种错误调用被拒绝：
-  Delegate / backend 错配、Delegate + runtime transport、缺失 delivery handler、缺失 named security service / nil service、C-only channel 身份 /
+- 从包外 typecheck 三组正确用法（通用 API、两个无需自行实现 main 的 @main delegate，含 macOS 26 typed Session requirement），并验证 20 种错误调用被拒绝：
+  缺失入口 init/serviceName、双后端入口未选择 main、Delegate / backend 错配、Delegate + runtime transport、缺失 delivery handler、缺失 named security service / nil service、C-only channel 身份 /
   requirement / interruption、公开替换 host / listener routing。
-- 独立 `Examples/DistributedXPCDemo` warnings-as-errors build 通过。
+- 独立 `Examples/DistributedXPCDemo` build、bundled C 入口的 C/Session 客户端与协作退出通过。
+- `Scripts/check-actor-service-lifecycle.py` 实测 bundled C 与 launchd Session 入口、两种客户端、异步
+  factory 与 root 准备；12 组进程用例验证挂起关闭钩子期间服务端存活，完成后成功退出 0、cleanup
+  失败或裸取消退出 1。C 侧通过 kqueue 读取服务进程 wait status，Session 侧读取 launchctl 状态。
+  C 入口保留进程生命周期 transaction，防止最后一条消息释放后 idle exit 截断异步清理。
+  另有确定性测试验证 HostedActorService 在启动关卡关闭期间暂存 native connection。
+- typed actor delegate 覆盖独立启动/绑定关卡、失败回滚、关闭等待与 registry 清理、迟到绑定拒绝、
+  root/host 不保活 service、排队 RPC 关闭后不执行，以及 watchdog/caller cancellation 覆盖异步启动。
+- 提前激活覆盖 will-bind 与 did-bind：收到 invocation 的确定性信号到达后，关卡仍阻止执行。
+  执行中的启动/用户钩子会保活 owner，必须协作取消；取消 listen 终止共享启动。测试释放 gate 后
+  等待启动任务结束，验证 registry 已清空。协调器构造失败等待协作清理，清理开始后的迟到绑定
+  不启动异步通知，避免与关闭钩子并行或被进程退出截断。
 - `swift format lint --strict --recursive Sources Tests` 与 `git diff --check` 通过。
 
 这次没有改变业务载荷布局；取消回复扩展使 wire version 升至 2，需要两端同时升级。没有把 anonymous export endpoint 的 capability 模型升级为
@@ -183,7 +201,7 @@ named listener 的 typed peer requirement 策略。macOS 26 constructor 除包�
 | 并发 listener 激活提前成功 | 存在；重入抛 inProgress，失败 owner 回滚后可重试。确定性测试阻塞并使首轮激活失败 |
 | cancel 后已捕获的 delivery | 存在在途窗口；审核后重新检查状态、取消清除 handler。已经完成 claim 的回调允许结束，文档明确；不持锁执行用户代码或等待重入回调 |
 | Session send 错误分类较粗 | 保留统一 fail-stop 策略：任一 native send 失败终结 channel/全部 reply 等待者，包括 canRetry 错误。XPCRichError 没有 C 的类型化 reason，不能靠文本推断 signing/interruption，也不自动重发可能已投递的调用 |
-| onShutdown 不对称 | Session service 专用构造器原本已有；补 runtime service 与 Session/runtime xpcTest，新增 completion 顺序与矩阵测试 |
+| onShutdown 不对称 | actor 服务及 xpcTest 统一使用 typed serviceDidShutdown；取消单独 completion 闭包和 runtime 构造器 |
 | decoder 默认 C transport | 删除默认值，强制内部构造点显式传入后端 |
 | 错误回复再次编码失败 | catch 所有 failure；编码失败时发送无 payload 的合法 throwError envelope，客户端确定性报 missingPayload；不再 try? 吞掉此路径。覆盖 custom encoder 失败及非 marshalable 错误 |
 | graceful shutdown 断言过宽 | 将断言收紧到 invalid/interrupted，明确排除 signing error。raw host listener 继续监听时另测 shutdown 后 binding rejection(nil)，C 精确断言 interrupted、Session 精确断言 invalid |
@@ -191,4 +209,4 @@ named listener 的 typed peer requirement 策略。macOS 26 constructor 除包�
 | sleep 与超时误报 | accept delivery、drain waiter 注册、延迟 reply 取消和 client 断连改用信号。并发 listener 测试的超时取消允许 CancellationError；其余短暂 sleep 仅扩大 pre-activation 窗口，不作为通过条件 |
 | 外来 root factory | 进程外 exit test 验证 foreign system 触发指定 precondition，检查 stderr 原因 |
 | 服务端 Task 取消 | onThrow、派发 catch 与错误回复均保留 CancellationError；无载荷 cancelled 回复在返回值/void 客户端路径都还原 CancellationError。C/Session 真实 Task 取消与随后调用成功均有覆盖 |
-| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、12 个负例（编译失败且诊断包含核心符号，不匹配编译器措辞）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 6 个 required / 3 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |
+| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、20 个负例（编译失败且 error: 后的诊断正文包含核心符号整词，排除文件名、源码回显和 note）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 9 个 required / 4 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |

@@ -27,7 +27,7 @@ private final class AttemptCounter: Sendable {
 // MARK: - Retry policy unit behavior
 
 @Test func RetryingSucceedsAfterTransientConnectionErrors() async throws {
-  let channel = try RootChannel(ReconnectRoot.self)
+  let channel = try await RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
 
@@ -39,7 +39,7 @@ private final class AttemptCounter: Sendable {
 }
 
 @Test func RetryingDoesNotRetryBusinessErrors() async throws {
-  let channel = try RootChannel(ReconnectRoot.self)
+  let channel = try await RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
 
@@ -57,7 +57,7 @@ private final class AttemptCounter: Sendable {
 }
 
 @Test func RetryingExhaustsAttemptsAndThrowsLastError() async throws {
-  let channel = try RootChannel(ReconnectRoot.self)
+  let channel = try await RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
 
@@ -77,7 +77,7 @@ private final class AttemptCounter: Sendable {
 
 @Test(arguments: XPCChannelTransport.allCases)
 func RetryingDoesNotRetryTerminalChannelErrors(transport: XPCChannelTransport) async throws {
-  let service = try xpcTest(ReconnectRoot.self, transport: transport)
+  let service = try await testService(ReconnectRoot.self, transport: transport)
   defer { service.close() }
   let attempts = Mutex(0)
   await #expect(throws: XPCChannelError.invalid) {
@@ -90,7 +90,7 @@ func RetryingDoesNotRetryTerminalChannelErrors(transport: XPCChannelTransport) a
 }
 
 @Test func RetryingDoesNotRetrySessionInterruptions() async throws {
-  let service = try xpcTest(ReconnectRoot.self, transport: .session)
+  let service = try await testService(ReconnectRoot.self, transport: .session)
   defer { service.close() }
   let attempts = Mutex(0)
   await #expect(throws: XPCChannelError.interrupted) {
@@ -105,7 +105,7 @@ func RetryingDoesNotRetryTerminalChannelErrors(transport: XPCChannelTransport) a
 // MARK: - Lifecycle events and peer callbacks
 
 @Test func DisconnectEventFiresWhenServicePeerDies() async throws {
-  let channel = try RootChannel(ReconnectRoot.self)
+  let channel = try await RootChannel(ReconnectRoot.self)
   let handle = try XPCRootConnection<ReconnectRoot>.connect(using: channel.client)
   defer { handle.close(); channel.close() }
 
@@ -126,7 +126,7 @@ func RetryingDoesNotRetryTerminalChannelErrors(transport: XPCChannelTransport) a
   let accepted = Mutex<Int>(0)
   let ended = Mutex<Int>(0)
 
-  let channel = try RootChannel(
+  let channel = try await RootChannel(
     ReconnectRoot.self,
     XPCConnectionServiceConfiguration(
       onPeerAccept: { _ in accepted.withLock { $0 += 1 } },
@@ -154,7 +154,7 @@ func RetryingDoesNotRetryTerminalChannelErrors(transport: XPCChannelTransport) a
 // MARK: - Root channel
 
 @XPCService
-distributed actor ReconnectRoot: XPCRootActor {
+distributed actor ReconnectRoot: TestRoot {
   typealias ActorSystem = XPCDistributedActorSystem
 
   distributed func ping() -> String {

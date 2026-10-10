@@ -127,9 +127,8 @@ checks={
  'mutable_listener_routing':common+'func invalid(_ listener: XPCChannelAcceptor) { listener.setAcceptHandler { _ in } }',
 }
 expected_symbols = {
- # Missing requirements are spelled out in notes, while the error itself
- # identifies the failed conformance. The paired positive entry verifies all
- # other requirements; each negative removes exactly one requirement.
+ # The error identifies the failed conformance. Requirement-specific checks
+ # below also inspect diagnostic notes; paired positives cover other requirements.
  'entry_without_initializer': ('XPCConnectionActorServiceDelegate',),
  'session_entry_without_service_name': ('XPCSessionActorServiceDelegate',),
  'dual_entry_without_main_choice': ('main',),
@@ -151,6 +150,10 @@ expected_symbols = {
  'mutable_host_routing': ('setPeerHandler',),
  'mutable_listener_routing': ('setAcceptHandler',),
 }
+expected_requirements = {
+ 'entry_without_initializer': ('init',),
+ 'session_entry_without_service_name': ('serviceName',),
+}
 cmd = [
     "swiftc", "-typecheck", "-parse-as-library", "-swift-version", "6", "-warnings-as-errors",
     "-target", f"{platform.machine()}-apple-macos15.0",
@@ -159,15 +162,26 @@ cmd = [
 for module_path in (bin_path, bin_path / "Modules"):
     if module_path.is_dir():
         cmd.extend(["-I", str(module_path)])
-def error_mentions(stderr, symbols):
-    errors = '\n'.join(line.split('error:', 1)[1]
-                       for line in stderr.splitlines() if 'error:' in line)
-    return bool(errors) and all(re.search(r"\b" + re.escape(symbol) + r"\b", errors)
-                                for symbol in symbols)
+def diagnostic_mentions(stderr, symbols, *, include_notes=False):
+    severity = 'error|note' if include_notes else 'error'
+    # Accept primary location diagnostics and Swift's inline diagnostic gutters,
+    # but not paths or numbered source echoes containing diagnostic-like text.
+    pattern = re.compile(r'^(?:.+:\d+(?::\d+)?:\s*|\s*\|\s*[|`]-\s*)?'
+                         r'(?:' + severity + r'):\s*(.*)$')
+    messages = '\n'.join(match.group(1) for line in stderr.splitlines()
+                         if (match := pattern.match(line)))
+    return bool(messages) and all(re.search(r"\b" + re.escape(symbol) + r"\b", messages)
+                                  for symbol in symbols)
 
 # Regression: neither a path nor Swift's echoed source can satisfy a check.
-if error_mentions('/tmp/init.swift:1:1: error: unrelated failure\n1 | init()', ('init',)):
+if diagnostic_mentions('/tmp/init.swift:1:1: error: unrelated failure\n1 | "error: init"', ('init',)):
     raise SystemExit("Probe paths or echoed source leaked into diagnostic matching")
+requirement_note = '/tmp/init.swift:1:1: note: initializer init is required'
+if (diagnostic_mentions(requirement_note, ('init',))
+        or not diagnostic_mentions(requirement_note, ('init',), include_notes=True)
+        or diagnostic_mentions('/tmp/init.swift:1:1: note: unrelated\n1 | "note: init"',
+                               ('init',), include_notes=True)):
+    raise SystemExit("Requirement matching failed to isolate diagnostic bodies")
 
 failures = []
 for name, source in checks.items():
@@ -179,7 +193,9 @@ for name, source in checks.items():
     # the symbols under test. Do not depend on the rest of Swift's wording.
     valid = result.returncode == 0 if name.startswith("positive") else (
         result.returncode > 0
-        and error_mentions(result.stderr, expected_symbols[name])
+        and diagnostic_mentions(result.stderr, expected_symbols[name])
+        and (name not in expected_requirements or diagnostic_mentions(
+            result.stderr, expected_requirements[name], include_notes=True))
     )
     print(name + ": " + ("PASS" if valid else "FAIL"))
     if not valid:

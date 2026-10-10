@@ -48,5 +48,5 @@ jobs:
           bash Examples/DistributedXPCDemo/Scripts/build-demo-bundle.sh
           Examples/DistributedXPCDemo/.build/demo/DistributedXPCDemo.app/Contents/MacOS/DemoApp --retire
           Examples/DistributedXPCDemo/.build/demo/DistributedXPCDemo.app/Contents/MacOS/DemoApp --session --retire
-      - name: Test launchd Session lifecycle and exit policy
+      - name: Test C and Session server lifecycle and exit policy
         run: python3 Scripts/check-actor-service-lifecycle.py

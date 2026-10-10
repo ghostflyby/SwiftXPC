@@ -3,15 +3,17 @@
 import Foundation
 import SwiftXPC
 import Synchronization
+import XPC
 
 /// Retains the hosted owner and buffers native C peers during asynchronous
 /// construction/preparation. The native event queue never waits on Swift tasks.
-private final class HostedActorService<Root: XPCRootActor>: Sendable {
+final class HostedActorService<Root: XPCRootActor>: Sendable {
   private struct State {
     var service: XPCActorService<Root>?
     var pending: [XPCConnection] = []
   }
   private let state = Mutex(State())
+  var pendingConnectionCount: Int { state.withLock { $0.pending.count } }
 
   func receive(_ connection: XPCConnection) {
     let service = state.withLock { state in
@@ -44,7 +46,9 @@ func reportActorServiceStartupFailure(_ error: any Error) -> Never {
 /// XPC process; the native entry point aborts in an ordinary process.
 /// Asynchronous factory/startup hooks buffer native peers without blocking their
 /// queue. Cooperative shutdown awaits all lifecycle hooks before process exit
-/// (0 on success, 1 on startup/cleanup failure). In-process owners never exit.
+/// (0 on completed cooperative shutdown, 1 on startup/cleanup failure or bare
+/// cancellation). A process-lifetime native transaction prevents idle exit from
+/// cutting off asynchronous preparation/cleanup. In-process owners never exit.
 /// The C actor delegate protocol provides main for a concrete `@main` type.
 /// Call this function directly when hosting an explicitly configured instance.
 @MainActor
@@ -55,13 +59,17 @@ public func xpcMain<Root: XPCRootActor>(
   SwiftXPC.xpcMain(
     { [hosted] in hosted.receive($0) },
     onReady: {
+      // This owner has process lifetime. Keep asynchronous preparation and
+      // cleanup alive even after the last message/peer releases its transaction.
+      // exit() ends the process; ending this transaction first would race idle exit.
+      xpc_transaction_begin()
       Task.detached {
         do {
           let service = try await XPCActorService(delegate)
           try await service.startHosted()
           hosted.publish(service)
-          _ = await service.host.waitForShutdown()
-          exit(service.shutdownFailed ? 1 : 0)
+          let completed = await service.host.waitForShutdown()
+          exit(completed && !service.shutdownFailed ? 0 : 1)
         } catch { reportActorServiceStartupFailure(error) }
       }
     })

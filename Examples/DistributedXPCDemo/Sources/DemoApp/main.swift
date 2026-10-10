@@ -13,18 +13,34 @@ struct DemoApp {
     DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: watchdog)
     defer { watchdog.cancel() }
     do {
+      func argument(_ flag: String) throws -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: flag) else { return nil }
+        guard CommandLine.arguments.indices.contains(index + 1),
+          !CommandLine.arguments[index + 1].hasPrefix("--")
+        else { throw NSError(domain: "MissingArgument", code: 1, userInfo: ["flag": flag]) }
+        return CommandLine.arguments[index + 1]
+      }
       // toService looks up the embedded .xpc bundle on either backend.
       let handle: XPCRootConnection<DemoRoot>
       let transport: XPCChannelTransport =
         CommandLine.arguments.contains("--session") ? .session : .cConnection
-      if let index = CommandLine.arguments.firstIndex(of: "--mach-service") {
+      if let name = try argument("--mach-service") {
         handle = try XPCRootConnection<DemoRoot>.connect(
-          machService: CommandLine.arguments[index + 1], transport: transport)
+          machService: name, transport: transport)
       } else {
         handle = try XPCRootConnection<DemoRoot>.connect(
-          toService: demoServiceIdentifier, transport: transport)
+          toService: try argument("--xpc-service") ?? demoServiceIdentifier, transport: transport)
       }
       defer { handle.close() }
+      if CommandLine.arguments.contains("--expect-rejection") {
+        do {
+          _ = try await handle.root.configuration()
+        } catch is XPCChannelError {
+          print("service rejection observed")
+          return
+        }
+        throw NSError(domain: "ExpectedServiceRejection", code: 1)
+      }
       for await event in handle.events {
         print("connection event: \(event)")
         break

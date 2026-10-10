@@ -20,13 +20,16 @@ public protocol XPCActorServiceDelegate<Root>: Sendable {
   func serviceWillStart(_ service: XPCActorService<Root>) async throws
   /// Native reception is configured; business dispatch opens after this returns.
   func serviceDidStart(_ service: XPCActorService<Root>) async
-  /// An admitted peer awaits business authorization and preparation.
+  /// An admitted peer awaits business authorization and preparation. Receive
+  /// routing already buffers invocations behind its gate, even if this hook
+  /// activates the channel. Dispatch waits for both binding hooks to finish.
   func peerWillBind(_ peer: XPCChannel, to service: XPCActorService<Root>) async throws
   /// Routing is registered; this channel's dispatch opens after this returns.
   func peerDidBind(_ peer: XPCChannel, to service: XPCActorService<Root>) async
   /// Admission succeeded but preparation/registration failed. The peer is closed.
-  /// Explicit bindings submitted after cooperative shutdown can still report
-  /// rejection; they do not reopen its pipeline. Bare cancellation suppresses hooks.
+  /// Shutdown awaits failures admitted before its peer-hook cutoff. Bindings
+  /// submitted once service cleanup starts are closed silently, so no business
+  /// notifications race cleanup or process exit. Bare cancellation suppresses hooks.
   func peerDidFailToBind(
     _ peer: XPCChannel, to service: XPCActorService<Root>, error: any Error) async
   /// A registered peer ended, after its binding hook has finished. Runs once.

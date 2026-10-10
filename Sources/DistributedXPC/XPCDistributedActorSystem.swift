@@ -302,8 +302,11 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
     serviceShutdownHandler.withLock { $0 }?()
   }
 
+  // Observe managed bindings without replacing their real receive handler.
+  let invocationEnqueued = Mutex<(@Sendable () -> Void)?>(nil)
+
   /// Serializes invocations without blocking native queues. A binding barrier
-  /// protects even channels activated by user code inside a did-bind hook.
+  /// protects even channels activated by user code inside either binding hook.
   /// Queue observers are internal deterministic regression-test instrumentation.
   func bind<Act>(
     _ connection: XPCChannel, to actor: Act,
@@ -328,6 +331,8 @@ public final class XPCDistributedActorSystem: DistributedActorSystem, Sendable {
         }
       }
       onEnqueued()
+      let observer = self?.invocationEnqueued.withLock { $0 }
+      observer?()
     }
   }
 

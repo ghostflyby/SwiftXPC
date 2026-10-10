@@ -160,7 +160,7 @@ let listener = try XPCChannelAcceptor(
 
 ## 验证与边界
 
-- warnings-as-errors 全量测试：主套件 196 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
+- warnings-as-errors 全量测试：主套件 200 tests，transport 套件 21 tests；四种 server/client 组合均覆盖。
 - 新增/调整测试覆盖 native audit → binding → notification → message 的顺序、Session false/throw
   原生拒绝、两个后端的绑定失败与 native rejection 区分、直接 Session conformer、service 持有及关闭 listeners。
 - Session 激活的同步取消/重入、激活过程中并发取消、创建失败后的发送结束，以及 shutdown 管线期间
@@ -171,10 +171,17 @@ let listener = try XPCChannelAcceptor(
   缺失入口 init/serviceName、双后端入口未选择 main、Delegate / backend 错配、Delegate + runtime transport、缺失 delivery handler、缺失 named security service / nil service、C-only channel 身份 /
   requirement / interruption、公开替换 host / listener routing。
 - 独立 `Examples/DistributedXPCDemo` build、bundled C 入口的 C/Session 客户端与协作退出通过。
-- `Scripts/check-actor-service-lifecycle.py` 实测 launchd Session 入口、两种客户端、异步 factory 与
-  root 准备；挂起关闭钩子期间进程存活，完成后成功退出 0、cleanup 失败退出 1。
+- `Scripts/check-actor-service-lifecycle.py` 实测 bundled C 与 launchd Session 入口、两种客户端、异步
+  factory 与 root 准备；12 组进程用例验证挂起关闭钩子期间服务端存活，完成后成功退出 0、cleanup
+  失败或裸取消退出 1。C 侧通过 kqueue 读取服务进程 wait status，Session 侧读取 launchctl 状态。
+  C 入口保留进程生命周期 transaction，防止最后一条消息释放后 idle exit 截断异步清理。
+  另有确定性测试验证 HostedActorService 在启动关卡关闭期间暂存 native connection。
 - typed actor delegate 覆盖独立启动/绑定关卡、失败回滚、关闭等待与 registry 清理、迟到绑定拒绝、
   root/host 不保活 service、排队 RPC 关闭后不执行，以及 watchdog/caller cancellation 覆盖异步启动。
+- 提前激活覆盖 will-bind 与 did-bind：收到 invocation 的确定性信号到达后，关卡仍阻止执行。
+  执行中的启动/用户钩子会保活 owner，必须协作取消；取消 listen 终止共享启动。测试释放 gate 后
+  等待启动任务结束，验证 registry 已清空。协调器构造失败等待协作清理，清理开始后的迟到绑定
+  不启动异步通知，避免与关闭钩子并行或被进程退出截断。
 - `swift format lint --strict --recursive Sources Tests` 与 `git diff --check` 通过。
 
 这次没有改变业务载荷布局；取消回复扩展使 wire version 升至 2，需要两端同时升级。没有把 anonymous export endpoint 的 capability 模型升级为
@@ -202,4 +209,4 @@ named listener 的 typed peer requirement 策略。macOS 26 constructor 除包�
 | sleep 与超时误报 | accept delivery、drain waiter 注册、延迟 reply 取消和 client 断连改用信号。并发 listener 测试的超时取消允许 CancellationError；其余短暂 sleep 仅扩大 pre-activation 窗口，不作为通过条件 |
 | 外来 root factory | 进程外 exit test 验证 foreign system 触发指定 precondition，检查 stderr 原因 |
 | 服务端 Task 取消 | onThrow、派发 catch 与错误回复均保留 CancellationError；无载荷 cancelled 回复在返回值/void 客户端路径都还原 CancellationError。C/Session 真实 Task 取消与随后调用成功均有覆盖 |
-| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、20 个负例（编译失败且诊断包含核心符号，不匹配编译器措辞）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 9 个 required / 4 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |
+| 验证主张留痕 | `python3 Scripts/check-public-api.py` 实际执行包外正例、20 个负例（编译失败且 error: 后的诊断正文包含核心符号整词，排除文件名、源码回显和 note）和 symbol graph，输出 `.build/public-api-verification`。CI 同步运行并上传证据。symbol graph 仅校验 9 个 required / 4 个 removed 顶层名称，记录完整 owned 清单；没有入库基线 diff，不能拦截任意新增 public 声明，增量仍需人工比较 artifact 与本审计 |

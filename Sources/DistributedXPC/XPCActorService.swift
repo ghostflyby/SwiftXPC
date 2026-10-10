@@ -12,6 +12,9 @@ import XPC
 /// Cooperative shutdown awaits peer and service hooks before registry cleanup
 /// and waiter completion, but does not drain executing RPCs. `cancel`/deinit
 /// perform terminal synchronous cleanup without starting asynchronous hooks.
+/// Startup and executing hooks retain this owner until they return. Dropping
+/// external references cannot stop a suspended hook; cancel the operation or
+/// host, and ensure hooks cooperate with cancellation.
 public final class XPCActorService<Root: XPCRootActor>: Sendable {
   public let root: Root
   public let host: XPCServiceHost
@@ -208,9 +211,15 @@ public final class XPCActorService<Root: XPCRootActor>: Sendable {
   /// the running service; their failure does not retire existing listeners.
   /// Concurrent first calls share one startup operation. Do not call this
   /// from a startup hook, which would wait on its own operation.
+  /// Cancelling this operation cancels the service, including shared startup.
+  /// Already executing hooks must cooperate with cancellation before it returns.
   @discardableResult
   public func listen(service: String? = nil) async throws -> XPCChannelAcceptor {
-    try await listen(service: service, activation: { try $0.activate() })
+    try await withTaskCancellationHandler {
+      try await listen(service: service, activation: { try $0.activate() })
+    } onCancel: {
+      self.cancel()
+    }
   }
 
   // Deterministic native-operation failure injection without invalid launchd
@@ -336,14 +345,10 @@ public final class XPCActorService<Root: XPCRootActor>: Sendable {
       peer.state.withLock { $0.task = task }
       return 1
     }
-    if inserted == 0 {
+    if inserted == 0 || inserted == 3 {
+      // Cleanup has crossed the peer-hook cutoff: do not launch new business hooks.
       channel.cancel()
       host.recordBindingFailure(XPCChannelError.invalid)
-    } else if inserted == 3 {
-      // Explicit bindings submitted after the shutdown cut-off are rejected;
-      // they do not reopen the completed lifecycle or delay its waiters.
-      channel.cancel()
-      Task { [weak self, peer] in await self?.reject(peer, error: XPCChannelError.invalid) }
     }
   }
 
@@ -351,10 +356,12 @@ public final class XPCActorService<Root: XPCRootActor>: Sendable {
     do {
       try checkServing()
       guard !peer.ended else { throw XPCChannelError.invalid }
+      // Install the guarded receive path before user code can activate either
+      // native backend. Early messages wait; they cannot be silently dropped.
+      system.bind(peer.channel, to: root, readiness: peer.dispatch)
       try await delegate.peerWillBind(peer.channel, to: self)
       try checkServing()
       guard !peer.ended else { throw XPCChannelError.invalid }
-      system.bind(peer.channel, to: root, readiness: peer.dispatch)
       guard host.register(peer.channel, onEnd: { [weak peer] in peer?.terminate() }) else {
         throw XPCChannelError.invalid
       }
@@ -432,6 +439,7 @@ public final class XPCActorService<Root: XPCRootActor>: Sendable {
   }
 
   var shutdownFailed: Bool { state.withLock { $0.shutdownError != nil } }
+  var startupTask: Task<Void, any Error>? { state.withLock { $0.startup } }
 
   /// Immediate terminal teardown. Does not start asynchronous hooks or wait
   /// for already executing hooks/RPCs. An existing cooperative shutdown keeps

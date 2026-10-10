@@ -93,14 +93,17 @@ private final class LifecycleDelegate: @unchecked Sendable, XPCConnectionActorSe
   var failShutdown = false
   var denyNative = false
   var activateWhileBinding = false
+  var activateBeforeBinding = false
   let ended = DispatchSemaphore(value: 0)
   let rejected = DispatchSemaphore(value: 0)
   let factoryFinished = DispatchSemaphore(value: 0)
   private struct Created {
     weak var root: LifecycleRoot?; weak var system: XPCDistributedActorSystem?
+    weak var service: XPCActorService<LifecycleRoot>?
   }
   private let created = Mutex(Created())
   var factoryObjectsReleased: Bool { created.withLock { $0.root == nil && $0.system == nil } }
+  var preparingService: XPCActorService<LifecycleRoot>? { created.withLock { $0.service } }
 
   // Configuration is immutable once the fixture is passed to a service.
   func record(_ event: String) { events.withLock { $0.append(event) } }
@@ -115,6 +118,7 @@ private final class LifecycleDelegate: @unchecked Sendable, XPCConnectionActorSe
     return root
   }
   func serviceWillStart(_ service: XPCActorService<LifecycleRoot>) async throws {
+    created.withLock { $0.service = service }
     record("willStart")
     _ = await service.root.whenLocal { root in root.configure("prepared") }
     await willStartGate?.wait()
@@ -147,6 +151,7 @@ private final class LifecycleDelegate: @unchecked Sendable, XPCConnectionActorSe
   ) { record("nativeReject"); rejected.signal() }
   func peerWillBind(_ peer: XPCChannel, to service: XPCActorService<LifecycleRoot>) async throws {
     record("willBind")
+    if activateBeforeBinding { peer.activate() }
     await willBindGate?.wait()
     if failBinding { throw LifecycleFailure.expected }
   }
@@ -193,8 +198,11 @@ struct XPCActorServiceLifecycleTests {
     delegate.willBindGate = will
     delegate.didBindGate = did
     delegate.activateWhileBinding = true
+    delegate.activateBeforeBinding = true
     let emergency = [will.watchdog(), did.watchdog()]
     let service = try await lifecycleService(delegate, server)
+    let enqueued = DispatchSemaphore(value: 0)
+    service.system.invocationEnqueued.withLock { $0 = { enqueued.signal() } }
     let listener = try await service.listen()
     let owner = try XPCRootConnection<LifecycleRoot>.connect(
       using: client.channel(dialing: listener.wireEndpoint))
@@ -204,6 +212,7 @@ struct XPCActorServiceLifecycleTests {
     }
     let rpc = Task { try await owner.root.read() }
     try #require(await waitForTestSignal(will.entered))
+    try #require(await waitForTestSignal(enqueued))
     #expect(delegate.calls.value.withLock { $0 } == 0)
     #expect(!delegate.events.withLock { $0.contains("didBind") })
     will.release()
@@ -513,8 +522,7 @@ struct XPCActorServiceLifecycleTests {
     DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
     defer { watchdog.cancel(); owner.close(); extra.cancel(); service.cancel() }
     await #expect(throws: XPCChannelError.self) { try await owner.root.read() }
-    try #require(await waitForTestSignal(delegate.rejected))
-    #expect(delegate.events.withLock { $0.last } == "bindingFail")
+    #expect(delegate.events.withLock { $0.last } == "didShutdown")
     #expect(
       !delegate.events.withLock {
         $0.contains("willBind") || $0.contains("didBind") || $0.contains("end")
@@ -567,10 +575,119 @@ struct XPCActorServiceLifecycleTests {
       }
     }
     try #require(await waitForTestSignal(gate.entered))
+    let service = try #require(delegate.preparingService)
+    let startup = try #require(service.startupTask)
     creation.cancel()
     await #expect(throws: CancellationError.self) { try await creation.value }
     #expect(delegate.events.withLock { $0 } == ["factory", "willStart"])
     gate.release()
+    await #expect(throws: CancellationError.self) { try await startup.value }
+    #expect(try service.root.actorSystem.resolve(id: .root, as: LifecycleRoot.self) == nil)
+    #expect(await !service.host.waitForShutdown())
+    #expect(delegate.events.withLock { $0 } == ["factory", "willStart"])
+  }
+
+  @Test(arguments: XPCChannelTransport.allCases)
+  func FailedCoordinatorConnectionAwaitsCooperativeCleanup(transport: XPCChannelTransport)
+    async throws
+  {
+    let delegate = LifecycleDelegate()
+    let service = try await lifecycleService(delegate, transport)
+    await #expect(throws: LifecycleFailure.self) {
+      try await makeTestCoordinator(
+        watchdog: .seconds(10),
+        connect: { _ in
+          throw LifecycleFailure.expected
+        }, factory: { service })
+    }
+    #expect(await service.host.waitForShutdown(timeout: .seconds(2)))
+    #expect(
+      delegate.events.withLock { $0 } == [
+        "factory", "willStart", "didStart", "willShutdown", "didShutdown",
+      ])
+  }
+
+  @Test(arguments: XPCChannelTransport.allCases)
+  func LateBindingCannotNotifyDuringServiceCleanup(transport: XPCChannelTransport) async throws {
+    let delegate = LifecycleDelegate(), gate = HookGate()
+    delegate.shutdownGate = gate
+    let emergency = gate.watchdog()
+    let service = try await lifecycleService(delegate, transport)
+    _ = try await service.listen()
+    let extra = try transport.acceptor { service.host.bind($0) }
+    try extra.activate()
+    service.host.requestShutdown()
+    try #require(await waitForTestSignal(gate.entered))
+    let owner = try XPCRootConnection<LifecycleRoot>.connect(
+      using: transport.channel(dialing: extra.wireEndpoint))
+    let watchdog = DispatchWorkItem { owner.close() }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
+    defer { watchdog.cancel(); emergency.cancel(); gate.release(); owner.close(); extra.cancel() }
+    await #expect(throws: XPCChannelError.self) { try await owner.root.read() }
+    #expect(
+      delegate.events.withLock { $0 } == ["factory", "willStart", "didStart", "willShutdown"])
+    gate.release()
+    #expect(await service.host.waitForShutdown(timeout: .seconds(2)))
+    #expect(delegate.events.withLock { $0.last } == "didShutdown")
+  }
+
+  @Test(arguments: XPCChannelTransport.allCases)
+  func CancellingListenStopsSuspendedStartup(transport: XPCChannelTransport) async throws {
+    let delegate = LifecycleDelegate(), gate = HookGate()
+    delegate.willStartGate = gate
+    let emergency = gate.watchdog()
+    let service = try await lifecycleService(delegate, transport)
+    defer { emergency.cancel(); gate.release(); service.cancel() }
+    let startup = Task { try await service.listen() }
+    try #require(await waitForTestSignal(gate.entered))
+    startup.cancel()
+    #expect(await !service.host.waitForShutdown(timeout: .seconds(2)))
+    gate.release()
+    await #expect(throws: CancellationError.self) { try await startup.value }
+    #expect(try service.root.actorSystem.resolve(id: .root, as: LifecycleRoot.self) == nil)
+    #expect(delegate.events.withLock { $0 } == ["factory", "willStart"])
+  }
+
+  @Test(arguments: XPCChannelTransport.allCases)
+  func HostedCConnectionsBufferUntilPreparationCompletes(client: XPCChannelTransport) async throws {
+    let delegate = LifecycleDelegate(), gate = HookGate()
+    delegate.willStartGate = gate
+    let emergency = gate.watchdog()
+    let service = try await lifecycleService(delegate, .cConnection)
+    let hosted = HostedActorService<LifecycleRoot>()
+    let received = DispatchSemaphore(value: 0)
+    let peers = Mutex<[XPCChannel]>([])
+    let listener = try XPCChannelTransport.cConnection.acceptor { channel in
+      peers.withLock { $0.append(channel) }
+      if let native = channel.connection { hosted.receive(native) }
+      received.signal()
+    }
+    try listener.activate()
+    let startup = Task {
+      try await service.startHosted()
+      hosted.publish(service)
+    }
+    try #require(await waitForTestSignal(gate.entered))
+    let owner = try XPCRootConnection<LifecycleRoot>.connect(
+      using: client.channel(dialing: listener.wireEndpoint))
+    let watchdog = DispatchWorkItem { owner.close() }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
+    defer {
+      watchdog.cancel(); emergency.cancel(); gate.release(); owner.close(); listener.cancel();
+      service.cancel()
+    }
+    let rpc = Task { try await owner.root.read() }
+    try #require(await waitForTestSignal(received))
+    #expect(hosted.pendingConnectionCount == 1)
+    #expect(delegate.calls.value.withLock { $0 } == 0)
+    #expect(!delegate.events.withLock { $0.contains("native") })
+    gate.release()
+    try await startup.value
+    #expect(try await rpc.value == "prepared")
+    #expect(hosted.pendingConnectionCount == 0)
+    service.host.requestShutdown()
+    #expect(await service.host.waitForShutdown(timeout: .seconds(2)))
+    withExtendedLifetime(peers) {}
   }
 
   @Test(arguments: XPCChannelTransport.allCases)

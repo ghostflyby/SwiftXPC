@@ -118,7 +118,9 @@ clients explicitly; it cannot be dialed by a service name.
 `service.cancel()` performs terminal synchronous teardown. `service.host.requestShutdown()`
 starts cooperative shutdown; await `service.host.waitForShutdown()` for peer hooks,
 service cleanup hooks, and registry invalidation. Neither path drains executing RPCs.
-Hosted entry points exit after awaited cleanup (status 0 on success, 1 on failure).
+Hosted entry points exit after awaited cleanup (status 0 on completed cooperative
+shutdown, 1 on startup/cleanup failure or bare cancellation). The C entry keeps
+a process-lifetime transaction so idle termination cannot interrupt these hooks.
 Embedders never exit their process. Source documentation defines hook ordering and
 startup/binding barriers.
 

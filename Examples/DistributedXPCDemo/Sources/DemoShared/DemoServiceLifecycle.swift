@@ -11,16 +11,34 @@ public protocol DemoServiceLifecycle: XPCActorServiceDelegate where Root == Demo
 }
 
 extension DemoServiceLifecycle {
+  // Bundled services receive no caller argv. Integration fixtures put their
+  // arguments in the copied bundle instead of changing launchd's environment.
+  private var arguments: [String] {
+    guard let path = Bundle.main.url(forResource: "lifecycle-arguments", withExtension: "plist"),
+      let data = try? Data(contentsOf: path),
+      let values = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String]
+    else { return CommandLine.arguments }
+    return CommandLine.arguments + values
+  }
+
   private func argument(_ flag: String) -> String? {
-    guard let index = CommandLine.arguments.firstIndex(of: flag),
-      CommandLine.arguments.indices.contains(index + 1)
+    let arguments = self.arguments
+    guard let index = arguments.firstIndex(of: flag),
+      arguments.indices.contains(index + 1)
     else { return nil }
-    return CommandLine.arguments[index + 1]
+    return arguments[index + 1]
   }
 
   private func record(_ event: String) {
     // Lifecycle probe jobs capture stdout; production hosting needs no log file API.
-    FileHandle.standardOutput.write(Data("\(event)\n".utf8))
+    let data = Data("\(event)\n".utf8)
+    if let path = argument("--event-log"), let file = FileHandle(forWritingAtPath: path) {
+      file.seekToEndOfFile()
+      file.write(data)
+      file.closeFile()
+    } else {
+      FileHandle.standardOutput.write(data)
+    }
   }
 
   private func awaitGate(_ flag: String) async throws {
@@ -34,6 +52,7 @@ extension DemoServiceLifecycle {
 
   public func makeRoot(actorSystem: XPCDistributedActorSystem) async throws -> DemoRoot {
     record("factory")
+    record("pid:\(getpid())")
     await Task.yield()
     try await awaitGate("--startup-gate")
     return DemoRoot(dependency: dependency, actorSystem: actorSystem)
@@ -44,12 +63,15 @@ extension DemoServiceLifecycle {
     _ = await service.root.whenLocal { $0.prepare() }
   }
 
-  public func serviceDidStart(_ service: XPCActorService<DemoRoot>) async { record("did-start") }
+  public func serviceDidStart(_ service: XPCActorService<DemoRoot>) async {
+    record("did-start")
+  }
   public func peerWillBind(_ peer: XPCChannel, to service: XPCActorService<DemoRoot>) async throws {
     record("will-bind")
   }
   public func peerDidBind(_ peer: XPCChannel, to service: XPCActorService<DemoRoot>) async {
     record("did-bind")
+    if arguments.contains("--cancel") { service.cancel() }
   }
   public func peerDidEnd(_ peer: XPCChannel, in service: XPCActorService<DemoRoot>) async {
     record("peer-end")
@@ -57,7 +79,7 @@ extension DemoServiceLifecycle {
   public func serviceWillShutdown(_ service: XPCActorService<DemoRoot>) async throws {
     record("will-shutdown")
     try await awaitGate("--shutdown-gate")
-    if CommandLine.arguments.contains("--fail-shutdown") { throw PreparationFailure.cleanup }
+    if arguments.contains("--fail-shutdown") { throw PreparationFailure.cleanup }
   }
   public func serviceDidShutdown(_ service: XPCActorService<DemoRoot>, error: (any Error)?) async {
     record(error == nil ? "did-shutdown" : "shutdown-error")

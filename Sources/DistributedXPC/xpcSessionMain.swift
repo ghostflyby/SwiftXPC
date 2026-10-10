@@ -6,8 +6,9 @@ import SwiftXPC
 
 /// Hosts a Session actor service for a name advertised by launchd MachServices.
 /// Call on the OS main thread. Asynchronous startup finishes before dispatch
-/// opens. Shutdown awaits all hooks before exit (0 on success, 1 on startup or
-/// cleanup failure). Bundled `.xpc` servers use the C-native `xpcMain` entry.
+/// opens. Shutdown awaits all hooks before exit (0 on completed cooperative
+/// shutdown, 1 on startup/cleanup failure or bare cancellation). Bundled `.xpc`
+/// servers use the C-native `xpcMain` entry.
 /// The Session actor delegate's default main uses its declared `serviceName`;
 /// this function also hosts an explicitly configured delegate instance.
 @MainActor
@@ -19,8 +20,8 @@ public func xpcSessionMain<Root: XPCRootActor>(
     do {
       let owner = try await XPCActorService(sessionDelegate: delegate)
       try await owner.listen(service: service)
-      _ = await owner.host.waitForShutdown()
-      exit(owner.shutdownFailed ? 1 : 0)
+      let completed = await owner.host.waitForShutdown()
+      exit(completed && !owner.shutdownFailed ? 0 : 1)
     } catch { reportActorServiceStartupFailure(error) }
   }
   dispatchMain()

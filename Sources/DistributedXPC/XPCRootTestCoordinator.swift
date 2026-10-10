@@ -53,7 +53,12 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
   }
   private let serverPeer: ServerPeerBox
 
-  init(service: XPCActorService<Root>, watchdog: Duration?) async throws {
+  init(
+    service: XPCActorService<Root>, watchdog: Duration?,
+    connect: @Sendable (XPCChannel) throws -> XPCRootConnection<Root> = {
+      try XPCRootConnection.connect(using: $0)
+    }
+  ) async throws {
     let transport = service.root.actorSystem.transport
     self.transport = transport
     self.service = service
@@ -66,7 +71,7 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
     }
 
     let clientChannel = try transport.channel(dialing: acceptor.wireEndpoint)
-    let client = try XPCRootConnection<Root>.connect(using: clientChannel)
+    let client = try connect(clientChannel)
     self.acceptor = acceptor
     self.client = client
     self.serverPeer = serverPeer
@@ -159,6 +164,9 @@ public final class XPCRootTestCoordinator<Root: XPCRootActor>: @unchecked Sendab
 /// The watchdog covers factory/startup as well as the serving fixture. Expiry
 /// cancels preparation and throws `CancellationError` if startup has not returned.
 /// Hooks already executing must honor cooperative cancellation.
+/// Construction failure after creating the service awaits cooperative cleanup
+/// before throwing the original error. Cancellation/watchdog expiry uses fast
+/// teardown instead and does not start cleanup hooks.
 public func xpcTest<Root: XPCRootActor>(
   _ delegate: some XPCConnectionActorServiceDelegate<Root>,
   eventLog: XPCServiceEventLog? = nil,
@@ -183,8 +191,11 @@ private struct WeakTestService<Root: XPCRootActor> {
   weak var service: XPCActorService<Root>?
 }
 
-private func makeTestCoordinator<Root: XPCRootActor>(
+func makeTestCoordinator<Root: XPCRootActor>(
   watchdog: Duration?,
+  connect: @escaping @Sendable (XPCChannel) throws -> XPCRootConnection<Root> = {
+    try XPCRootConnection.connect(using: $0)
+  },
   factory: @escaping @Sendable () async throws -> XPCActorService<Root>
 ) async throws -> XPCRootTestCoordinator<Root> {
   let result = XPCServiceResult<XPCRootTestCoordinator<Root>>()
@@ -197,11 +208,17 @@ private func makeTestCoordinator<Root: XPCRootActor>(
       do {
         try Task.checkCancellation()
         let remaining = deadline.map { ContinuousClock.now.duration(to: $0) }
-        let coordinator = try await XPCRootTestCoordinator(service: service, watchdog: remaining)
+        let coordinator = try await XPCRootTestCoordinator(
+          service: service, watchdog: remaining, connect: connect)
         if Task.isCancelled { coordinator.close(); throw CancellationError() }
         result.finish(.success(coordinator))
       } catch {
-        service.cancel()
+        if Task.isCancelled {
+          service.cancel()
+        } else {
+          service.host.requestShutdown()
+          _ = await service.host.waitForShutdown()
+        }
         throw error
       }
     } catch { result.finish(.failure(error)) }

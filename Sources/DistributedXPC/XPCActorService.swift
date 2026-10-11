@@ -211,7 +211,8 @@ public final class XPCActorService<Root: XPCRootActor>: Sendable {
   /// the running service; their failure does not retire existing listeners.
   /// Concurrent first calls share one startup operation. Do not call this
   /// from a startup hook, which would wait on its own operation.
-  /// Cancelling this operation cancels the service, including shared startup.
+  /// Cancellation while any listen call is pending cancels the entire service,
+  /// including existing listeners and peers, even when adding another listener.
   /// Already executing hooks must cooperate with cancellation before it returns.
   @discardableResult
   public func listen(service: String? = nil) async throws -> XPCChannelAcceptor {

@@ -69,6 +69,10 @@ public protocol XPCConnectionActorServiceDelegate<Root>: XPCActorServiceDelegate
   @MainActor static func main()
   /// Installed before audit. When non-nil, do not install a second requirement.
   var peerCodeSigningRequirement: String? { get }
+  /// Audit the inactive native peer without activating it or replacing its
+  /// receive handler. Actor routing is installed after admission; activating
+  /// here can drop messages. Channel activation is safe in `peerWillBind`,
+  /// where the framework has already installed a buffered receive route.
   func shouldAcceptConnection(
     _ connection: XPCConnection, in service: XPCActorService<Root>
   ) throws -> Bool

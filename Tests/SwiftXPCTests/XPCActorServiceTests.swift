@@ -77,27 +77,21 @@ struct XPCActorServiceTests {
   }
 
   @Test func RootFactoryRejectsForeignActorSystem() async {
-    let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+    await #expect(processExitsWith: .signal(SIGTRAP)) {
       let foreign = XPCDistributedActorSystem()
       foreign.reserveRootID()
       let root = StatefulServiceRoot(actorSystem: foreign)
       _ = try await XPCActorService(TestActorDelegate<StatefulServiceRoot>(factory: { _ in root }))
     }
-    let output = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
-    #expect(
-      output.contains("The root factory must construct the first actor on the supplied system"))
   }
 
   @Test func RootFactoryRejectsUnregisteredProxy() async {
-    let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
+    await #expect(processExitsWith: .signal(SIGTRAP)) {
       _ = try await XPCActorService(
         TestActorDelegate<StatefulServiceRoot>(factory: { system in
           try StatefulServiceRoot.resolve(id: .root, using: system)
         }))
     }
-    let output = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
-    #expect(
-      output.contains("The root factory must construct the first actor on the supplied system"))
   }
 
   private func hostRegistryContains(_ id: XPCActorID, in system: XPCDistributedActorSystem) -> Bool

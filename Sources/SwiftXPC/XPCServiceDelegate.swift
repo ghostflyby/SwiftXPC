@@ -30,6 +30,9 @@ public protocol XPCConnectionServiceDelegate: XPCServiceDelegate {
   /// Installed before audit, once per incoming connection. When non-nil,
   /// the audit hook must not install another native requirement.
   var peerCodeSigningRequirement: String? { get }
+  /// Audit identity/security while the peer is inactive. Do not activate it or
+  /// replace its receive handler: the acceptor installs routing after admission,
+  /// and messages received before that routing exists can be lost.
   func shouldAcceptConnection(_ connection: XPCConnection) throws -> Bool
   /// Called after cancellation for an explicit rejection or audit failure.
   /// A kernel rejection after activation is reported as `peerDidEnd` instead.
@@ -64,6 +67,8 @@ extension XPCSessionServiceDelegate {
 }
 
 /// Closure-based C delegate. Custom types can conform directly instead.
+/// The shouldAccept closure obeys the inactive-peer audit restrictions of
+/// `XPCConnectionServiceDelegate.shouldAcceptConnection`.
 public struct XPCConnectionServiceConfiguration: XPCConnectionServiceDelegate {
   public let peerCodeSigningRequirement: String?
   private let shouldAccept: @Sendable (XPCConnection) throws -> Bool

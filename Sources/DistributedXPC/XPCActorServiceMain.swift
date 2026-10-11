@@ -49,6 +49,8 @@ func reportActorServiceStartupFailure(_ error: any Error) -> Never {
 /// (0 on completed cooperative shutdown, 1 on startup/cleanup failure or bare
 /// cancellation). A process-lifetime native transaction prevents idle exit from
 /// cutting off asynchronous preparation/cleanup. In-process owners never exit.
+/// Automatic idle exit stays disabled for this process; peer disconnection
+/// alone does not end the service. The transaction ends with the process.
 /// The C actor delegate protocol provides main for a concrete `@main` type.
 /// Call this function directly when hosting an explicitly configured instance.
 @MainActor
